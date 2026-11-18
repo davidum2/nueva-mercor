@@ -25,10 +25,10 @@
 
 ## Important Details
 - `signal_layout(signal, dlc)` must replicate `gen_protocols.py`'s `get_byte_info` slicing algorithm.
-- For `motorola` order, `get_byte_info` sets `byte_idx = bit // 8` and MSB `bit_start = bit % 8`, takes `len = min(bit_start + 1, left)`, computes `start_bit = bit_start - len + 1`, and advances with `byte_idx += 1` and `bit_start = 7`.
-- For `intel` order, `get_byte_info` sets LSB `bit_start = bit % 8`, takes `len = min(8 - bit_start, left)`, advances with `byte_idx += 1` and `bit_start = 0`, and reverses the slice list.
-- Non-`motorola` `order` values fall through to the `intel` path, mirroring the emitter's `else` branch.
-- Both `motorola` and `intel` paths produce MSB-to-LSB-ordered `(byte_index, start_bit, length)` slices.
+- Based on the agent's finding (the file read of `gen_protocols.py` was truncated before `get_byte_info`), for `motorola` order `get_byte_info` sets `byte_idx = bit // 8` and MSB `bit_start = bit % 8`, takes `len = min(bit_start + 1, left)`, computes `start_bit = bit_start - len + 1`, and advances with `byte_idx += 1` and `bit_start = 7`.
+- Based on the agent's finding (`gen_protocols.py` read truncated before `get_byte_info`), for `intel` order `get_byte_info` sets LSB `bit_start = bit % 8`, takes `len = min(8 - bit_start, left)`, advances with `byte_idx += 1` and `bit_start = 0`, and reverses the slice list.
+- Based on the agent's finding (`gen_protocols.py` read truncated before `get_byte_info`), non-`motorola` `order` values fall through to the `intel` path, mirroring the emitter's `else` branch.
+- Based on the agent's finding (`gen_protocols.py` read truncated before `get_byte_info`), both `motorola` and `intel` paths produce MSB-to-LSB-ordered `(byte_index, start_bit, length)` slices.
 - `signal_layout` raises `UnsupportedSignalError` carrying `signal_name = signal["name"]` if `signal["len"] > 32`.
 - `signal_layout` raises `UnsupportedSignalError` carrying `signal_name = signal["name"]` if any slice `byte_index` lies outside `[0, dlc - 1]`.
 - `UnsupportedSignalError.__init__(signal_name, message=None)` provides a default error message when `message` is `None`.
@@ -40,20 +40,28 @@
 - In `extract_dbc_meta.py`, removing the `if var_info["len"] <= 32` filter keeps signals wider than 32 bits in YAML.
 - `FrameCodec(protocol)` stores `self.dlc = int(protocol["dlc"])`.
 - `FrameCodec.__init__` calls `signal_layout(var, dlc)` for each var and raises `UnsupportedSignalError` on the first rejected signal.
-- `FrameCodec.layout(name)` returns the signal's `SignalLayout` and raises `KeyError` for unknown names.
+- `FrameCodec.layout(name)` returns the `SignalLayout` for a known signal name.
+- `FrameCodec.layout(name)` raises `KeyError` for an unknown signal name.
 - `FrameCodec.decode(data)` raises `ValueError` if `len(data) < self.dlc`.
 - `FrameCodec.decode` accumulates raw bits MSB-to-LSB via `raw = (raw << length) | ((data[byte_index] >> start_bit) & ((1 << length) - 1))`.
-- `FrameCodec.decode` sign-extends `raw` when `is_signed_var` via `raw -= 1 << bit_width` if `raw >= 1 << (bit_width - 1)`, matching C++ `x <<= (32 - len); x >>= (32 - len)`.
+- `FrameCodec.decode` sign-extends `raw` when `is_signed_var` via `raw -= 1 << bit_width` if `raw >= 1 << (bit_width - 1)`, which the agent reasoned matches C++ `x <<= (32 - len); x >>= (32 - len)` (generated C++ parse code not shown).
 - `FrameCodec.decode` returns `raw != 0` for `bool` signals.
-- `FrameCodec.decode` returns unscaled `int(raw)` for `enum` signals, matching `static_cast<Enum>(x)`.
-- `FrameCodec.decode` computes `phys = raw * precision + offset`, returning `int(phys)` truncated toward zero for `int` signals and `float(phys)` for `double` signals.
+- `FrameCodec.decode` returns unscaled `int(raw)` for `enum` signals, which the agent reasoned matches `static_cast<Enum>(x)` (generated C++ parse code not shown).
+- `FrameCodec.decode` computes `phys = raw * precision + offset` for numeric signals.
+- `FrameCodec.decode` returns `int(phys)` truncated toward zero for `int` signals.
+- `FrameCodec.decode` returns `float(phys)` for `double` signals.
 - `int32_t` overflow of the C++ accumulator is out of scope for `FrameCodec` agreement.
 - `FrameCodec.encode(values=None, data=None)` raises `ValueError` if `data` is provided with `len(data) < self.dlc`.
-- `FrameCodec.encode` initializes a `dlc`-byte `bytearray` to zeros when `data` is `None`, or `bytearray(data[:self.dlc])` when `data` is provided (truncating longer buffers).
+- `FrameCodec.encode` initializes a zero-filled `bytearray(self.dlc)` when `data` is `None`.
+- `FrameCodec.encode` initializes the working buffer from `bytearray(data[:self.dlc])` when `data` is provided.
+- `FrameCodec.encode` truncates a provided `data` buffer longer than `self.dlc` to `self.dlc` bytes.
 - `FrameCodec.encode` validates every key in `values` and raises `KeyError(name)` for unknown signal names.
 - `FrameCodec.encode` applies all signals in `vars` declaration order so later signals overwrite shared bits.
-- Unspecified signals in `encode` default to `False` for `bool`, `0` for `int`, `0.0` for `double`, and for `enum` key `0` if present else `next(iter(enum))`.
-- `FrameCodec.encode` clamps physical values only for non-enum and non-bool types, mirroring C++ `BoundedValue` skipping enum and bool.
+- Unspecified `bool` signals in `encode` default to `False`.
+- Unspecified `int` signals in `encode` default to `0`.
+- Unspecified `double` signals in `encode` default to `0.0`.
+- Unspecified `enum` signals in `encode` default to key `0` if present, otherwise `next(iter(enum))`.
+- `FrameCodec.encode` clamps physical values only for non-enum and non-bool types; the agent reasoned this mirrors C++ `BoundedValue` skipping enum and bool (generated C++ set code not shown).
 - `encode` parses bounds from `physical_range` via `split('|')`, `items[0].split('[')[1]`, and `items[1].split(']')[0]` as floats, leaving values unchanged if `low > high`.
 - `FrameCodec.encode` computes `raw = int((val - offset) / precision)` truncated toward zero.
 - `FrameCodec.encode` writes slices LSB-to-MSB via `piece = (raw >> shift) & ((1 << length) - 1)` and `frame[byte] = (frame[byte] & ~mask) | (piece << start_bit)`.
@@ -62,27 +70,34 @@
 - `quantize` returns an entry for every signal in `vars`.
 - `quantize` silently ignores unknown keys in `values`.
 - `frame_codec.py` provides `filter_protocol_vars(protocol)` returning `(supported_vars, skipped_names)` via `signal_layout(var, protocol["dlc"])`.
-- Each of the three emission stages calls `filter_protocol_vars` at its entry function.
-- Each of the three emission stages mutates `protocol["vars"] = supported_vars`.
-- Each of the three emission stages prints e.g. `print("Skip unsupported signal: %s" % skipped_name)` for each skipped signal.
+- `gen_protocols.py` calls `filter_protocol_vars` at its entry function.
+- `gen_proto_file.py` calls `filter_protocol_vars` at its entry function.
+- `gen_vehicle_controller_and_manager.py` calls `filter_protocol_vars` at its entry function.
+- `gen_protocols.py` mutates `protocol["vars"] = supported_vars`.
+- `gen_proto_file.py` mutates `protocol["vars"] = supported_vars`.
+- `gen_vehicle_controller_and_manager.py` mutates `protocol["vars"] = supported_vars`.
+- `gen_protocols.py` prints e.g. `print("Skip unsupported signal: %s" % skipped_name)` for each skipped signal.
+- `gen_proto_file.py` prints e.g. `print("Skip unsupported signal: %s" % skipped_name)` for each skipped signal.
+- `gen_vehicle_controller_and_manager.py` prints e.g. `print("Skip unsupported signal: %s" % skipped_name)` for each skipped signal.
 - Stage imports use `from modules.tools.gen_vehicle_protocol.frame_codec import filter_protocol_vars`, matching `gen.py`.
 - `gen_protocols.py` removes the `if var["len"] > 32` block in `gen_control_value_func_impl` so the stage retains no width or frame-length rule.
 - The agent noted an unverified finding that the `if var["len"] > 32` block in `gen_control_value_func_impl` also references an undefined `class_name`.
-- `gen_canbus_conf.py` stays untouched because it does not iterate `vars`.
+- The agent inferred (unverified; file read truncated) that `gen_canbus_conf.py` does not iterate `vars`.
+- The agent planned to leave `gen_canbus_conf.py` untouched.
 - `modules/tools/gen_vehicle_protocol/BUILD` adds `apollo_py_binary(name = "frame_codec", srcs = ["frame_codec.py"])`.
 - `modules/tools/gen_vehicle_protocol/BUILD` adds `":frame_codec"` to `deps` of `gen_proto_file`.
 - `modules/tools/gen_vehicle_protocol/BUILD` adds `":frame_codec"` to `deps` of `gen_protocols`.
 - `modules/tools/gen_vehicle_protocol/BUILD` adds `":frame_codec"` to `deps` of `gen_vehicle_controller_and_manager`.
-- The agent inferred `Byte::get_byte` semantics from `modules/drivers/canbus/common/byte.cc` (truncated in view; unverified).
-- The agent inferred `Byte::set_value` semantics from `modules/drivers/canbus/common/byte.cc` (truncated in view; unverified).
+- The agent inferred `Byte::get_byte` semantics from `modules/drivers/canbus/common/byte.cc` (unverified; the earlier file read was truncated before the method definition).
+- The agent inferred `Byte::set_value` semantics from `modules/drivers/canbus/common/byte.cc` (unverified; the earlier file read was truncated before the method definition).
 - `ProtocolData::BoundedValue` (`lower > upper` returns `val`) was confirmed in `modules/drivers/canbus/can_comm/protocol_data.h`.
 - In `apollo_demo.dbc`, all signals use motorola `@0+` order with no `@1` intel examples.
 - In `apollo_demo.dbc`, `VAL_` lines define enums such as `Gear_Actual` and `Turn_Light_Actual`.
 - `VIN15 : 63|16` in `vin_resp2` yields byte 8 and will be newly skipped and reported.
 - `modules/canbus_vehicle/demo/proto/demo.proto` contains `optional int32 vin15 = 1;`.
-- The agent's belief that `demo.proto`'s `vin15` entry is an out-of-frame bug in the committed demo output remains unverified at view time, as the committed demo files may correspond to a different DBC.
+- The agent's belief that `demo.proto`'s `vin15` entry is an out-of-frame bug in the committed demo output (generated from `apollo_demo.dbc`) remains unverified.
 - The agent noted an unverified hypothesis that a blacklisted `BO_` line followed by `SG_` lines in `extract_dbc_meta.py` may hit a `KeyError` on `protocol["vars"]`.
-- Avoid `black_list` paths in extraction tests.
+- The agent chose to leave the `black_list` extraction behavior unchanged.
 - No Python tests exist for this package in the repo.
 - Existing C++ tests under `modules/canbus_vehicle/...` remain untouched.
 
@@ -96,15 +111,21 @@
 - Read `modules/tools/gen_vehicle_protocol/gen_canbus_conf.py`.
 - Read `modules/tools/gen_vehicle_protocol/BUILD`.
 - Read `modules/tools/gen_vehicle_protocol/README.md`.
-- Read the configuration YAML files under `modules/tools/gen_vehicle_protocol/`.
+- Read `modules/tools/gen_vehicle_protocol/gem_conf.yml`.
+- Read `modules/tools/gen_vehicle_protocol/lincoln_conf.yml`.
 - Read `modules/tools/gen_vehicle_protocol/apollo_demo.dbc`.
-- Read the generator template files under `modules/tools/gen_vehicle_protocol/template/`.
+- Read `modules/tools/gen_vehicle_protocol/template/control_protocol.cc.tpl`.
+- Read `modules/tools/gen_vehicle_protocol/template/control_protocol.h.tpl`.
+- Read `modules/tools/gen_vehicle_protocol/template/report_protocol.cc.tpl`.
 - Read `modules/drivers/canbus/common/byte.h`.
 - Read `modules/drivers/canbus/common/byte.cc`.
 - Read `modules/drivers/canbus/can_comm/protocol_data.h`.
-- Read the committed generated demo code under `modules/canbus_vehicle/demo/`.
+- Read `modules/canbus_vehicle/demo/protocol/throttle_command_100.cc`.
+- Grepped `modules/canbus_vehicle/demo/proto/demo.proto` for `vin15` and `vin_resp`.
 - Read `tools/proto/proto.bzl` (`apollo_py_binary`).
-- Confirmed slicing and encode/decode semantics in `modules/canbus_vehicle/demo/protocol/throttle_command_100.cc`: `Speed_Target : 47|12@0+` yields slices `[(5,0,8),(6,4,4)]` and writes `data+6 (4,4)` then `data+5 (0,8)`.
+- Confirmed slicing semantics in `modules/canbus_vehicle/demo/protocol/throttle_command_100.cc`: `Speed_Target : 47|12@0+` yields slices `[(5,0,8),(6,4,4)]`.
+- Confirmed encode write semantics in `modules/canbus_vehicle/demo/protocol/throttle_command_100.cc`: `set_p_speed_target` writes `data+6 (4,4)` then `data+5 (0,8)`.
+- Inferred decode semantics in `modules/canbus_vehicle/demo/protocol/throttle_command_100.cc` (the `Parse` implementation was truncated in the read output).
 - Settled the design for `frame_codec.py`.
 - Settled the design for `extract_dbc_meta.py`.
 - Settled the design for `gen_protocols.py`.
@@ -134,17 +155,18 @@
 12. Add `":frame_codec"` to `deps` of `gen_proto_file` in `modules/tools/gen_vehicle_protocol/BUILD`.
 13. Add `":frame_codec"` to `deps` of `gen_protocols` in `modules/tools/gen_vehicle_protocol/BUILD`.
 14. Add `":frame_codec"` to `deps` of `gen_vehicle_controller_and_manager` in `modules/tools/gen_vehicle_protocol/BUILD`.
-15. Run `extract_dbc_meta.py` on `apollo_demo.dbc` to verify that `dlc` keys are present in the extracted YAML.
-16. Verify that the extracted YAML from `apollo_demo.dbc` preserves all signals including those wider than 32 bits.
-17. Run the three emission stages and diff accepted-signal output against `modules/canbus_vehicle/demo/proto/demo.proto` and `modules/canbus_vehicle/demo/protocol/*`.
+15. Write a scratch sanity-test script in `/tmp/opencode` rather than placing test files inside `modules/tools/gen_vehicle_protocol/`.
+16. Run the three emission stages on extracted YAML from `apollo_demo.dbc`.
+17. Diff accepted-signal output against `modules/canbus_vehicle/demo/proto/demo.proto` and `modules/canbus_vehicle/demo/protocol/*`.
 18. Verify that out-of-range signals are omitted from generated outputs.
 19. Verify that omitted signal names are printed to stdout.
-20. Sanity-test `FrameCodec.decode` round-trips against the generated C++ logic.
-21. Sanity-test `FrameCodec.encode` round-trips against the generated C++ logic.
-22. Sanity-test `FrameCodec.quantize` round-trips against the generated C++ logic.
+20. Sanity-test `FrameCodec.decode` in `/tmp/opencode` against expected C++ logic.
+21. Sanity-test `FrameCodec.encode` in `/tmp/opencode` against expected C++ logic.
+22. Sanity-test `FrameCodec.quantize` in `/tmp/opencode` against expected C++ logic.
 
 ## Relevant Files
-- `modules/tools/gen_vehicle_protocol/frame_codec.py`: new module to create with the codec model and `filter_protocol_vars`.
+- `modules/tools/gen_vehicle_protocol/frame_codec.py`: new module to create with the executable codec model.
+- `modules/tools/gen_vehicle_protocol/frame_codec.py`: new module to create with the `filter_protocol_vars` helper.
 - `modules/tools/gen_vehicle_protocol/extract_dbc_meta.py`: extraction stage to modify.
 - `modules/tools/gen_vehicle_protocol/gen_protocols.py`: C++ protocol emitter to re-plumb.
 - `modules/tools/gen_vehicle_protocol/gen_proto_file.py`: `.proto` emitter to re-plumb.

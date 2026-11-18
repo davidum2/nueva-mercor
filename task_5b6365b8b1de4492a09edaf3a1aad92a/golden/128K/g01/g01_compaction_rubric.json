@@ -10,7 +10,7 @@
     },
     {
       "criteria_id": "criteria_1",
-      "description": "States that `signal_layout` must slice signals identically to the existing emitter for `motorola` byte order.",
+      "description": "States that `signal_layout` must slice signals identically to `gen_protocols.py::get_byte_info` for `motorola` byte order.",
       "metadata": {
         "category": "Goal fidelity",
         "weight": "major"
@@ -21,7 +21,7 @@
       "description": "States that generated output for accepted signals must remain unchanged.",
       "metadata": {
         "category": "Goal fidelity",
-        "weight": "minor"
+        "weight": "major"
       }
     },
     {
@@ -138,7 +138,7 @@
     },
     {
       "criteria_id": "criteria_17",
-      "description": "Records that non-`motorola` byte order falls through to the `intel` path, mirroring the emitter's `else` branch.",
+      "description": "Records that non-`motorola` byte order falls through to the `intel` path, mirroring `gen_protocols.py::get_byte_info`'s `else` branch.",
       "metadata": {
         "category": "Decision rationale",
         "weight": "minor"
@@ -170,7 +170,7 @@
     },
     {
       "criteria_id": "criteria_21",
-      "description": "Records that the `if var[\"len\"] > 32` block in `gen_protocols.py` is planned to be removed, with the agent noting an unverified finding that it references an undefined `class_name`.",
+      "description": "Records that the `if var[\"len\"] > 32` block in `gen_protocols.py` is planned to be removed.",
       "metadata": {
         "category": "Decision rationale",
         "weight": "minor"
@@ -234,7 +234,7 @@
     },
     {
       "criteria_id": "criteria_29",
-      "description": "Specifies running `extract_dbc_meta.py` on `apollo_demo.dbc` as a pending verification step.",
+      "description": "Specifies sanity-testing `FrameCodec.decode` round-trips against the generated C++ logic as a pending verification step.",
       "metadata": {
         "category": "Temporal coherence",
         "weight": "major"
@@ -250,7 +250,7 @@
     },
     {
       "criteria_id": "criteria_31",
-      "description": "Contains at most 16200 characters.",
+      "description": "Contains at most 18600 characters.",
       "metadata": {
         "category": "Compression efficiency",
         "weight": "minor"
