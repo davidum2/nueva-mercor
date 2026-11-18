@@ -123,19 +123,25 @@
 1. Create `modules/tools/gen_vehicle_protocol/frame_codec.py` with `UnsupportedSignalError`, `SignalLayout`, `signal_layout`, `filter_protocol_vars`, and `FrameCodec` keeping the Apollo license header and `#!/usr/bin/env python3`.
 2. Update `extract_dbc_meta.py` to set `protocol["dlc"] = int(items[3])`.
 3. Update `extract_dbc_meta.py` to drop the `len <= 32` filter.
-4. Wire `filter_protocol_vars` and skip printing into `gen_protocols.py`.
-5. Remove the `if var["len"] > 32` branch from `gen_protocols.py`.
-6. Wire `filter_protocol_vars` and skip printing into `gen_proto_file.py`.
-7. Wire `filter_protocol_vars` and skip printing into `gen_vehicle_controller_and_manager.py`.
-8. Add the `apollo_py_binary(name = "frame_codec", srcs = ["frame_codec.py"])` target to `modules/tools/gen_vehicle_protocol/BUILD`.
-9. Add `":frame_codec"` to `deps` of `gen_proto_file` in `modules/tools/gen_vehicle_protocol/BUILD`.
-10. Add `":frame_codec"` to `deps` of `gen_protocols` in `modules/tools/gen_vehicle_protocol/BUILD`.
-11. Add `":frame_codec"` to `deps` of `gen_vehicle_controller_and_manager` in `modules/tools/gen_vehicle_protocol/BUILD`.
-12. Run `extract_dbc_meta.py` on `apollo_demo.dbc` to verify that `dlc` keys are present in the extracted YAML.
-13. Verify that the extracted YAML from `apollo_demo.dbc` preserves all signals including those wider than 32 bits.
-14. Run the three emission stages and diff accepted-signal output against `modules/canbus_vehicle/demo/proto/demo.proto` and `modules/canbus_vehicle/demo/protocol/*`.
-15. Verify that out-of-range signals are omitted from generated outputs and printed to stdout.
-16. Sanity-test `FrameCodec.decode`, `FrameCodec.encode`, and `FrameCodec.quantize` round-trips against the generated C++ logic.
+4. Wire `filter_protocol_vars` into `gen_protocols.py`.
+5. Add skipped-signal name printing to stdout in `gen_protocols.py`.
+6. Remove the `if var["len"] > 32` branch from `gen_protocols.py`.
+7. Wire `filter_protocol_vars` into `gen_proto_file.py`.
+8. Add skipped-signal name printing to stdout in `gen_proto_file.py`.
+9. Wire `filter_protocol_vars` into `gen_vehicle_controller_and_manager.py`.
+10. Add skipped-signal name printing to stdout in `gen_vehicle_controller_and_manager.py`.
+11. Add the `apollo_py_binary(name = "frame_codec", srcs = ["frame_codec.py"])` target to `modules/tools/gen_vehicle_protocol/BUILD`.
+12. Add `":frame_codec"` to `deps` of `gen_proto_file` in `modules/tools/gen_vehicle_protocol/BUILD`.
+13. Add `":frame_codec"` to `deps` of `gen_protocols` in `modules/tools/gen_vehicle_protocol/BUILD`.
+14. Add `":frame_codec"` to `deps` of `gen_vehicle_controller_and_manager` in `modules/tools/gen_vehicle_protocol/BUILD`.
+15. Run `extract_dbc_meta.py` on `apollo_demo.dbc` to verify that `dlc` keys are present in the extracted YAML.
+16. Verify that the extracted YAML from `apollo_demo.dbc` preserves all signals including those wider than 32 bits.
+17. Run the three emission stages and diff accepted-signal output against `modules/canbus_vehicle/demo/proto/demo.proto` and `modules/canbus_vehicle/demo/protocol/*`.
+18. Verify that out-of-range signals are omitted from generated outputs.
+19. Verify that omitted signal names are printed to stdout.
+20. Sanity-test `FrameCodec.decode` round-trips against the generated C++ logic.
+21. Sanity-test `FrameCodec.encode` round-trips against the generated C++ logic.
+22. Sanity-test `FrameCodec.quantize` round-trips against the generated C++ logic.
 
 ## Relevant Files
 - `modules/tools/gen_vehicle_protocol/frame_codec.py`: new module to create with the codec model and `filter_protocol_vars`.
@@ -145,7 +151,8 @@
 - `modules/tools/gen_vehicle_protocol/gen_vehicle_controller_and_manager.py`: vehicle controller emitter to re-plumb.
 - `modules/tools/gen_vehicle_protocol/BUILD`: build file to extend.
 - `modules/tools/gen_vehicle_protocol/apollo_demo.dbc`: test DBC input containing `VIN15 : 63|16`.
-- `modules/drivers/canbus/common/byte.cc`: `Byte::get_byte` and `Byte::set_value` implementation.
+- `modules/drivers/canbus/common/byte.cc`: `Byte::get_byte` implementation.
+- `modules/drivers/canbus/common/byte.cc`: `Byte::set_value` implementation.
 - `modules/drivers/canbus/common/byte.h`: `Byte` header declarations.
 - `modules/drivers/canbus/can_comm/protocol_data.h`: `BoundedValue` reference semantics.
 - `modules/canbus_vehicle/demo/proto/demo.proto`: committed demo `.proto` containing `vin15`.

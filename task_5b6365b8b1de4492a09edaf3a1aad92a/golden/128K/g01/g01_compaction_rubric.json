@@ -250,7 +250,7 @@
     },
     {
       "criteria_id": "criteria_31",
-      "description": "Contains at most 15800 characters.",
+      "description": "Contains at most 16200 characters.",
       "metadata": {
         "category": "Compression efficiency",
         "weight": "minor"

@@ -51,8 +51,10 @@ description: >-
 * **C3.3 — 1 hecho = 1 bullet (atomicidad estricta en TODAS las secciones, incluyendo `Work State`, `Next Move` y `Relevant Files`):**
   * **Archivos leídos (`Work State -> Completed`):** Nunca listar varios archivos en un solo bullet (`Read a.py, b.py, c.py` → separar en 1 bullet por archivo o fuente única).
   * **Diseños definidos (`Work State -> Completed`):** Nunca juntar varios artefactos (`Settled design for A, B, and C` → 1 bullet por artefacto).
-  * **Pasos pendientes (`Next Move`):** Nunca juntar dos cambios o dos verificaciones en un paso (`wire X while removing Y`, `add target and add deps`, `verify dlc keys and signal preservation`, `skip signals and print names` → pasos separados).
+  * **Pasos pendientes (`Next Move`):** Nunca juntar dos cambios o dos verificaciones en un paso (`wire X and skip printing`, `wire X while removing Y`, `add target and add deps`, `omitted and printed`, `verify dlc keys and signal preservation`, `sanity-test A, B, and C` → 1 bullet por acción/método/verificación).
+  * **Pares `A and B` en `Relevant Files` o `Important Details`:** Nunca juntar 2 métodos o implementaciones independientes en un bullet (`Byte::get_byte and Byte::set_value` → 1 bullet por método nombrando el archivo).
   * **Hipótesis + Directiva:** Nunca unir una creencia/hallazgo con una instrucción (`...may hit KeyError; avoid black_list in tests` → 2 bullets).
+  * **Regla de oro:** Resolver **todas** las alertas de `precheck.py` antes de hacer `Commit`.
 * **C2.1 — Solo `view.txt`, prohibido `tail.txt`:**
   * El compactador no vio `tail.txt`. Todo plan o verificación en `gNN_compaction.md` debe provenir de `view.txt` (ej. no meter procedimientos que solo aparecen en `tail.txt`).
 * **C2.2 — Incertidumbres resueltas en `tail.txt`:**

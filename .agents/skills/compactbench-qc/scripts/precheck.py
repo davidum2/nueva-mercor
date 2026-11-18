@@ -34,7 +34,9 @@ GOLDEN_COMPOUND_PATTERNS = [
     (r"\bwhile removing\b", "C3.3: une una accion con 'while removing' (separar en 2 bullets/pasos)"),
     (r"\btarget and deps\b|\btarget and .* dependencies\b", "C3.3: une creacion de target BUILD con dependencias (separar)"),
     (r"\bto verify\b.*\band\b", "C3.3: une dos verificaciones distintas en un solo paso ('to verify A and B')"),
-    (r"\bskip\b.*\band print\b", "C3.3: une 'skip signals' con 'print names' en un mismo bullet"),
+    (r"\bskip\b.*\band print\b|\band skip printing\b", "C3.3: une 'skip/wire' con 'print' en un mismo bullet"),
+    (r"\band\s+(?:printed|omitted|dropped|added|removed|updated|wired|checked|verified)\b", "C3.3: une dos acciones/resultados con 'and <verbo>' (separar en 2 bullets)"),
+    (r"\band\s+(?:print|omit|drop|add|remove|update|wire|check|verify)\b", "C3.3: une dos acciones imperativas con 'and <verbo>' (separar en 2 pasos)"),
 ]
 
 
@@ -93,6 +95,8 @@ def check_golden(md_path: str, view_path: str):
                 warnings.append(f"  [L{idx}] C2.3 dice 'confirmed' (verificar que no dependa de output [truncated]): {s[:95]}")
         if re.search(r"`[^`]+`,\s*`[^`]+`,\s*(and\s+)?`[^`]+`", s):
             warnings.append(f"  [L{idx}] C3.3 lista 3+ simbolos/archivos entre backticks en un bullet: {s[:100]}")
+        elif re.search(r"`[^`]+`\s+and\s+`[^`]+`", s) and "between" not in s.lower() and "matches" not in s.lower():
+            warnings.append(f"  [L{idx}] C3.3 par '`A` and `B`' en un bullet (revisar si son 2 hechos/metodos): {s[:100]}")
 
     if warnings:
         print(f"  Warnings ({len(warnings)}):")
