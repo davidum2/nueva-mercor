@@ -1,0 +1,7 @@
+`ArtifactReferenceServiceProvider` has been implemented in `core/artifact/artifactReferenceServiceProvider.ts` and registered with the core artifact module.
+
+### Summary of Implementation:
+- **`ArtifactReferenceServiceProvider`**: Allows stage types to register field paths holding artifact references (`registerReferencePath`, `registerReferencePaths`, `register`).
+- **Traversal and Cleanup**: Handles top-level properties, deeply nested dot/bracket paths, indexed array elements, and general array fields containing artifact IDs. Unresolvable paths and non-matching fields leave stages unchanged.
+- **Pipeline Cleanup**: Traverses all pipeline stages during removal operations (`removeArtifactFromPipeline`, `removeArtifactFromStage`, `removeArtifactReferences`) and clears all occurrences of the specified artifact ID.
+- **Angular Provider / Module Integration**: Registered under `artifactReferenceService` provider and exported in `core/artifact/index.ts`.

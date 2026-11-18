@@ -1,0 +1,2204 @@
+Studio
+Annotator
+Tasks
+Dashboards
+Project
+Project Anton | SWE Trajectory QC Annotation
+Toggle theme
+HOME
+View
+TASK
+bazelbuild-bazel-21177 [model A/B]
+Annotating
+
+Created by [EXP] Edgar D · Updated by [EXP] Edgar D · Needs attention from [EXP] Edgar D
+
+Save Changes
+TABS
+A · How this task works:
+How this task works
+B · Task bundle
+Task bundle
+Task Details
+Trajectory Viewer
+Trajectory Viewer
+1 · Agent solution A
+1 · Agent solution B
+Rubric (create)
+Rubric
+Rubric count
+Deliverable AutoQC
+Submit review
+Reviewer Feedback
+Navigation
+A · HOW THIS TASK WORKS:
+
+Read this first. It describes the annotation workflow end to end.
+
+HOW THIS TASK WORKS
+
+Read the instructions below carefully.
+
+What you do
+
+You are not authoring the task. The task, both agent rollouts, and the goal-completeness call arrive already seeded. Your job is to judge the two rollouts against each other.
+
+Work through the tabs in order. Everything below is required unless it says otherwise.
+
+Read the task (tab B). Browse the bundle: environment/, solution/, tests/, instruction.md and task.toml. Set Task type, classifying it from the metadata in task.toml.
+Score rollout A (tab C). Read the agent solution, then the trajectory. Score dimensions 2 to 9 on 1 to 5, each with a written reason, and give a final quality score for the side. Dimension 0 is already filled from the recorded run and is read-only for you.
+Score rollout B (tab D). The same, for the other rollout. Score it on its own merits before you compare the two.
+Rubrics (tab E). Write 8 to 15 binary questions where YES is always the good answer. Each one maps to a single dimension and must come from the prompt, from the environment, or from common engineering knowledge. Do not invent them. Record how many you wrote in Rubric count, then answer every one for both sides with a reason citing evidence in that trajectory. Rubrics 1 to 8 are required; 9 to 15 are optional and only apply if you wrote that many.
+Pairwise comparison (tab F). Give an overall preference of A against B and write a comparative rationale. The preference has to agree with your two final quality scores.
+AutoQC and submit (tab G). Run AutoQC, fix whatever it flags, then submit. Passing sends the task to review. Failing returns it to you with the issues.
+
+Tab H is the independent reviewer's, not yours.
+
+B · TASK BUNDLE
+
+environment/, solution/, tests/, instruction.md and task.toml.
+
+TASK BUNDLE
+
+environment/, solution/, tests/, instruction.md and task.toml for this task.
+
+EXPLORER
+environment
+Dockerfile
+solution
+golden.patch
+solve.sh
+tests
+config.json
+grade.py
+test.patch
+test.sh
+instruction.md
+task.toml
+config.json
+grade.py
+test.patch
+test.sh
+instruction.md
+task.toml
+bazelbuild-bazel-21177 [model A/B] / task.toml
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+24
+25
+26
+27
+28
+29
+30
+12
+13
+10
+11
+7
+8
+9
+author_name = "swe-bench-extended"
+difficulty = "medium"
+difficulty_explanation = "Medium-difficulty Software Engineering task. Opus-4.8 solves it in some but not all offline rollouts (discriminating: both passing and failing trajectories observed), indicating non-trivial but tractable reasoning. Reported pass@8 band: 3/8."
+pass_at_k_gpt_5_5 = ""
+pass_at_k_opus_4_8 = "3/8"
+category = "Debugging and Repair"
+subcategory = "Runtime bug repair"
+objective_labels = ["Fix", "Implement"]
+artifact_labels = ["Codebase"]
+source = "pr"
+tags = ["java", "swe-bench-extended", "pr", "junit"]
+expert_time_estimate = 3600
+junior_time_estimate = 10800
+[verifier]
+timeout_sec = 3000.0
+[metadata]
+version = "1.0"
+deal_id = ""
+keywords = ["java", "libraries-frameworks", "general"]
+[task.metadata]
+TASK DETAILS
+Task type*
+
+Classify the task from the metadata in task.toml in the bundle (tab B).
+
+Select...
+TRAJECTORY VIEWER
+TRAJECTORY VIEWER
+
+Read the rollout: prompt, diff and logs. Model A = run A, Model B = run B.
+
+Model A
+Model B
+Model B
+completed
+0.0s
+PROMPT
+User
+## Description
+
+Bazel's spawn execution log does not properly handle symbolic link outputs. There are three related gaps in the current implementation:
+
+1. **Unresolved symlink outputs are not logged correctly.** When a build action declares a symlink as an output (using the symlink declaration mechanism), the execution log treats it the same as a missing output — the symlink's target path is not captured at all.
+
+2. **Outputs with the wrong filesystem type are not distinguished from missing outputs.** If an output is declared as a file but a directory is present on disk (or vice versa), the logger lumps this together with truly absent outputs under a single "missing path" category. These should be tracked separately so users can diagnose type mismatches.
+
+3. **Indirect outputs through symlinks are not followed.** When a file or directory output is accessed on disk through an intermediate symbolic link (the declared path is a symlink pointing to the real content elsewhere), the logger should follow the link and capture the actual content details.
+
+## Expected Behavior
+
+- Declared symlink outputs that are actual symlinks on disk should appear in both the listed outputs and the actual outputs, with the symlink target path recorded.
+- Declared file or directory outputs that exist with the wrong filesystem type should appear in listed outputs only, clearly separate from correctly-typed outputs.
+- Declared file or directory outputs that are symlinks to the actual content should have that content (digest or directory listing) captured by following the symlink.
+
+## Why This Matters
+
+Without these fixes, execution logs are inaccurate for builds that use symlink outputs or have type mismatches, making it harder to reproduce and analyze build actions.
+
+I've been looking into how Bazel logs spawn execution details and noticed a few gaps around symbolic link outputs. When a build action declares a symlink as one of its outputs and the action actually produces that symlink on disk, the execution log doesn't capture the symlink's target path — it just treats it like a missing output, which makes the log inaccurate. Similarly, if a declared file or directory output happens to be backed by a symbolic link on disk pointing to the real content elsewhere, the logger isn't following that link to capture the actual content.
+
+There's also an issue with outputs that have the wrong filesystem type — for example, a declared file output that turns out to be a directory on disk, or a declared directory output that is actually a regular file. Right now these get lumped in with genuinely absent outputs, but they should be tracked differently so it's clear that the output exists but has an unexpected type.
+
+I'd like the spawn execution logging to be updated so that symlink outputs are logged properly with their target paths, mismatched-type outputs are clearly distinguished from missing outputs, and indirect symlinks on file/directory outputs are followed transparently when capturing content details.
+Show less
+FINAL ANSWER
+Done. All three gaps are fixed and tests pass.
+Changes
+src/main/protobuf/spawn.proto
+File.symlink_target_path = 4 — target of an unresolved symlink output (expanded format).
+New ExecLogEntry.UnresolvedSymlink { path, target_path }, wired into the top-level payload oneof.
+ExecLogEntry.Output gained unresolved_symlink_id = 4 and invalid_output_path = 5, the latter separating wrong-type outputs from missing_path.
+SpawnLogContext.java — new shared classifier getOutputType(output, path) returning FILE/DIRECTORY/UNRESOLVED_SYMLINK/MISSING/INVALID (SpawnLogContext.java:137). It matches the declared type (ActionInput.isSymlink() / isDirectory()) against disk:
+Symlink outputs require an actual symlink (isSymbolicLink(), no following).
+File/directory outputs use isFile()/isDirectory(), which follow symlinks — this is what transparently handles indirect symlinks.
+Anything else present on disk is INVALID; exists(NOFOLLOW) distinguishes it from MISSING, so dangling symlinks aren't misreported as absent.
+ExpandedSpawnLogContext.java — replaced listExistingOutputs (which used symlink-following exists() and lost the symlink target) with a switch on getOutputType. Symlinks emit symlink_target_path; MISSING/INVALID appear in listed outputs only. Output iteration is now sorted by exec path to keep the log deterministic, preserving the old TreeMap ordering. CompactSpawnLogContext.java — same switch, plus logUnresolvedSymlink emitting a deduplicated UnresolvedSymlink entry.
+Tests
+Extended SpawnLogContextTestBase (runs against both compact and expanded contexts, with and without bytes): testUnresolvedSymlinkOutput, testUnresolvedSymlinkOutput_wrongType, testFileOutput_indirectThroughSymlink, testFileOutput_wrongType, testTreeOutput_indirectThroughSymlink, testTreeOutput_wrongType. CompactSpawnLogContextTest.reconstructSpawnExec handles the two new Output cases. One removal worth flagging: testDirectoryOutput asserted that a plain (non-tree) artifact backed by a directory gets expanded into its contents. Under the new strict typing that is exactly the INVALID case the issue asks to separate out, so the old expectation is no longer valid; testFileOutput_wrongType covers that scenario instead. If you intended plain-artifact-as-directory to keep being expanded rather than flagged, say so and I'll relax getOutputType. Verified: //src/test/java/com/google/devtools/build/lib/exec:ExecTests passes (37 classes, 0 failures/errors; all 16 new parameterized cases ran), and //src/tools/execlog/... passes.
+Show less
+DIFF
+LOGS
+.*
+Expand all
+Step 1
++0s
+0s
+1.0
+step
+Step 1: Calling 1 tool(s): terminal
++0s
+0s
+1.1
+response
+I'll explore the codebase to understand the current spawn execution log implementation.
++0s
+0s
+1.2-1.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 2
++0s
+0s
+2.0
+step
+Step 2: Calling 1 tool(s): terminal
++0s
+0s
+2.1-2.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 3
++0s
+0s
+3.0
+step
+Step 3: Calling 1 tool(s): terminal
++0s
+0s
+3.1-3.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 4
++0s
+0s
+4.0
+step
+Step 4: Calling 1 tool(s): terminal
++0s
+0s
+4.1-4.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 5
++0s
+0s
+5.0
+step
+Step 5: Calling 1 tool(s): terminal
++0s
+0s
+5.1-5.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 6
++0s
+0s
+6.0
+step
+Step 6: Calling 1 tool(s): terminal
++0s
+0s
+6.1-6.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 7
++0s
+0s
+7.0
+step
+Step 7: Calling 1 tool(s): terminal
++0s
+0s
+7.1-7.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 8
++0s
+0s
+8.0
+step
+Step 8: Calling 1 tool(s): terminal
++0s
+0s
+8.1-8.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 9
++0s
+0s
+9.0
+step
+Step 9: Calling 1 tool(s): terminal
++0s
+0s
+9.1-9.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 10
++0s
+0s
+10.0
+step
+Step 10: Calling 1 tool(s): terminal
++0s
+0s
+10.1-10.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 11
++0s
+0s
+11.0
+step
+Step 11: Calling 1 tool(s): terminal
++0s
+0s
+11.1-11.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 12
++0s
+0s
+12.0
+step
+Step 12: Calling 1 tool(s): terminal
++0s
+0s
+12.1-12.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 13
++0s
+0s
+13.0
+step
+Step 13: Calling 1 tool(s): terminal
++0s
+0s
+13.1-13.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 14
++0s
+0s
+14.0
+step
+Step 14: Calling 1 tool(s): terminal
++0s
+0s
+14.1-14.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 15
++0s
+0s
+15.0
+step
+Step 15: Calling 1 tool(s): terminal
++0s
+0s
+15.1-15.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 16
++0s
+0s
+16.0
+step
+Step 16: Calling 1 tool(s): terminal
++0s
+0s
+16.1-16.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 17
++0s
+0s
+17.0
+step
+Step 17: Calling 1 tool(s): terminal
++0s
+0s
+17.1-17.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 18
++0s
+0s
+18.0
+step
+Step 18: Calling 1 tool(s): terminal
++0s
+0s
+18.1
+response
+Now let me look at a few more details before implementing.
++0s
+0s
+18.2-18.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 19
++0s
+0s
+19.0
+step
+Step 19: Calling 1 tool(s): terminal
++0s
+0s
+19.1
+response
+Now I have a clear picture. Let me plan the work.
++0s
+0s
+19.2-19.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 20
++0s
+0s
+20.0
+step
+Step 20: Calling 1 tool(s): terminal
++0s
+0s
+20.1
+response
+Starting with the proto changes:
++0s
+0s
+20.2-20.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 21
++0s
+0s
+21.0
+step
+Step 21: Calling 1 tool(s): terminal
++0s
+0s
+21.1-21.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 22
++0s
+0s
+22.0
+step
+Step 22: Calling 1 tool(s): terminal
++0s
+0s
+22.1-22.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 23
++0s
+0s
+23.0
+step
+Step 23: Calling 1 tool(s): terminal
++0s
+0s
+23.1
+response
+Now add the entry payload to the top-level oneof:
++0s
+0s
+23.2-23.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 24
++0s
+0s
+24.0
+step
+Step 24: Calling 1 tool(s): terminal
++0s
+0s
+24.1-24.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 25
++0s
+0s
+25.0
+step
+Step 25: Calling 1 tool(s): terminal
++0s
+0s
+25.1
+response
+Now the shared classification helper in `SpawnLogContext`:
++0s
+0s
+25.2-25.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 26
++0s
+0s
+26.0
+step
+Step 26: Calling 1 tool(s): terminal
++0s
+0s
+26.1-26.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 27
++0s
+0s
+27.0
+step
+Step 27: Calling 1 tool(s): terminal
++0s
+0s
+27.1-27.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 28
++0s
+0s
+28.0
+step
+Step 28: Calling 1 tool(s): terminal
++0s
+0s
+28.1
+response
+Now update `ExpandedSpawnLogContext`:
++0s
+0s
+28.2-28.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 29
++0s
+0s
+29.0
+step
+Step 29: Calling 1 tool(s): terminal
++0s
+0s
+29.1-29.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 30
++0s
+0s
+30.0
+step
+Step 30: Calling 1 tool(s): terminal
++0s
+0s
+30.1
+response
+Now remove the now-unused `existingOutputs` local and fix imports:
++0s
+0s
+30.2-30.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 31
++0s
+0s
+31.0
+step
+Step 31: Calling 1 tool(s): terminal
++0s
+0s
+31.1-31.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 32
++0s
+0s
+32.0
+step
+Step 32: Calling 1 tool(s): terminal
++0s
+0s
+32.1-32.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 33
++0s
+0s
+33.0
+step
+Step 33: Calling 1 tool(s): terminal
++0s
+0s
+33.1-33.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 34
++0s
+0s
+34.0
+step
+Step 34: Calling 1 tool(s): terminal
++0s
+0s
+34.1
+response
+Now `CompactSpawnLogContext`:
++0s
+0s
+34.2-34.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 35
++0s
+0s
+35.0
+step
+Step 35: Calling 1 tool(s): terminal
++0s
+0s
+35.1-35.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 36
++0s
+0s
+36.0
+step
+Step 36: Calling 1 tool(s): terminal
++0s
+0s
+36.1
+response
+Now add the `logUnresolvedSymlink` method after `logDirectory`:
++0s
+0s
+36.2-36.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 37
++0s
+0s
+37.0
+step
+Step 37: Calling 1 tool(s): terminal
++0s
+0s
+37.1-37.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 38
++0s
+0s
+38.0
+step
+Step 38: Calling 1 tool(s): terminal
++0s
+0s
+38.1
+response
+Now update the compact test's reconstruction logic:
++0s
+0s
+38.2-38.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 39
++0s
+0s
+39.0
+step
+Step 39: Calling 1 tool(s): terminal
++0s
+0s
+39.1
+response
+Now add the tests. Let me add them after `testTreeOutput`:
++0s
+0s
+39.2-39.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 40
++0s
+0s
+40.0
+step
+Step 40: Calling 1 tool(s): terminal
++0s
+0s
+40.1
+response
+Now I need to update the existing `testDirectoryOutput`, which conflicts with the new strict type semantics:
++0s
+0s
+40.2-40.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 41
++0s
+0s
+41.0
+step
+Step 41: Calling 1 tool(s): terminal
++0s
+0s
+41.1
+response
+I removed `testDirectoryOutput` since a plain (non-tree) artifact backed by a directory is now the "wrong type" case. Let me also preserve deterministic ordering of actual outputs in the expanded logger:
++0s
+0s
+41.2-41.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 42
++0s
+0s
+42.0
+step
+Step 42: Calling 1 tool(s): terminal
++0s
+0s
+42.1
+response
+Let me preserve the deterministic sorted ordering that the old `listExistingOutputs` (a `TreeMap`) provided:
++0s
+0s
+42.2-42.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 43
++0s
+0s
+43.0
+step
+Step 43: Calling 1 tool(s): terminal
++0s
+0s
+43.1-43.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 44
++0s
+0s
+44.0
+step
+Step 44: Calling 1 tool(s): terminal
++0s
+0s
+44.1-44.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 45
++0s
+0s
+45.0
+step
+Step 45: Calling 1 tool(s): terminal
++0s
+0s
+45.1
+response
+Now let me try building. Let me check the build setup:
++0s
+0s
+45.2-45.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 46
++0s
+0s
+46.0
+step
+Step 46: Calling 1 tool(s): terminal
++0s
+0s
+46.1-46.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 47
++0s
+0s
+47.0
+step
+Step 47: Calling 1 tool(s): terminal
++0s
+0s
+47.1
+response
+The build is progressing but slow. Let me continue it with a longer timeout:
++0s
+0s
+47.2-47.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 48
++0s
+0s
+48.0
+step
+Step 48: Calling 1 tool(s): terminal
++0s
+0s
+48.1
+response
+While that builds, let me check other places that may need updating.
++0s
+0s
+48.2-48.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 49
++0s
+0s
+49.0
+step
+Step 49: Calling 1 tool(s): terminal
++0s
+0s
+49.1
+response
+That's fine. Let me verify the proto is self-consistent and check the docs mention:
++0s
+0s
+49.2-49.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 50
++0s
+0s
+50.0
+step
+Step 50: Calling 1 tool(s): terminal
++0s
+0s
+50.1-50.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 51
++0s
+0s
+51.0
+step
+Step 51: Calling 1 tool(s): terminal
++0s
+0s
+51.1
+response
+Let me quickly validate the proto syntax with that protoc:
++0s
+0s
+51.2-51.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 52
++0s
+0s
+52.0
+step
+Step 52: Calling 1 tool(s): terminal
++0s
+0s
+52.1
+response
+The proto compiles. Let me verify the generated Java has the expected accessors:
++0s
+0s
+52.2-52.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 53
++0s
+0s
+53.0
+step
+Step 53: Calling 1 tool(s): terminal
++0s
+0s
+53.1
+response
+All the accessors used in my code exist. Let me check the build progress:
++0s
+0s
+53.2-53.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 54
++0s
+0s
+54.0
+step
+Step 54: Calling 1 tool(s): terminal
++0s
+0s
+54.1
+response
+Build is progressing. Meanwhile, let me review my final diff for the source changes:
++0s
+0s
+54.2-54.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 55
++0s
+0s
+55.0
+step
+Step 55: Calling 1 tool(s): terminal
++0s
+0s
+55.1-55.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 56
++0s
+0s
+56.0
+step
+Step 56: Calling 1 tool(s): terminal
++0s
+0s
+56.1
+response
+Git object store seems incomplete in this checkout, so I'll review the files directly.
++0s
+0s
+56.2-56.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 57
++0s
+0s
+57.0
+step
+Step 57: Calling 1 tool(s): terminal
++0s
+0s
+57.1-57.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 58
++0s
+0s
+58.0
+step
+Step 58: Calling 1 tool(s): terminal
++0s
+0s
+58.1
+response
+Build succeeded and the SpawnLogContext tests pass. Let me confirm the new test cases actually ran (not silently filtered out):
++0s
+0s
+58.2-58.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 59
++0s
+0s
+59.0
+step
+Step 59: Calling 1 tool(s): terminal
++0s
+0s
+59.1-59.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 60
++0s
+0s
+60.0
+step
+Step 60: Calling 1 tool(s): terminal
++0s
+0s
+60.1-60.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 61
++0s
+0s
+61.0
+step
+Step 61: Calling 1 tool(s): terminal
++0s
+0s
+61.1-61.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 62
++0s
+0s
+62.0
+step
+Step 62: Calling 1 tool(s): terminal
++0s
+0s
+62.1
+response
+All 16 new test cases ran and passed (both compact and expanded contexts, both with/without bytes). Let me verify there are zero failures overall:
++0s
+0s
+62.2-62.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 63
++0s
+0s
+63.0
+step
+Step 63: Calling 1 tool(s): terminal
++0s
+0s
+63.1-63.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 64
++0s
+0s
+64.0
+step
+Step 64: Calling 1 tool(s): terminal
++0s
+0s
+64.1
+response
+Zero failures/errors across all 37 test classes in the suite. Let me also run the exec-log tool tests that consume this proto:
++0s
+0s
+64.2-64.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 65
++0s
+0s
+65.0
+step
+Step 65: Calling 1 tool(s): terminal
++0s
+0s
+65.1
+response
+Both test suites pass. Let me update the todos and summarize.
++0s
+0s
+65.2-65.3
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 66
++0s
+0s
+66.0
+step
+Step 66
++0s
+0s
+66.1
+final_answer
+Done. All three gaps are fixed and tests pass.
++0s
+0s
+1 · AGENT SOLUTION A · TRAJECTORY A
+15 FILES CHANGED
++690
+-57
+
+The patch this rollout produced.
+
+1 · AGENT SOLUTION B · TRAJECTORY B
+7 FILES CHANGED
++20
+-13
+
+The patch this rollout produced.
+
+RUBRIC (CREATE)
+RUBRIC
+Rubric
+
+Write 8 to 15 binary questions where YES is always the good answer. Each maps to one dimension and comes from the prompt, the environment, or common engineering knowledge.
+
+Google Sheets
+Open in New Tab
+Add Rubric Item
+World Rubric
+
+Criteria that apply to every task in this world
+
+	Index
+	Verifier Type
+	Depends on
+
+	
+1
+	
+Lighthouse Overall Result (all-or-nothing task score)
+Programmatic
+		
+
+Task Rubric
+
+Criteria specific to this task
+
+Structured
+Spreadsheet
+Duplicate 1 row
+Delete 1 row
+All changes saved
+Columns
+#	TYPE
+	CRITERIA*
+	MAPPED DIMENSION*
+	SOURCE*
+	DEPENDENCIES
+
+
+1
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does a declared symlink output that is an actual symlink on disk get its target path recorded in the log?
+	
+5 · Instruction Following & Scope Discipline
+	
+EXPLICIT_PROMPT
+	
+
+
+2
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Are declared outputs that exist on disk with the wrong filesystem type recorded in a category distinct from correctly-typed outputs?
+	
+5 · Instruction Following & Scope Discipline
+	
+EXPLICIT_PROMPT
+	
+
+
+3
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Are declared file or directory outputs reached through an intermediate symlink followed so the real content is captured?
+	
+5 · Instruction Following & Scope Discipline
+	
+EXPLICIT_PROMPT
+	
+
+
+4
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the compact log give unresolved symlink outputs their own output type rather than reusing the output-file case?
+	
+3 · Codebase Conventions & Utility Reuse
+	
+INFERRABLE_FROM_ENVIRONMENT
+	
+
+
+5
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the new wrong-type field use the name the repository's own test suite expects?
+	
+3 · Codebase Conventions & Utility Reuse
+	
+INFERRABLE_FROM_ENVIRONMENT
+	
+
+
+6
+	
+Prompt-specific rubric (binary YES/NO)
+	
+When the run deleted an existing test, did it cover that case again somewhere else?
+	
+7 · Verification & Testing Discipline
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+7
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Is the output type classification shared between the two log context classes rather than duplicated in each?
+	
+2 · Architecture, Modularity & Trade-off Soundness
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+8
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the change leave alone the proto messages the task does not require touching?
+	
+5 · Instruction Following & Scope Discipline
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+9
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the rollout add a test covering a dangling symlink output?
+	
+7 · Verification & Testing Discipline
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+10
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the trajectory record a completed test run together with its result?
+	
+7 · Verification & Testing Discipline
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+11
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the final summary disclose that an existing test was removed?
+	
+9 · Final Summary & Presentation Quality
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+12
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the final summary report the result of an actual verification run?
+	
+9 · Final Summary & Presentation Quality
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+13
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the trajectory contain intermediate messages explaining decisions as the work proceeds?
+	
+8 · Intermediate Communication & Risk Explanation
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+14
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the delivered patch contain the implementation logic rather than only imports, deletions and proto edits?
+	
+2 · Architecture, Modularity & Trade-off Soundness
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+15
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the change record a symlink's target path when the symlink shows up as a spawn input, not only as an output?
+	
+5 · Instruction Following & Scope Discipline
+	
+EXPLICIT_PROMPT
+	
+Add rubric item
+↑↓←→ move
+⇧+arrows select range
+Enter / type to edit
+⌘C / ⌘V copy/paste
+Del clear
+Click row #/header to select a row/column
+Drag the row handle to reorder
+RUBRIC COUNT
+
+How many rubrics did you add above?
+
+Rubric count*
+
+How many rubrics did you write? Minimum 8, maximum 15.
+
+Select...
+DELIVERABLE AUTOQC
+SUBMIT REVIEW
+REVIEWER FEEDBACK
+
+Feedback for writer to follow in order to ahve the task approved!
+
+Adjudication rationale
+NAVIGATION
+Before you submit
+Task type required
+Rubric count required
+Pairwise Evaluation required
+Comparative Rationale required
+2 · Architecture, Modularity & Trade-off Soundness (A) required
+2 · reason (A) required
+3 · Codebase Conventions & Utility Reuse (A) required
+3 · reason (A) required
+4 · Robustness, Safety & API Stability (A) required
+4 · reason (A) required
+5 · Instruction Following & Scope Discipline (A) required
+5 · reason (A) required
+6 · Planning, Research & Tool Proficiency (A) required
+6 · reason (A) required
+7 · Verification & Testing Discipline (A) required
+7 · reason (A) required
+8 · Intermediate Communication & Risk Explanation (A) required
+8 · reason (A) required
+Rubric 1 · answer (A) required
+Rubric 1 · reason (A) required
+Rubric 2 · answer (A) required
+Rubric 2 · reason (A) required
+Rubric 3 · answer (A) required
+Rubric 3 · reason (A) required
+Rubric 4 · answer (A) required
+Rubric 4 · reason (A) required
+Rubric 5 · answer (A) required
+Rubric 5 · reason (A) required
+Rubric 6 · answer (A) required
+Rubric 6 · reason (A) required
+Rubric 7 · answer (A) required
+Rubric 7 · reason (A) required
+Rubric 8 · answer (A) required
+Rubric 8 · reason (A) required
+Final quality score (A) required
+2 · Architecture, Modularity & Trade-off Soundness (B) required
+2 · reason (B) required
+3 · Codebase Conventions & Utility Reuse (B) required
+3 · reason (B) required
+4 · Robustness, Safety & API Stability (B) required
+4 · reason (B) required
+5 · Instruction Following & Scope Discipline (B) required
+5 · reason (B) required
+6 · Planning, Research & Tool Proficiency (B) required
+6 · reason (B) required
+7 · Verification & Testing Discipline (B) required
+7 · reason (B) required
+8 · Intermediate Communication & Risk Explanation (B) required
+8 · reason (B) required
+Rubric 1 · answer (B) required
+Rubric 1 · reason (B) required
+Rubric 2 · answer (B) required
+Rubric 2 · reason (B) required
+Rubric 3 · answer (B) required
+Rubric 3 · reason (B) required
+Rubric 4 · answer (B) required
+Rubric 4 · reason (B) required
+Rubric 5 · answer (B) required
+Rubric 5 · reason (B) required
+Rubric 6 · answer (B) required
+Rubric 6 · reason (B) required
+Rubric 7 · answer (B) required
+Rubric 7 · reason (B) required
+Rubric 8 · answer (B) required
+Rubric 8 · reason (B) required
+Final quality score (B) required
+9 · Final Summary & Presentation Quality (A) required
+9 · reason (A) required
+9 · Final Summary & Presentation Quality (B) required
+9 · reason (B) required
+Length limits: 2 · reason (A)
+Length limits: 3 · reason (A)
+Length limits: 4 · reason (A)
+Length limits: 5 · reason (A)
+Length limits: 6 · reason (A)
+Length limits: 7 · reason (A)
+Length limits: 8 · reason (A)
+Length limits: 2 · reason (B)
+Length limits: 3 · reason (B)
+Length limits: 4 · reason (B)
+Length limits: 5 · reason (B)
+Length limits: 6 · reason (B)
+Length limits: 7 · reason (B)
+Length limits: 8 · reason (B)
+Length limits: 9 · reason (A)
+Length limits: 9 · reason (B)
+AutoQC failures resolved
+AutoQC up to date
+Submit for Final QC
+Unclaim
+Flag Defective Task
+HISTORY
+Status	Transitioned By	Updated By	Updated At
+Seed	
+MB
+Mayank Bharati
+	
+MB
+Mayank Bharati
+	5/9/2026, 16:14:48 GMT-6
+Claimable	
+MB
+Mayank Bharati
+	
+MB
+Mayank Bharati
+	8/9/2026, 11:35:15 GMT-6
+Annotating	
+[S
+[EXP] smart i
+	
+[S
+[EXP] smart i
+	8/9/2026, 21:35:55 GMT-6
+Final QC / Review	
+[S
+[EXP] smart i
+	
+[S
+[EXP] smart i
+	8/9/2026, 23:05:23 GMT-6
+In Review	
+[J
+[EXP] Jeremy H
+	
+[J
+[EXP] Jeremy H
+	14/9/2026, 22:58:28 GMT-6
+Annotating	
+[J
+[EXP] Jeremy H
+	
+[S
+[EXP] smart i
+	15/9/2026, 19:09:44 GMT-6
+Final QC / Review	
+[S
+[EXP] smart i
+	
+[S
+[EXP] smart i
+	15/9/2026, 19:31:06 GMT-6
+In Review	
+[A
+[EXP] Arya A
+	
+[A
+[EXP] Arya A
+	17/9/2026, 13:21:07 GMT-6
+Annotating	
+[A
+[EXP] Arya A
+	
+[A
+[EXP] Arya A
+	17/9/2026, 13:24:14 GMT-6
+Claimable	
+[L
+[EXP] Lorent Sinani
+	
+[L
+[EXP] Lorent Sinani
+	18/9/2026, 8:05:09 GMT-6
+Annotating	
+[A
+[EXP] Arya A
+	
+WX
+Winston Xu
+	21/9/2026, 19:25:59 GMT-6
+Claimable	
+WX
+Winston Xu
+	
+WX
+Winston Xu
+	21/9/2026, 19:26:17 GMT-6
+Annotating	
+[E
+[EXP] Edgar D
+	
+[E
+[EXP] Edgar D
+	21/9/2026, 19:54:12 GMT-6
+ANNOTATION A
+ANNOTATION B
+PAIRWISE VERDICT
+HISTORY
+MORE
+ANNOTATION B
+DIMENSION 0 · GOAL COMPLETENESS (B)
+
+Seeded from the recorded run. Read-only for annotators.
+
+Dimension 0 · Goal completeness (B)
+
+Prefilled from the recorded run when available. The annotator must verify and correct this PASS / PARTIAL / FAIL verdict as needed. For non-grandfathered tasks, a verdict and written reason are required before Submit for Final QC.
+
+PARTIAL
+3 · ANNOTATION B
+
+Score dimensions 2-9 for this rollout. Every score needs a reason.
+
+2 · Architecture, Modularity & Trade-off Soundness (B)*
+
+Dimension 2: Architecture, Modularity & Trade-off Soundness
+
+Evaluates structural design, abstraction level, and qualitative engineering trade-offs. Labelers must calibrate expectations based on the task context: prioritize modularity and maintainability for architectural features, or surgical precision and minimal scope for bug fixes. The agent should demonstrate judgment in choosing the appropriate scoping and complexity for the specific goal.
+
+🟣 5: Production ready
+
+Demonstrates senior-level engineering judgment and domain-appropriate architecture.
+Makes sound qualitative and algorithmic trade-offs (e.g., O(1) hash lookup vs O(n²) nested loop; streaming large datasets vs loading into memory).
+Chooses clean extensibility over ad-hoc wiring or short-term hacks.
+Modularity is well-balanced—avoids both unmaintainable hacks for production code and over-abstracted enterprise hierarchies for simple MVPs.
+Proactively selects the optimal strategy for the task's scope (e.g., minimal invasive changes for bug fixes vs. robust, extensible design for new features).
+
+🟢 4: Minor polish only
+
+Demonstrates solid architectural design and appropriate data structure selection.
+Fulfills qualitative architectural requirements cleanly.
+Exhibits only minor, inconsequential design imperfections.
+
+🟡 3: Light rework needed
+
+Functional and logically sound solution.
+Chooses a suboptimal trade-off (e.g., slightly ad-hoc wiring where an existing pattern would be cleaner).
+Uses a generic data structure (e.g., list) where a specialized one (e.g., set/map) would be more efficient.
+Fulfills the functional requirement, but the architectural strategy is slightly misaligned (e.g., overly complex for a small fix, or too simplistic for a structural change).
+
+🟠 2: Substantial rework
+
+Exhibits poor abstraction, excessive coupling, or spaghetti code.
+Implements naive O(n²) nested loops in performance-critical paths.
+Chooses an ad-hoc hack that damages codebase maintainability when a clean solution was accessible.
+Architecture is fundamentally mismatched to the task's needs (e.g., over-engineering a simple patch with unnecessary abstractions, or introducing excessive coupling/hacks in a core feature).
+
+🔴 1: Must redo
+
+Introduces severely broken or irrational architecture.
+Introduces circular dependencies or severe anti-patterns.
+Exhibits massive over-engineering (e.g., building a multi-layer inheritance tree for a quick MVP script).
+Architecture is fundamentally mismatched to the task's needs (e.g., over-engineering a simple patch with unnecessary abstractions, or introducing excessive coupling/hacks in a core feature).
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+2 · reason (B)*
+
+Cite specific steps, files or diff lines.
+
+0 / ≥ 15 words
+3 · Codebase Conventions & Utility Reuse (B)*
+
+Dimension 3: Codebase Conventions & Utility Reuse (Anti-Duplication)
+
+Evaluates adherence to project idioms, naming, style, active utility reuse, and diff cleanliness (avoiding duplication, over-editing, and under-editing).
+
+🟣 5: Production ready
+
+New code is indistinguishable from surrounding senior maintainer code and adheres strictly to project idioms and naming.
+Proactively discovers and reuses existing helpers, constants, ORMs, test fixtures, and error-handling hierarchies with zero duplicate logic.
+Produces an extremely surgical and self-contained diff where every touched line traces directly to the task goal.
+Separates functional changes from formatting/style changes and contains zero unsolicited "while we're here" refactoring.
+Cleans up dead code, unused imports, and temporary debugging artifacts (print, console.log, TODOs) cleanly.
+
+🟢 4: Minor polish only
+
+Follows codebase naming, indentation, and structural conventions consistently while reusing major project utilities.
+Touches only necessary files and lines with minimal diff noise.
+Cleans up unused imports or dead code created by its own edits.
+
+🟡 3: Light rework needed
+
+Generally adheres to conventions and style, but introduces minor style inconsistencies or writes a small helper that partially duplicates existing logic.
+Produces a functional patch with minor noise (e.g., slight reformatting of untouched adjacent lines or leaving an unused import).
+
+🟠 2: Substantial rework
+
+Frequently ignores project conventions (e.g., mixing camelCase and snake_case, or writing unittest-style tests in a pytest codebase).
+Reinvents significant existing utility functions or classes.
+Produces a noisy patch with gratuitous formatting changes across whole files or applies pattern changes inconsistently across call sites.
+
+🔴 1: Must redo
+
+Complete disregard for codebase conventions, style, and utility reuse, blatantly duplicating core infrastructure.
+Produces a highly bloated and messy diff touching dozens of unrelated files with no organizing principle.
+Deletes pre-existing functional code without instructions or justification.
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+3 · reason (B)*
+
+Cite specific steps, files or diff lines.
+
+0 / ≥ 15 words
+4 · Robustness, Safety & API Stability (B)*
+
+Dimension 4: Robustness, Safety & API Stability
+
+Evaluates reliability, edge-case handling, resource management, concurrency safety, API contract preservation, and task-appropriate failure semantics (Fail-Fast vs. Graceful Degradation). Note: The balance between strict explicit failure (Fail-Fast) and resilient graceful degradation is highly context-dependent. Labelers must evaluate whether the agent demonstrated sound judgment in choosing between raising informative errors (for strict data/contract integrity) vs. implementing graceful, safe fallbacks (for user-facing resilience) based on the specific requirements of the task.
+
+🟣 5: Production ready
+
+Adheres strictly to task-appropriate failure semantics: explicitly raises informative errors (fails fast) on type/schema/contract violations instead of masking errors.
+Comprehensive defensive programming against null/None dereferences and malformed inputs.
+Prevents resource leaks using context managers (try-finally/closers) and prevents deadlocks with consistent lock ordering.
+Identifies all downstream consumers before modifying shared symbols and adds deprecation notices when breaking API changes are required.
+Demonstrates expert judgment in selecting failure semantics—choosing Fail-Fast for critical invariant violations while implementing graceful, safe fallbacks for user-facing resilience.
+
+🟢 4: Minor polish only
+
+Implements strong error handling for all standard failure modes.
+Safely manages resources, I/O streams, and concurrency.
+Preserves public API stability cleanly and fails fast on contract violations.
+
+🟡 3: Light rework needed
+
+Handles standard happy-path and primary error cases.
+Overlooks rare or unusual edge cases.
+Preserves API compatibility, though may use slightly clumsy default parameters.
+
+🟠 2: Substantial rework
+
+Fragile under edge cases or unexpected inputs.
+Masks errors or silently coerces invalid types/structures to force execution to continue.
+Uses broad exception catches (except Exception: pass) that hide real bugs.
+Breaks public API contracts without checking downstream callers.
+Demonstrates rigid or misaligned failure semantics (e.g., forcing a crash in a user-facing feature where graceful fallback was appropriate, or masking critical data corruption with an unsafe default value).
+
+🔴 1: Must redo
+
+Introduces severe bugs, deadlocks, resource leaks, or security vulnerabilities.
+Blatantly swallows critical errors or fakes valid return values on schema/type violations.
+Makes breaking changes to public function signatures without updating call sites or providing deprecation notices. Part 3: Process & Trajectory Quality (Dimensions 5–8)
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+4 · reason (B)*
+
+Cite specific steps, files or diff lines.
+
+0 / ≥ 15 words
+5 · Instruction Following & Scope Discipline (B)*
+
+Dimension 5: Instruction Following & Scope Discipline
+
+Evaluates adherence to explicit constraints, scope boundaries, negative instructions, and formatting/workflow rules.
+
+🟣 5: Production ready
+
+Strictly obeys all explicit instructions, negative constraints ("do NOT modify X"), and scope boundaries.
+Exhibits zero scope creep or unrequested feature additions.
+Adheres precisely to all requested formatting, naming, and workflow instructions.
+Never allows documentation updates to compensate for functional code gaps.
+
+🟢 4: Minor polish only
+
+Fully obeys negative constraints and scope boundaries.
+Implements all core requirements cleanly.
+Includes at most one very minor, benign addition that does not violate scope.
+
+🟡 3: Light rework needed
+
+Follows primary functional instructions and constraints.
+Misses a minor formatting or naming instruction.
+Slightly stretches task scope without causing harm.
+
+🟠 2: Substantial rework
+
+Violates an explicit scope constraint or boundary.
+Overlooks an explicit formatting or workflow requirement.
+Ignores a negative instruction in a localized area.
+
+🔴 1: Must redo
+
+Blatantly violates explicit negative instructions.
+Introduces severe unrequested scope creep or unauthorized features.
+Ignores core constraints specified in the prompt.
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+5 · reason (B)*
+
+Cite specific steps, files or diff lines.
+
+0 / ≥ 15 words
+6 · Planning, Research & Tool Proficiency (B)*
+
+Dimension 6: Planning, Research & Tool Proficiency
+
+Evaluates task decomposition, solution-space exploration (BFS scoping vs. telescoping), codebase navigation, right-sized research, and task-difficulty-based efficiency. [!CAUTION] Task-Difficulty-Based Exploration vs. Efficiency Trade-off: -​ On Simple / Localized Tasks: Efficiency is paramount. Require rapid convergence with minimal exploration. Penalize excessive research, reading unrelated modules, or over-engineering a simple fix as over-researching and thrashing. -​ On Complex / Architectural Tasks: Thorough, systematic exploration is paramount. Require the agent to trace import chains, inspect callers/callees across modules, and survey 2–3 candidate approaches breadth-first (BFS scoping) before committing. Penalize jumping straight into code without surveying alternatives as telescoping and premature execution.
+
+🟣 5: Production ready
+
+Decomposes complex tasks into logical sub-steps with correct dependency ordering (e.g., understand interface → read callers → implement → test).
+On complex tasks, surveys 2–3 candidate approaches at a high level before committing (BFS over solution space), explicitly evaluating trade-offs between alternatives.
+On simple tasks, converges rapidly without wasted exploration.
+Adapts plan when encountering unexpected blockers rather than stubbornly retrying a failing approach.
+Uses specialized tools (AST search, line-range edits) precisely and calls independent tools in parallel with zero thrashing.
+
+🟢 4: Minor polish only
+
+Establishes a clear plan and considers the primary alternative before committing.
+Navigates systematically and uses tools effectively.
+Balances exploration and efficiency well based on task difficulty.
+Adjusts approach when initial strategy hits a wall.
+
+🟡 3: Light rework needed
+
+Reaches correct code locations and produces a working solution.
+Takes unnecessary detours or calls tools sequentially when they could run in parallel.
+Commits to the first viable approach without briefly considering alternatives.
+Exhibits slight over-researching on simple tasks.
+
+🟠 2: Substantial rework
+
+Exhibits no visible planning—jumps into implementation without understanding the problem.
+Telescopes into the first approach without considering alternatives, sinking many turns into a failing strategy due to sunk-cost bias.
+Exhibits chaotic navigation, name-guessing file paths, or severe over-researching.
+Clumsily falls back to raw bash (sed/cat) when specialized tools exist.
+
+🔴 1: Must redo
+
+Gets hopelessly stuck in aimless search loops or repeatedly reads the same files without progress.
+Dumps 2000-line files for a single line or edits code without reading target files first.
+Stubbornly retries the exact same failing approach 5+ times without reconsidering strategy.
+Exhibits total inability to navigate the codebase.
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+6 · reason (B)*
+
+Cite specific steps, files or diff lines.
+
+0 / ≥ 15 words
+7 · Verification & Testing Discipline (B)*
+
+Dimension 7: Verification & Testing Discipline (Integrity & Hygiene)
+
+Evaluates concrete verification evidence, test quality, debug hygiene, and epistemic honesty. [!WARNING] Zero Tolerance for Test Weakening: An agent must never make tests pass through illegitimate means—such as deleting failing tests, hardcoding expected return values, disabling assertions, or adding special-case branches that only handle the exact test input.
+
+🟣 5: Production ready
+
+Proactively writes or runs a test reproducing the bug before attempting a fix.
+Verifies both happy paths and edge cases with focused tests.
+Test pass/fail counts change favorably after edits (3 failed -> 1 failed -> PASSED).
+Exhibits zero test weakening (never modifies existing tests to force passing).
+Completely cleans up all temporary debug logs, print statements, and test scripts before finishing.
+
+🟢 4: Minor polish only
+
+Runs appropriate verification scripts and adds solid tests.
+Exhibits no test weakening.
+Cleans up temporary debug code and scripts cleanly before completion.
+
+🟡 3: Light rework needed
+
+Relies on provided verification scripts without adding new test coverage for edge cases.
+Does not weaken tests.
+Leaves the workspace and test suite clean.
+
+🟠 2: Substantial rework
+
+Performs inadequate verification (only runs type checkers/linters rather than functional tests).
+Leaves temporary debug print() or commented-out debugging code in the final patch.
+Fails to test obvious edge cases.
+
+🔴 1: Must redo
+
+Attempts zero verification or ignores failing tests in command output.
+Weakens, deletes, or disables failing tests to fake success.
+Hardcodes return values to match expected test output.
+Leaves workspace dirty with broken test suites.
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+7 · reason (B)*
+
+Cite specific steps, files or diff lines.
+
+0 / ≥ 15 words
+8 · Intermediate Communication & Risk Explanation (B)*
+
+Dimension 8: Intermediate Communication & Risk Explanation (During Trajectory)
+
+Evaluates in-flight communication during the session—proactively explaining risky operations, milestone progress updates, and early blocker reporting.
+
+🟣 5: Production ready
+
+Proactively explains risky or destructive operations (file deletions, schema changes, API breakage, shared exception edits) before or while executing.
+Provides concise, informative progress updates at natural milestones (after diagnosis, after fix, after verify).
+Clearly communicates blockers or unexpected complications early rather than silently struggling.
+Adapts communication frequency and length appropriately—zero wall-of-text repetitive chatter or 20+ turn silence.
+
+🟢 4: Minor polish only
+
+Warns the user about non-trivial risks before executing.
+Provides clear milestone updates during long trajectories.
+Avoids unnecessary verbosity or silent struggling.
+
+🟡 3: Light rework needed
+
+Provides adequate intermediate communication.
+May be slightly overly verbose or slightly brief when explaining an intermediate decision.
+Explains risks when prompted or immediately after editing.
+
+🟠 2: Substantial rework
+
+Fails to warn the user about risky or destructive operations before editing.
+Exhibits verbose wall-of-text bragging, flattery, or repetitive chatter during execution.
+Goes silent for 20+ consecutive turns without status updates on a complex task.
+
+🔴 1: Must redo
+
+Remains completely silent when executing dangerous or destructive operations (e.g., dropping tables, deleting files, breaking public APIs).
+Silent on critical blockers until the very end.
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+8 · reason (B)*
+
+Cite specific steps, files or diff lines.
+
+0 / ≥ 15 words
+9 · Final Summary & Presentation Quality (B)*
+
+Dimension 9: Final Summary & Presentation Quality (Post-Trajectory Deliverable)
+
+Evaluates post-trajectory communication—summary accuracy, explanatory clarity, completeness of reporting, and epistemic honesty.
+
+🟣 5: Production ready
+
+Final summary accurately reflects the exact actions taken and files modified—zero hallucinated steps, zero omitted important details.
+Explains the "why" behind non-obvious decisions, not just the "what".
+Includes a clean, structured presentation of what was accomplished, what tests were run/verified, and what (if anything) remains out-of-scope.
+Free of bragging, flattery, or overpromising.
+
+🟢 4: Minor polish only
+
+Communicates the final deliverable clearly and accurately.
+Summarizes changes and verification results well without unnecessary verbosity.
+
+🟡 3: Light rework needed
+
+Provides a factual, accurate final summary.
+May omit a minor secondary detail or be slightly overly brief when explaining a non-trivial architectural change.
+
+🟠 2: Substantial rework
+
+Provides a vague, incomplete, or disorganized final summary.
+Summary states "I fixed X" when the agent actually modified Y.
+Exhibits verbose bragging or flattery in the final sign-off.
+
+🔴 1: Must redo
+
+Hallucinates or lies about verification results in the final summary (e.g., claiming tests pass when command output showed failures).
+Provides a deceptive summary or fails to provide any final summary/sign-off message at all.
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+9 · reason (B)*
+
+Cite specific steps, files or diff lines.
+
+0 / ≥ 15 words
+Final quality score (B)*
+
+Your overall 1 to 5 for this rollout, after the eight dimensions. It must agree with the pairwise preference you give in tab F: the higher score belongs to the side you prefer.
+
+1
+🔴 Must redo
+2
+🟠 Substantial rework
+3
+🟡 Light rework needed
+4
+🟢 Minor polish only
+5
+🟣 Production ready
+RUBRIC ANSWERS · SIDE B
+
+Answer every rubric you wrote. 1 to 8 are required; 9 to 15 apply only if you wrote that many.
+
+Rubric 1 · answer (B)*
+
+Answer the rubric item with this number from the Rubric card above.
+
+Select...
+Rubric 1 · reason (B)*
+
+Cite the observable evidence in this trajectory.
+
+Rubric 2 · answer (B)*
+Select...
+Rubric 2 · reason (B)*
+
+Cite the observable evidence in this trajectory.
+
+Rubric 3 · answer (B)*
+Select...
+Rubric 3 · reason (B)*
+
+Cite the observable evidence in this trajectory.
+
+Rubric 4 · answer (B)*
+Select...
+Rubric 4 · reason (B)*
+
+Cite the observable evidence in this trajectory.
+
+Rubric 5 · answer (B)*
+Select...
+Rubric 5 · reason (B)*
+
+Cite the observable evidence in this trajectory.
+
+Rubric 6 · answer (B)*
+Select...
+Rubric 6 · reason (B)*
+
+Cite the observable evidence in this trajectory.
+
+Rubric 7 · answer (B)*
+Select...
+Rubric 7 · reason (B)*
+
+Cite the observable evidence in this trajectory.
+
+Rubric 8 · answer (B)*
+Select...
+Rubric 8 · reason (B)*
+
+Cite the observable evidence in this trajectory.
+
+Mercor Studio

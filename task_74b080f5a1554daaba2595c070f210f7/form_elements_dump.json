@@ -1,0 +1,528 @@
+{
+  "textareas": [
+    {
+      "index": 0,
+      "id": "",
+      "name": "",
+      "label": "Adjudication rationale",
+      "placeholder": "",
+      "valueLength": 980,
+      "valuePreview": "Thanks, solid work here, the dimension reasoning i"
+    },
+    {
+      "index": 1,
+      "id": "",
+      "name": "",
+      "label": "2 \u00b7 reason (A)*",
+      "placeholder": "",
+      "valueLength": 611,
+      "valuePreview": "A restructures the output loop correctly in both c"
+    },
+    {
+      "index": 2,
+      "id": "",
+      "name": "",
+      "label": "3 \u00b7 reason (A)*",
+      "placeholder": "",
+      "valueLength": 980,
+      "valuePreview": "On diff shape, A's patch is larger than the change"
+    },
+    {
+      "index": 3,
+      "id": "",
+      "name": "",
+      "label": "4 \u00b7 reason (A)*",
+      "placeholder": "",
+      "valueLength": 531,
+      "valuePreview": "The three behaviours work, and A handles dangling "
+    },
+    {
+      "index": 4,
+      "id": "",
+      "name": "",
+      "label": "5 \u00b7 reason (A)*",
+      "placeholder": "",
+      "valueLength": 477,
+      "valuePreview": "All three requested behaviours are delivered: syml"
+    },
+    {
+      "index": 5,
+      "id": "",
+      "name": "",
+      "label": "6 \u00b7 reason (A)*",
+      "placeholder": "",
+      "valueLength": 543,
+      "valuePreview": "A spent 107 terminal calls across a 323-entry log "
+    },
+    {
+      "index": 6,
+      "id": "",
+      "name": "",
+      "label": "7 \u00b7 reason (A)*",
+      "placeholder": "",
+      "valueLength": 671,
+      "valuePreview": "A authored the broader suite by a clear margin, ad"
+    },
+    {
+      "index": 7,
+      "id": "",
+      "name": "",
+      "label": "8 \u00b7 reason (A)*",
+      "placeholder": "",
+      "valueLength": 502,
+      "valuePreview": "A's 323-entry log is 108 step markers, 107 tool ca"
+    },
+    {
+      "index": 8,
+      "id": "",
+      "name": "",
+      "label": "9 \u00b7 reason (A)*",
+      "placeholder": "",
+      "valueLength": 502,
+      "valuePreview": "A's 946-character summary is accurate and organise"
+    },
+    {
+      "index": 9,
+      "id": "",
+      "name": "",
+      "label": "2 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 663,
+      "valuePreview": "\"B extracts the classification into one shared hel"
+    },
+    {
+      "index": 10,
+      "id": "",
+      "name": "",
+      "label": "3 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 622,
+      "valuePreview": "B's names line up with what the package already im"
+    },
+    {
+      "index": 11,
+      "id": "",
+      "name": "",
+      "label": "4 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 758,
+      "valuePreview": "B's compact log keeps every output kind distinguis"
+    },
+    {
+      "index": 12,
+      "id": "",
+      "name": "",
+      "label": "5 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 711,
+      "valuePreview": "All three behaviours are there and I checked each "
+    },
+    {
+      "index": 13,
+      "id": "",
+      "name": "",
+      "label": "6 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 562,
+      "valuePreview": "B reached a wider restructure than trajectory A in"
+    },
+    {
+      "index": 14,
+      "id": "",
+      "name": "",
+      "label": "7 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 643,
+      "valuePreview": "B ran its work to a recorded result: entry 194 of "
+    },
+    {
+      "index": 15,
+      "id": "",
+      "name": "",
+      "label": "8 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 659,
+      "valuePreview": "B's 2654-character summary is the strongest artifa"
+    },
+    {
+      "index": 16,
+      "id": "",
+      "name": "",
+      "label": "9 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 659,
+      "valuePreview": "B's 2654-character summary is the strongest artifa"
+    },
+    {
+      "index": 17,
+      "id": "",
+      "name": "",
+      "label": "Rubric 1 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 434,
+      "valuePreview": "Yes. I found the code in B's transcript rather tha"
+    },
+    {
+      "index": 18,
+      "id": "",
+      "name": "",
+      "label": "Rubric 2 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 314,
+      "valuePreview": "No. While Model B introduces invalid_output_path i"
+    },
+    {
+      "index": 19,
+      "id": "",
+      "name": "",
+      "label": "Rubric 3 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 371,
+      "valuePreview": "Yes. getOutputType reaches path.isFile() and path."
+    },
+    {
+      "index": 20,
+      "id": "",
+      "name": "",
+      "label": "Rubric 4 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 221,
+      "valuePreview": "B adds int32 unresolved_symlink_id to the Output o"
+    },
+    {
+      "index": 21,
+      "id": "",
+      "name": "",
+      "label": "Rubric 5 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 186,
+      "valuePreview": "B names the field invalid_output_path, matching th"
+    },
+    {
+      "index": 22,
+      "id": "",
+      "name": "",
+      "label": "Rubric 6 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 392,
+      "valuePreview": "In step 39, Model B added replacement test cases i"
+    },
+    {
+      "index": 23,
+      "id": "",
+      "name": "",
+      "label": "Rubric 7 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 209,
+      "valuePreview": "B puts the classification in one place, getOutputT"
+    },
+    {
+      "index": 24,
+      "id": "",
+      "name": "",
+      "label": "Rubric 8 \u00b7 reason (B)*",
+      "placeholder": "",
+      "valueLength": 227,
+      "valuePreview": "B's proto work is confined to the two additions th"
+    },
+    {
+      "index": 25,
+      "id": "",
+      "name": "",
+      "label": "Rubric 9 \u00b7 reason (B)",
+      "placeholder": "",
+      "valueLength": 227,
+      "valuePreview": "B's six new tests cover wrong-type and indirect-th"
+    },
+    {
+      "index": 26,
+      "id": "",
+      "name": "",
+      "label": "Rubric 10 \u00b7 reason (B)",
+      "placeholder": "",
+      "valueLength": 191,
+      "valuePreview": "Entry 194 of B's log records //src/test/java/com/g"
+    },
+    {
+      "index": 27,
+      "id": "",
+      "name": "",
+      "label": "Rubric 11 \u00b7 reason (B)",
+      "placeholder": "",
+      "valueLength": 280,
+      "valuePreview": "\"B's summary raises the removal under \"\"One remova"
+    },
+    {
+      "index": 28,
+      "id": "",
+      "name": "",
+      "label": "Rubric 12 \u00b7 reason (B)",
+      "placeholder": "",
+      "valueLength": 217,
+      "valuePreview": "B reports that ExecTests passes with 37 classes an"
+    },
+    {
+      "index": 29,
+      "id": "",
+      "name": "",
+      "label": "Rubric 13 \u00b7 reason (B)",
+      "placeholder": "",
+      "valueLength": 178,
+      "valuePreview": "B's log carries 28 assistant messages across 65 to"
+    },
+    {
+      "index": 30,
+      "id": "",
+      "name": "",
+      "label": "Rubric 14 \u00b7 reason (B)",
+      "placeholder": "",
+      "valueLength": 517,
+      "valuePreview": "B's recorded patch is 4758 characters: the proto e"
+    },
+    {
+      "index": 31,
+      "id": "",
+      "name": "",
+      "label": "Rubric 15 \u00b7 reason (B)",
+      "placeholder": "",
+      "valueLength": 329,
+      "valuePreview": "No, same gap. B rewrote the output classification "
+    },
+    {
+      "index": 32,
+      "id": "",
+      "name": "",
+      "label": "Comparative Rationale*",
+      "placeholder": "",
+      "valueLength": 2819,
+      "valuePreview": "Both rollouts restructure the output loop the same"
+    },
+    {
+      "index": 33,
+      "id": "",
+      "name": "",
+      "label": "Add Comment",
+      "placeholder": "Write a comment...",
+      "valueLength": 0,
+      "valuePreview": ""
+    }
+  ],
+  "inputs": [
+    {
+      "index": 0,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "Project Anton | SWE Trajectory QC Annotation"
+    },
+    {
+      "index": 1,
+      "tagName": "INPUT",
+      "type": "text",
+      "role": null,
+      "id": "",
+      "name": "",
+      "value": ""
+    },
+    {
+      "index": 2,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "Bug Fix Deterministic"
+    },
+    {
+      "index": 3,
+      "tagName": "INPUT",
+      "type": "text",
+      "role": null,
+      "id": "",
+      "name": "",
+      "value": ""
+    },
+    {
+      "index": 4,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "15"
+    },
+    {
+      "index": 5,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "PARTIAL"
+    },
+    {
+      "index": 6,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "PARTIAL"
+    },
+    {
+      "index": 7,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 8,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "NO"
+    },
+    {
+      "index": 9,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 10,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 11,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 12,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 13,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 14,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 15,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "NO"
+    },
+    {
+      "index": 16,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 17,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 18,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 19,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "YES"
+    },
+    {
+      "index": 20,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "NO"
+    },
+    {
+      "index": 21,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "NO"
+    },
+    {
+      "index": 22,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "B BETTER"
+    },
+    {
+      "index": 23,
+      "tagName": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "id": "",
+      "name": "",
+      "value": "Prompt"
+    }
+  ]
+}

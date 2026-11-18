@@ -1,0 +1,51 @@
+schema_version = "1.1"
+
+[task]
+name = "bazelbuild/bazel"
+description = "## Description  Bazel's spawn execution log does not properly handle symbolic link outputs. There are three related gaps in the current implementation:  1. **Unresolved symlink outputs are not logged correctly.** When a build action declares a symlink as an output (using the syml"
+authors = [{name = "SWE-Bench Extended"}]
+keywords = ["java", "libraries-frameworks", "general"]
+
+[task.metadata]
+deal_id = ""
+
+[metadata]
+version = "1.0"
+author_name = "swe-bench-extended"
+difficulty = "medium"
+difficulty_explanation = "Medium-difficulty Software Engineering task. Opus-4.8 solves it in some but not all offline rollouts (discriminating: both passing and failing trajectories observed), indicating non-trivial but tractable reasoning. Reported pass@8 band: 3/8."
+pass_at_k_gpt_5_5 = ""
+pass_at_k_opus_4_8 = "3/8"
+category = "Debugging and Repair"
+subcategory = "Runtime bug repair"
+objective_labels = ["Fix", "Implement"]
+artifact_labels = ["Codebase"]
+source = "pr"
+tags = ["java", "swe-bench-extended", "pr", "junit"]
+expert_time_estimate = 3600
+junior_time_estimate = 10800
+
+[verifier]
+timeout_sec = 3000.0
+
+[agent]
+timeout_sec = 3000.0
+
+[environment]
+os = "linux"
+workdir = "/workspace/repo"
+build_timeout_sec = 1800.0
+cpus = 1
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
+allow_internet = false
+network_mode = "no-network"
+allowed_hosts = []
+mcp_servers = []
+
+[verifier.env]
+
+[environment.env]
+
+[solution.env]

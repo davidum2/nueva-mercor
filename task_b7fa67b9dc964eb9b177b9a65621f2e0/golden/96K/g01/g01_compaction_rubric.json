@@ -1,0 +1,364 @@
+{
+  "criteria": [
+    {
+      "criteria_id": "criteria_0",
+      "description": "States that the requested feature propagates CableSpan tension from origin to termination using Coulomb capstan friction.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_1",
+      "description": "Identifies `Simbody/include/simbody/internal/CableSpan.h` and `Simbody/src/CableSpan.cpp` as the only files allowed to change.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_2",
+      "description": "States that convex obstacle contact requires a positive wrap angle in `calcCurveSegmentWrapAngle`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_3",
+      "description": "States that positive cable length rate multiplies contacted obstacle entry tension by `exp(mu * theta)`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_4",
+      "description": "States that non-positive `originTension` must apply no body forces in `applyBodyForcesWithFriction`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_5",
+      "description": "States that `calcFrictionPowerDissipation` equals `lengthDot * (terminationTension - originTension)` when all contacted wraps are nonnegative.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_6",
+      "description": "Records that the header declaration for `setObstacleFrictionCoefficient` was added in `Simbody/include/simbody/internal/CableSpan.h`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_7",
+      "description": "Identifies `CurveSegmentData::Instance` as the storage location for `wrapAngle`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_8",
+      "description": "States that `liftCurveFromSurface` resets `wrapAngle` to `NaN`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_9",
+      "description": "States that `CurveSegment::calcWrapAngle` returns `NaN` when the curve segment is not in contact.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_10",
+      "description": "States that `CurveSegment::m_frictionCoefficient` initializes to zero.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_11",
+      "description": "States that `CurveSegment::setFrictionCoefficient` validates the coefficient with `SimTK_ERRCHK1_ALWAYS` before assigning it.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_12",
+      "description": "States that `shootNewGeodesic` integrates wrap angle using trapezoidal integration over successive geodesic knot arc lengths.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_13",
+      "description": "Identifies `integrateWrapAngle` as the callback fed by the analytic boundary-knot callback in `shootNewGeodesic`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_14",
+      "description": "Identifies `integrateWrapAngle` as the callback fed by the implicit geodesic-knot callback in `shootNewGeodesic`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_15",
+      "description": "Identifies `terminationTension` as a field stored in `CableSpan::Impl::TensionProfile`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_16",
+      "description": "Identifies `getDataVel(state).lengthDot` as the cable length rate read by `calcTensionProfile`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_17",
+      "description": "States that `calcTensionProfile` retains entry tension as exit tension for an obstacle without contact.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_18",
+      "description": "States that `CableSpan::Impl::calcTensionAtTermination` calls `realizeVelocity` before its non-positive `originTension` early return.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_19",
+      "description": "States that `applyBodyForcesWithFriction` forms obstacle moment arms by subtracting the obstacle body's Ground origin from the Ground contact positions `X_GP` and `X_GQ`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_20",
+      "description": "States that the obstacle Ground force in `applyBodyForcesWithFriction` is `T_exit * t_exit - T_entry * t_entry`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_21",
+      "description": "States that the obstacle moment about the obstacle body origin in `applyBodyForcesWithFriction` is `r_exit % (T_exit * t_exit) - r_entry % (T_entry * t_entry)`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_22",
+      "description": "States that `applyBodyForcesWithFriction` scales the origin unit force from `calcUnitForceAtCableOrigin` by `originTension`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_23",
+      "description": "Names `cmake --build out/build --target SimTKsimbody TestCableSpan TestCableSpan_Forces TestCableSpan_LengthDot -j2` as the corrected rebuild command.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_24",
+      "description": "Identifies `out/build` as the existing Ninja build directory.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_25",
+      "description": "States that `calcCurveSegmentWrapAngle` requires `Stage::Position`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_26",
+      "description": "States that `applyBodyForcesWithFriction` requires `Stage::Velocity`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_27",
+      "description": "Explains that obstacle friction is stored separately from the geodesic geometry solve so changing friction does not alter the cable path.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_28",
+      "description": "Explains that `wrapAngle` is cached with the geodesic instance because analytic shooting does not retain the full knot sequence for later integration.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_29",
+      "description": "Attributes to the agent's untested belief the expectation that `calcSurfaceCurvature` produces a convex-positive wrap sign.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_30",
+      "description": "Attributes the use of two analytic boundary knots to the agent's judgment that sphere and cylinder geodesics have constant normal curvature.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_31",
+      "description": "States that implicit geodesic shooting integrates wrap angle over its existing adaptive knot sequence.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_32",
+      "description": "Explains that `calcTensionProfile` visits each `CableSegment`'s `getObstacleIndexes()` before its final via point to preserve path ordering.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_33",
+      "description": "States that `calcTensionProfile` accumulates per-contact friction power as `std::abs(lengthDot * (exitTension - entryTension))`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_34",
+      "description": "Identifies the current compilation failure as `integrateWrapAngle` using `geometry` before its declaration in `Simbody/src/CableSpan.cpp`.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_35",
+      "description": "Identifies moving the `const ContactGeometry& geometry = getContactGeometry();` declaration above `integrateWrapAngle` in `shootNewGeodesic` as the pending code repair.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_36",
+      "description": "States that rebuilding the `SimTKsimbody` and CableSpan test targets must follow repairing the `geometry` declaration in `shootNewGeodesic`.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_37",
+      "description": "States that `out/build/TestCableSpan` has not yet been executed for the new friction implementation.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_38",
+      "description": "Records that reviewing whether summing `std::abs(lengthDot * (exitTension - entryTension))` per contact matches the required signed-wrap behavior of `calcFrictionPowerDissipation` remains open.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_39",
+      "description": "States that zero-friction wrench equivalence between `applyBodyForcesWithFriction` and `applyBodyForces` has not yet been measured.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_40",
+      "description": "States that via points apply Coulomb capstan friction using a per-via-point friction coefficient.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_41",
+      "description": "States that two-knot analytic wrap-angle integration is exact for every obstacle surface type including general tori.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_42",
+      "description": "States that the implemented friction-power calculation clamps the endpoint tension difference to zero instead of summing `std::abs(lengthDot * (exitTension - entryTension))` per contact.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_43",
+      "description": "States that `shootNewGeodesic` assigns the integrated wrap angle to `dataInst.wrapAngle`.",
+      "metadata": {
+        "category": "Structural clarity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_44",
+      "description": "Contains at most 10700 characters.",
+      "metadata": {
+        "category": "Compression efficiency",
+        "weight": "minor"
+      }
+    }
+  ]
+}

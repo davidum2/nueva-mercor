@@ -1,0 +1,6 @@
+I have created the sample `dlp/src/deidentify_cloud_storage.php` with the required `deidentify_cloud_storage` function.
+
+### Key Details
+- **Configuration:** Sets up Cloud Storage input and output locations, configures de-identification templates for unstructured data, structured data (`CSV`), and images, and connects a BigQuery table for transformation details.
+- **Job Submission & Polling:** Submits the de-identification inspection job via `createDlpJob` and polls `getDlpJob` until the job finishes.
+- **Summary Reporting:** Prints the job name, final status, and a list of all detected sensitive information types along with their occurrence counts.

@@ -1,0 +1,35 @@
+Implemented `ArtifactReferenceServiceProvider` following the repo's existing Angular provider-registry convention (matching `ServerGroupCommandRegistry`).
+
+**New: `app/scripts/modules/core/src/artifact/artifactReference.service.ts`**
+
+```ts
+export class ArtifactReferenceServiceProvider implements IServiceProvider
+```
+
+Public API:
+- `registerReference(stageType, fields: string | string[])` — declares artifact-reference field(s) for a stage type; accumulates across calls so multiple fields per type are supported.
+- `getReferences(stageType): string[]` — returns a defensive copy.
+- `removeReferenceFromStages(reference, stages)` — the sweep.
+- `$get()` — provider hook, so it's injectable as `artifactReferenceService` and configurable from `config` blocks alongside `pipelineConfigProvider.registerStage`.
+
+Fields are lodash-style paths, which covers all four required shapes with one syntax:
+
+| Path | Behavior |
+|---|---|
+| `expectedArtifactId` | top-level property deleted |
+| `cluster.imageSource.artifactId` | nested property deleted |
+| `clusters[1].expectedArtifactId` | nested under an array index |
+| `expectedArtifactIds[1]` | array element spliced (index shifts correctly) |
+| `expectedArtifactIds` | every matching element filtered out |
+
+Key implementation detail: `removeReferenceAtPath` resolves the *parent* container rather than the field itself (`artifactReference.service.ts:71-77`), which is what makes deletion/splicing possible. If any segment is unresolvable, or the value doesn't equal the reference, it returns early and the stage is untouched. Array parents get `splice` (so no `undefined` holes) while object parents get `delete`.
+
+**Wiring:**
+- `artifact.module.ts` / `index.ts` — registered and exported (so it's reachable as `@spinnaker/core` for plugin stage types).
+- `triggers.directive.js:53` — `removeExpectedArtifact` now calls the sweep, closing the actual bug. I also hardened the pre-existing trigger cleanup there: it previously threw when a trigger had no `expectedArtifactIds` array.
+
+**Verification** — since Karma needs Chrome + a full webpack build, I additionally transpiled the service and exercised it in Node against 15 assertions mirroring the spec; all passed, including index-splice correctness and the unresolvable-path cases. Also:
+- `tsc --noEmit` diffed against a baseline with my files removed: **772 lines both ways, zero new errors**.
+- `tslint` and `eslint` clean on all touched files.
+
+Two notes worth flagging. First, I could not reach the network to compare against upstream Spinnaker's version of this service, so while the class name matches your spec exactly, the *method* names (`registerReference` / `removeReferenceFromStages`) are my choice — if downstream callers expect different ones, that's the thing to check. Second, I left the existing `producesArtifacts.component.ts` stage-level removal path alone since your description scoped this to pipeline artifact deletion; it's a one-line addition there if you want the same sweep.

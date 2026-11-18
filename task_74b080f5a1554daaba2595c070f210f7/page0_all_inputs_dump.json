@@ -1,0 +1,469 @@
+{
+  "sections": [],
+  "inputs": [
+    {
+      "idx": 0,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Project Project Anton | SWE Trajectory QC Annotation",
+      "val": "Project Anton | SWE Trajectory QC Annotation"
+    },
+    {
+      "idx": 1,
+      "tag": "INPUT",
+      "type": "text",
+      "role": null,
+      "label": "EXPLORER environment Dockerfile solution golden.patch solve.sh tests config.json",
+      "val": ""
+    },
+    {
+      "idx": 2,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Task type*",
+      "val": "Bug Fix Deterministic"
+    },
+    {
+      "idx": 3,
+      "tag": "INPUT",
+      "type": "text",
+      "role": null,
+      "label": ".* Expand all",
+      "val": ""
+    },
+    {
+      "idx": 4,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric count*",
+      "val": "15"
+    },
+    {
+      "idx": 5,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Adjudication rationale",
+      "val": "Thanks, solid work here, the dimension reasoning is detailed and your entry cita"
+    },
+    {
+      "idx": 6,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Dimension 0 · Goal completeness (A)",
+      "val": "PARTIAL"
+    },
+    {
+      "idx": 7,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "2 · reason (A)*",
+      "val": "A restructures the output loop correctly in both context classes, but writes the"
+    },
+    {
+      "idx": 8,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "3 · reason (A)*",
+      "val": "On diff shape, A's patch is larger than the change needs. It writes the same fou"
+    },
+    {
+      "idx": 9,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "4 · reason (A)*",
+      "val": "The three behaviours work, and A handles dangling symlinks deliberately by testi"
+    },
+    {
+      "idx": 10,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "5 · reason (A)*",
+      "val": "All three requested behaviours are delivered: symlink targets are captured, wron"
+    },
+    {
+      "idx": 11,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "6 · reason (A)*",
+      "val": "A spent 107 terminal calls across its rollout log and did read widely, opening S"
+    },
+    {
+      "idx": 12,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "7 · reason (A)*",
+      "val": "A authored the broader suite by a clear margin, adding twelve test methods inclu"
+    },
+    {
+      "idx": 13,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "8 · reason (A)*",
+      "val": "A's trajectory consists of 107 tool calls, 107 tool results and one final answer"
+    },
+    {
+      "idx": 14,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "9 · reason (A)*",
+      "val": "A's 946-character summary is accurate and organised against the three requiremen"
+    },
+    {
+      "idx": 15,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Dimension 0 · Goal completeness (B)",
+      "val": "PARTIAL"
+    },
+    {
+      "idx": 16,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "2 · reason (B)*",
+      "val": "\"B extracts the classification into one shared helper, getOutputType(output, pat"
+    },
+    {
+      "idx": 17,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "3 · reason (B)*",
+      "val": "B's names line up with what the package already implies and with what the reposi"
+    },
+    {
+      "idx": 18,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "4 · reason (B)*",
+      "val": "B's compact log keeps every output kind distinguishable, so a consumer can tell "
+    },
+    {
+      "idx": 19,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "5 · reason (B)*",
+      "val": "All three behaviours are there and I checked each against the code rather than t"
+    },
+    {
+      "idx": 20,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "6 · reason (B)*",
+      "val": "B reached a wider restructure than trajectory A in 65 terminal calls against A's"
+    },
+    {
+      "idx": 21,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "7 · reason (B)*",
+      "val": "B ran its work to a recorded result: the recorded log shows //src/test/java/com/"
+    },
+    {
+      "idx": 22,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "8 · reason (B)*",
+      "val": "B's 2654-character summary is the strongest artifact on either side. It works fi"
+    },
+    {
+      "idx": 23,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "9 · reason (B)*",
+      "val": "B's 2654-character summary is the strongest artifact on either side. It works fi"
+    },
+    {
+      "idx": 24,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 1 · answer (B)*",
+      "val": "YES"
+    },
+    {
+      "idx": 25,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 1 · reason (B)*",
+      "val": "Yes. I found the code in B's transcript rather than its patch - the harness reco"
+    },
+    {
+      "idx": 26,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 2 · answer (B)*",
+      "val": "YES"
+    },
+    {
+      "idx": 27,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 2 · reason (B)*",
+      "val": "Yes. Model B introduces invalid_output_path in ExecLogEntry.Output and distingui"
+    },
+    {
+      "idx": 28,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 3 · answer (B)*",
+      "val": "YES"
+    },
+    {
+      "idx": 29,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 3 · reason (B)*",
+      "val": "Yes. Model B introduces invalid_output_path in ExecLogEntry.Output and distingui"
+    },
+    {
+      "idx": 30,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 4 · answer (B)*",
+      "val": "YES"
+    },
+    {
+      "idx": 31,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 4 · reason (B)*",
+      "val": "B adds int32 unresolved_symlink_id to the Output oneof as a sibling of file_id a"
+    },
+    {
+      "idx": 32,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 5 · answer (B)*",
+      "val": "YES"
+    },
+    {
+      "idx": 33,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 5 · reason (B)*",
+      "val": "B names the field invalid_output_path, matching the missing_path sibling beside "
+    },
+    {
+      "idx": 34,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 6 · answer (B)*",
+      "val": "YES"
+    },
+    {
+      "idx": 35,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 6 · reason (B)*",
+      "val": "Model B added replacement test cases in SpawnLogContextTestBase.java, specifical"
+    },
+    {
+      "idx": 36,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 7 · answer (B)*",
+      "val": "YES"
+    },
+    {
+      "idx": 37,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 7 · reason (B)*",
+      "val": "Model B added replacement test cases in SpawnLogContextTestBase.java, specifical"
+    },
+    {
+      "idx": 38,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 8 · answer (B)*",
+      "val": "NO"
+    },
+    {
+      "idx": 39,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 8 · reason (B)*",
+      "val": "No. While Model B introduced testFileOutput_wrongType for a direct directory-as-"
+    },
+    {
+      "idx": 40,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 9 · answer (B)",
+      "val": "NO"
+    },
+    {
+      "idx": 41,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 9 · reason (B)",
+      "val": "No. While Model B introduced testFileOutput_wrongType for a direct directory-as-"
+    },
+    {
+      "idx": 42,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 10 · answer (B)",
+      "val": "YES"
+    },
+    {
+      "idx": 43,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 10 · reason (B)",
+      "val": "The execution log of Model B records //src/test/java/com/google/devtools/build/l"
+    },
+    {
+      "idx": 44,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 11 · answer (B)",
+      "val": "YES"
+    },
+    {
+      "idx": 45,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 11 · reason (B)",
+      "val": "The execution log of Model B records //src/test/java/com/google/devtools/build/l"
+    },
+    {
+      "idx": 46,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 12 · answer (B)",
+      "val": "YES"
+    },
+    {
+      "idx": 47,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 12 · reason (B)",
+      "val": "B reports that ExecTests passes with 37 classes and zero failures or errors, tha"
+    },
+    {
+      "idx": 48,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 13 · answer (B)",
+      "val": "YES"
+    },
+    {
+      "idx": 49,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 13 · reason (B)",
+      "val": "B's log carries 28 assistant messages across 65 tool calls, so its exploration o"
+    },
+    {
+      "idx": 50,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 14 · answer (B)",
+      "val": "NO"
+    },
+    {
+      "idx": 51,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 14 · reason (B)",
+      "val": "B's recorded patch is 4758 characters: the proto edits, three static imports, a "
+    },
+    {
+      "idx": 52,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Rubric 15 · answer (B)",
+      "val": "NO"
+    },
+    {
+      "idx": 53,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Rubric 15 · reason (B)",
+      "val": "No. Model B added tests for standard symlink and wrong-type outputs, but did not"
+    },
+    {
+      "idx": 54,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Pairwise Evaluation*",
+      "val": "B BETTER"
+    },
+    {
+      "idx": 55,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Comparative Rationale*",
+      "val": "Both rollouts restructure the output loop the same way in principle, matching a "
+    },
+    {
+      "idx": 56,
+      "tag": "BUTTON",
+      "type": "button",
+      "role": "combobox",
+      "label": "Add Comment",
+      "val": "Prompt"
+    },
+    {
+      "idx": 57,
+      "tag": "TEXTAREA",
+      "type": "textarea",
+      "role": null,
+      "label": "Add Comment",
+      "val": ""
+    }
+  ]
+}

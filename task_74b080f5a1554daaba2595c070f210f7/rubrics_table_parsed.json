@@ -1,0 +1,107 @@
+[
+  {
+    "num": "1",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does a declared symlink output that is an actual symlink on disk get its target path recorded in the log?",
+    "dim": "5 \u00b7 Instruction Following & Scope Discipline",
+    "source": "EXPLICIT_PROMPT"
+  },
+  {
+    "num": "2",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Are declared outputs that exist on disk with the wrong filesystem type recorded in a category distinct from correctly-typed outputs?",
+    "dim": "5 \u00b7 Instruction Following & Scope Discipline",
+    "source": "EXPLICIT_PROMPT"
+  },
+  {
+    "num": "3",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Are declared file or directory outputs reached through an intermediate symlink followed so the real content is captured?",
+    "dim": "5 \u00b7 Instruction Following & Scope Discipline",
+    "source": "EXPLICIT_PROMPT"
+  },
+  {
+    "num": "4",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the compact log give unresolved symlink outputs their own output type rather than reusing the output-file case?",
+    "dim": "3 \u00b7 Codebase Conventions & Utility Reuse",
+    "source": "INFERRABLE_FROM_ENVIRONMENT"
+  },
+  {
+    "num": "5",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the new wrong-type field use the name the repository's own test suite expects?",
+    "dim": "3 \u00b7 Codebase Conventions & Utility Reuse",
+    "source": "INFERRABLE_FROM_ENVIRONMENT"
+  },
+  {
+    "num": "6",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "When the run deleted an existing test, did it cover that case again somewhere else?",
+    "dim": "7 \u00b7 Verification & Testing Discipline",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "7",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Is the output type classification shared between the two log context classes rather than duplicated in each?",
+    "dim": "2 \u00b7 Architecture, Modularity & Trade-off Soundness",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "8",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the change leave alone the proto messages the task does not require touching?",
+    "dim": "5 \u00b7 Instruction Following & Scope Discipline",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "9",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the rollout add a test covering a dangling symlink output?",
+    "dim": "7 \u00b7 Verification & Testing Discipline",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "10",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the trajectory record a completed test run together with its result?",
+    "dim": "7 \u00b7 Verification & Testing Discipline",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "11",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the final summary disclose that an existing test was removed?",
+    "dim": "9 \u00b7 Final Summary & Presentation Quality",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "12",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the final summary report the result of an actual verification run?",
+    "dim": "9 \u00b7 Final Summary & Presentation Quality",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "13",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the trajectory contain intermediate messages explaining decisions as the work proceeds?",
+    "dim": "8 \u00b7 Intermediate Communication & Risk Explanation",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "14",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the delivered patch contain the implementation logic rather than only imports, deletions and proto edits?",
+    "dim": "2 \u00b7 Architecture, Modularity & Trade-off Soundness",
+    "source": "COMMON_ENGINEERING_KNOWLEDGE"
+  },
+  {
+    "num": "15",
+    "type": "Prompt-specific rubric (binary YES/NO)",
+    "criteria": "Does the change record a symlink's target path when the symlink shows up as a spawn input, not only as an output?",
+    "dim": "5 \u00b7 Instruction Following & Scope Discipline",
+    "source": "EXPLICIT_PROMPT"
+  }
+]

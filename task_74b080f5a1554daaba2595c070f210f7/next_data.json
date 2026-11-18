@@ -1,0 +1,12 @@
+{
+  "props": {
+    "pageProps": {}
+  },
+  "page": "/annotator/tasks/[task_id]",
+  "query": {},
+  "buildId": "3MzzWwNeiZa2caxCS5FLp",
+  "nextExport": true,
+  "autoExport": true,
+  "isFallback": false,
+  "scriptLoader": []
+}

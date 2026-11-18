@@ -1,0 +1,1270 @@
+A · HOW THIS TASK WORKS:
+
+Read this first. It describes the annotation workflow end to end.
+
+HOW THIS TASK WORKS
+
+Read the instructions below carefully.
+
+What you do
+
+You are not authoring the task. The task, both agent rollouts, and the goal-completeness call arrive already seeded. Your job is to judge the two rollouts against each other.
+
+Work through the tabs in order. Everything below is required unless it says otherwise.
+
+Read the task (tab B). Browse the bundle: environment/, solution/, tests/, instruction.md and task.toml. Set Task type, classifying it from the metadata in task.toml.
+Score rollout A (tab C). Read the agent solution, then the trajectory. Score dimensions 2 to 9 on 1 to 5, each with a written reason, and give a final quality score for the side. Dimension 0 is already filled from the recorded run and is read-only for you.
+Score rollout B (tab D). The same, for the other rollout. Score it on its own merits before you compare the two.
+Rubrics (tab E). Write 8 to 15 binary questions where YES is always the good answer. Each one maps to a single dimension and must come from the prompt, from the environment, or from common engineering knowledge. Do not invent them. Record how many you wrote in Rubric count, then answer every one for both sides with a reason citing evidence in that trajectory. Rubrics 1 to 8 are required; 9 to 15 are optional and only apply if you wrote that many.
+Pairwise comparison (tab F). Give an overall preference of A against B and write a comparative rationale. The preference has to agree with your two final quality scores.
+AutoQC and submit (tab G). Run AutoQC, fix whatever it flags, then submit. Passing sends the task to review. Failing returns it to you with the issues.
+
+Tab H is the independent reviewer's, not yours.
+
+B · TASK BUNDLE
+
+environment/, solution/, tests/, instruction.md and task.toml.
+
+TASK BUNDLE
+
+environment/, solution/, tests/, instruction.md and task.toml for this task.
+
+EXPLORER
+environment
+Dockerfile
+solution
+golden.patch
+solve.sh
+tests
+config.json
+grade.py
+test.patch
+test.sh
+instruction.md
+task.toml
+No file open
+Select a file from the explorer or an evidence row to start.
+Evidence rows open the file and highlight the relevant line. Press Ctrl/Cmd+F inside the editor to search.
+TASK DETAILS
+Task type*
+
+Classify the task from the metadata in task.toml in the bundle (tab B).
+
+Feature Implementation
+TRAJECTORY VIEWER
+TRAJECTORY VIEWER
+
+Read the rollout: prompt, diff and logs. Model A = run A, Model B = run B.
+
+Model A
+Model B
+Model A
+completed
+0.0s
+PROMPT
+User
+## Description
+
+The PHP documentation samples for Google Cloud Data Loss Prevention currently lack an example showing how to de-identify files stored in Cloud Storage. Developers who want to protect sensitive information in their Cloud Storage buckets by running de-identification jobs through the DLP API have no reference sample to start from.
+
+## Expected Behavior
+
+Show more
+FINAL ANSWER
+I have created the sample dlp/src/deidentify_cloud_storage.php with the required deidentify_cloud_storage function.
+Key Details
+Configuration: Sets up Cloud Storage input and output locations, configures de-identification templates for unstructured data, structured data (CSV), and images, and connects a BigQuery table for transformation details.
+Job Submission & Polling: Submits the de-identification inspection job via createDlpJob and polls getDlpJob until the job fin
+Show more
+DIFF
+LOGS
+.*
+Expand all
+Step 1
++0s
+0s
+1.0
+step
+Step 1: Calling 1 tool(s): terminal
++0s
+0s
+1.1-1.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 2
++0s
+0s
+2.0
+step
+Step 2: Calling 1 tool(s): terminal
++0s
+0s
+2.1-2.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 3
++0s
+0s
+3.0
+step
+Step 3: Calling 1 tool(s): terminal
++0s
+0s
+3.1-3.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 4
++0s
+0s
+4.0
+step
+Step 4: Calling 1 tool(s): terminal
++0s
+0s
+4.1-4.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 5
++0s
+0s
+5.0
+step
+Step 5: Calling 1 tool(s): terminal
++0s
+0s
+5.1-5.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 6
++0s
+0s
+6.0
+step
+Step 6: Calling 1 tool(s): terminal
++0s
+0s
+6.1-6.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 7
++0s
+0s
+7.0
+step
+Step 7: Calling 1 tool(s): terminal
++0s
+0s
+7.1-7.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 8
++0s
+0s
+8.0
+step
+Step 8: Calling 1 tool(s): terminal
++0s
+0s
+8.1-8.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 9
++0s
+0s
+9.0
+step
+Step 9: Calling 1 tool(s): terminal
++0s
+0s
+9.1-9.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 10
++0s
+0s
+10.0
+step
+Step 10: Calling 1 tool(s): terminal
++0s
+0s
+10.1-10.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 11
++0s
+0s
+11.0
+step
+Step 11: Calling 1 tool(s): terminal
++0s
+0s
+11.1-11.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 12
++0s
+0s
+12.0
+step
+Step 12: Calling 1 tool(s): terminal
++0s
+0s
+12.1-12.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 13
++0s
+0s
+13.0
+step
+Step 13: Calling 1 tool(s): terminal
++0s
+0s
+13.1-13.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 14
++0s
+0s
+14.0
+step
+Step 14: Calling 1 tool(s): terminal
++0s
+0s
+14.1-14.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 15
++0s
+0s
+15.0
+step
+Step 15: Calling 1 tool(s): terminal
++0s
+0s
+15.1-15.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 16
++0s
+0s
+16.0
+step
+Step 16: Calling 1 tool(s): terminal
++0s
+0s
+16.1-16.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 17
++0s
+0s
+17.0
+step
+Step 17: Calling 1 tool(s): terminal
++0s
+0s
+17.1-17.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 18
++0s
+0s
+18.0
+step
+Step 18: Calling 1 tool(s): terminal
++0s
+0s
+18.1-18.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 19
++0s
+0s
+19.0
+step
+Step 19: Calling 1 tool(s): terminal
++0s
+0s
+19.1-19.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 20
++0s
+0s
+20.0
+step
+Step 20: Calling 1 tool(s): terminal
++0s
+0s
+20.1-20.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 21
++0s
+0s
+21.0
+step
+Step 21: Calling 1 tool(s): terminal
++0s
+0s
+21.1-21.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 22
++0s
+0s
+22.0
+step
+Step 22: Calling 1 tool(s): terminal
++0s
+0s
+22.1-22.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 23
++0s
+0s
+23.0
+step
+Step 23: Calling 1 tool(s): terminal
++0s
+0s
+23.1-23.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 24
++0s
+0s
+24.0
+step
+Step 24: Calling 1 tool(s): terminal
++0s
+0s
+24.1-24.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 25
++0s
+0s
+25.0
+step
+Step 25: Calling 1 tool(s): terminal
++0s
+0s
+25.1-25.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 26
++0s
+0s
+26.0
+step
+Step 26: Calling 1 tool(s): terminal
++0s
+0s
+26.1-26.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 27
++0s
+0s
+27.0
+step
+Step 27: Calling 1 tool(s): terminal
++0s
+0s
+27.1-27.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 28
++0s
+0s
+28.0
+step
+Step 28: Calling 1 tool(s): terminal
++0s
+0s
+28.1-28.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 29
++0s
+0s
+29.0
+step
+Step 29: Calling 1 tool(s): terminal
++0s
+0s
+29.1-29.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 30
++0s
+0s
+30.0
+step
+Step 30: Calling 1 tool(s): terminal
++0s
+0s
+30.1-30.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 31
++0s
+0s
+31.0
+step
+Step 31: Calling 1 tool(s): terminal
++0s
+0s
+31.1-31.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 32
++0s
+0s
+32.0
+step
+Step 32: Calling 1 tool(s): terminal
++0s
+0s
+32.1-32.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 33
++0s
+0s
+33.0
+step
+Step 33: Calling 1 tool(s): terminal
++0s
+0s
+33.1-33.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 34
++0s
+0s
+34.0
+step
+Step 34: Calling 1 tool(s): terminal
++0s
+0s
+34.1-34.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 35
++0s
+0s
+35.0
+step
+Step 35: Calling 1 tool(s): terminal
++0s
+0s
+35.1-35.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 36
++0s
+0s
+36.0
+step
+Step 36: Calling 1 tool(s): terminal
++0s
+0s
+36.1-36.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 37
++0s
+0s
+37.0
+step
+Step 37: Calling 1 tool(s): terminal
++0s
+0s
+37.1-37.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 38
++0s
+0s
+38.0
+step
+Step 38: Calling 1 tool(s): terminal
++0s
+0s
+38.1-38.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 39
++0s
+0s
+39.0
+step
+Step 39: Calling 1 tool(s): terminal
++0s
+0s
+39.1-39.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 40
++0s
+0s
+40.0
+step
+Step 40: Calling 1 tool(s): terminal
++0s
+0s
+40.1-40.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 41
++0s
+0s
+41.0
+step
+Step 41: Calling 1 tool(s): terminal
++0s
+0s
+41.1-41.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 42
++0s
+0s
+42.0
+step
+Step 42: Calling 1 tool(s): terminal
++0s
+0s
+42.1-42.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 43
++0s
+0s
+43.0
+step
+Step 43: Calling 1 tool(s): terminal
++0s
+0s
+43.1-43.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 44
++0s
+0s
+44.0
+step
+Step 44: Calling 1 tool(s): terminal
++0s
+0s
+44.1-44.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 45
++0s
+0s
+45.0
+step
+Step 45: Calling 1 tool(s): terminal
++0s
+0s
+45.1-45.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 46
++0s
+0s
+46.0
+step
+Step 46: Calling 1 tool(s): terminal
++0s
+0s
+46.1-46.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 47
++0s
+0s
+47.0
+step
+Step 47: Calling 1 tool(s): terminal
++0s
+0s
+47.1-47.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 48
++0s
+0s
+48.0
+step
+Step 48: Calling 1 tool(s): terminal
++0s
+0s
+48.1-48.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 49
++0s
+0s
+49.0
+step
+Step 49: Calling 1 tool(s): terminal
++0s
+0s
+49.1-49.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 50
++0s
+0s
+50.0
+step
+Step 50: Calling 1 tool(s): terminal
++0s
+0s
+50.1-50.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 51
++0s
+0s
+51.0
+step
+Step 51: Calling 1 tool(s): terminal
++0s
+0s
+51.1-51.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 52
++0s
+0s
+52.0
+step
+Step 52: Calling 1 tool(s): terminal
++0s
+0s
+52.1-52.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 53
++0s
+0s
+53.0
+step
+Step 53: Calling 1 tool(s): terminal
++0s
+0s
+53.1-53.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 54
++0s
+0s
+54.0
+step
+Step 54: Calling 1 tool(s): terminal
++0s
+0s
+54.1-54.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 55
++0s
+0s
+55.0
+step
+Step 55: Calling 1 tool(s): terminal
++0s
+0s
+55.1-55.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 56
++0s
+0s
+56.0
+step
+Step 56: Calling 1 tool(s): terminal
++0s
+0s
+56.1-56.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 57
++0s
+0s
+57.0
+step
+Step 57: Calling 1 tool(s): terminal
++0s
+0s
+57.1-57.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 58
++0s
+0s
+58.0
+step
+Step 58: Calling 1 tool(s): terminal
++0s
+0s
+58.1-58.2
+tool_call
+terminal
+Calling tool terminal
++0s
+0s
+Step 59
++0s
+0s
+59.0
+step
+Step 59
++0s
+0s
+59.1
+final_answer
+I have created the sample `dlp/src/deidentify_cloud_storage.php` with the required `deidentify_cloud_storage` function.
++0s
+0s
+1 · AGENT SOLUTION A · TRAJECTORY A
+1 FILE CHANGED
++157
+-0
+
+The patch this rollout produced.
+
+1 · AGENT SOLUTION B · TRAJECTORY B
+1 FILE CHANGED
++139
+-0
+
+The patch this rollout produced.
+
+RUBRIC (CREATE)
+RUBRIC
+Rubric
+
+Write 8 to 15 binary questions where YES is always the good answer. Each maps to one dimension and comes from the prompt, the environment, or common engineering knowledge.
+
+Google Sheets
+Open in New Tab
+Add Rubric Item
+World Rubric
+
+Criteria that apply to every task in this world
+
+	Index
+	Verifier Type
+	Depends on
+
+	
+1
+	
+Lighthouse Overall Result (all-or-nothing task score)
+Programmatic
+		
+
+Task Rubric
+
+Criteria specific to this task
+
+Structured
+Spreadsheet
+All changes saved
+Columns
+#	TYPE
+	CRITERIA*
+	MAPPED DIMENSION*
+	SOURCE*
+	DEPENDENCIES
+
+
+1
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the sample implement the required 'deidentify_cloud_storage' function with exactly 8 parameters matching downstream test callers?
+	
+2 · Functional Correctness & Code Architecture
+	
+EXPLICIT_PROMPT
+	
+
+
+2
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the sample resolve template names using DlpServiceBaseClient::projectDeidentifyTemplateName rather than passing unvalidated raw strings?
+	
+2 · Functional Correctness & Code Architecture
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+3
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the sample attach an InspectConfig object to the InspectJobConfig to specify inspect settings?
+	
+2 · Functional Correctness & Code Architecture
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+4
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the sample include standard Google Cloud documentation region tags '[START dlp_deidentify_cloud_storage]' and '[END dlp_deidentify_cloud_storage]'?
+	
+3 · Readability, Clean Code & Coding Standards
+	
+ENVIRONMENT
+	
+
+
+5
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the sample provide complete PHPDoc documentation with @param tags for all function arguments?
+	
+3 · Readability, Clean Code & Coding Standards
+	
+ENVIRONMENT
+	
+
+
+6
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the sample implement a bounded polling loop with a maximum retry counter or timeout to prevent infinite hanging?
+	
+4 · Robustness, Error Handling & Defensiveness
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+7
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the sample close the DLP service client in a finally block to guarantee gRPC/channel cleanup?
+	
+4 · Robustness, Error Handling & Defensiveness
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+8
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the sample inspect and handle non-terminal job states (e.g. FAILED) by reporting job errors?
+	
+4 · Robustness, Error Handling & Defensiveness
+	
+EXPLICIT_PROMPT
+	
+
+
+9
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Is the new sample file placed in the exact directory requested ('dlp/src/deidentify_cloud_storage.php')?
+	
+5 · Instruction Following & Scope Discipline
+	
+EXPLICIT_PROMPT
+	
+
+
+10
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the implementation adhere strictly to the requested scope without splitting BigQuery dataset configuration into extraneous unrequested project parameters?
+	
+5 · Instruction Following & Scope Discipline
+	
+EXPLICIT_PROMPT
+	
+
+
+11
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent demonstrate effective navigation without repeatedly failing commands due to invalid working directories?
+	
+6 · Planning, Research & Exploration
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+12
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent run a PHP syntax linter ('php -l') on the authored sample to verify zero syntax errors?
+	
+7 · Verification & Testing Rigor
+	
+ENVIRONMENT
+	
+
+
+13
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Does the final deliverable include the exact public function name and signature details without omitting required parameter names?
+	
+	
+	
+Add rubric item
+↑↓←→ move
+⇧+arrows select range
+Enter / type to edit
+⌘C / ⌘V copy/paste
+Del clear
+Click row #/header to select a row/column
+Drag the row handle to reorder
+RUBRIC COUNT
+
+How many rubrics did you add above?
+
+Rubric count*
+
+How many rubrics did you write? Minimum 8, maximum 15.
+
+13
+DELIVERABLE AUTOQC
+
+Run AutoQC to check your work. Your task is only deliverable when you pass all 17/17 test cases
+
+AutoQC is running
+SUBMIT REVIEW
+REVIEWER FEEDBACK
+
+Feedback for writer to follow in order to ahve the task approved!
+
+Adjudication rationale
+NAVIGATION
+Before you submit
+Length limits: 2 · reason (A)
+Length limits: 3 · reason (A)
+Length limits: 4 · reason (A)
+Length limits: 5 · reason (A)
+Length limits: 6 · reason (A)
+Length limits: 7 · reason (A)
+Length limits: 8 · reason (A)
+Length limits: 2 · reason (B)
+Length limits: 3 · reason (B)
+Length limits: 4 · reason (B)
+Length limits: 5 · reason (B)
+Length limits: 6 · reason (B)
+Length limits: 7 · reason (B)
+Length limits: 8 · reason (B)
+Length limits: 9 · reason (A)
+Length limits: 9 · reason (B)
+AutoQC failures resolved
+AutoQC up to date
+Submit for Final QC
+Unclaim
+Flag Defective Task
+HISTORY
+Status	Transitioned By	Updated By	Updated At
+Seed	
+MB
+Mayank Bharati
+	
+MB
+Mayank Bharati
+	5/9/2026, 18:36:59 GMT-6
+Claimable	
+MB
+Mayank Bharati
+	
+MB
+Mayank Bharati
+	8/9/2026, 14:25:34 GMT-6
+Seed	
+MB
+Mayank Bharati
+	
+MB
+Mayank Bharati
+	9/9/2026, 2:28:36 GMT-6
+Claimable	
+MB
+Mayank Bharati
+	
+MB
+Mayank Bharati
+	11/9/2026, 23:52:29 GMT-6
+Annotating	
+[M
+[EXP] MOHD M
+	
+[M
+[EXP] MOHD M
+	12/9/2026, 12:13:25 GMT-6
+Final QC / Review	
+[M
+[EXP] MOHD M
+	
+MB
+Mayank Bharati
+	13/9/2026, 13:02:02 GMT-6
+In Review	
+[R
+[EXP] Rohan A
+	
+[R
+[EXP] Rohan A
+	14/9/2026, 22:59:32 GMT-6
+Annotating	
+[R
+[EXP] Rohan A
+	
+[M
+[EXP] MOHD M
+	15/9/2026, 10:02:55 GMT-6
+Final QC / Review	
+[M
+[EXP] MOHD M
+	
+[M
+[EXP] MOHD M
+	15/9/2026, 10:08:46 GMT-6
+In Review	
+[A
+[EXP] Ankit Y
+	
+[A
+[EXP] Ankit Y
+	17/9/2026, 8:33:22 GMT-6
+Annotating	
+[A
+[EXP] Ankit Y
+	
+WX
+Winston Xu
+	19/9/2026, 10:52:51 GMT-6
+Claimable	
+WX
+Winston Xu
+	
+WX
+Winston Xu
+	19/9/2026, 10:52:56 GMT-6
+Annotating	
+[S
+[EXP] S.Ravishankar N
+	
+[S
+[EXP] S.Ravishankar N
+	22/9/2026, 6:14:45 GMT-6
+Claimable	
+[S
+[EXP] S.Ravishankar N
+	
+[S
+[EXP] S.Ravishankar N
+	22/9/2026, 6:15:30 GMT-6
+Annotating	
+[E
+[EXP] Edgar D
+	
+[E
+[EXP] Edgar D
+	22/9/2026, 20:50:14 GMT-6

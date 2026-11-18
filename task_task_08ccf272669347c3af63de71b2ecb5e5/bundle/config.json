@@ -1,0 +1,25 @@
+{
+ "FAIL_TO_PASS": [
+  "ArtifactReferenceService removeReferenceFromStages deletes multiple references from a stage if registered to do so",
+  "ArtifactReferenceService removeReferenceFromStages deletes nested references",
+  "ArtifactReferenceService removeReferenceFromStages deletes reference from stage",
+  "ArtifactReferenceService removeReferenceFromStages doesnt delete nested references if reference doesnt match",
+  "ArtifactReferenceService removeReferenceFromStages doesnt delete reference from stage if reference doesnt match",
+  "ArtifactReferenceService removeReferenceFromStages doesnt delete reference if reference doesnt exist",
+  "ArtifactReferenceService removeReferenceFromStages doesnt splice nested reference from array if reference doesnt match",
+  "ArtifactReferenceService removeReferenceFromStages splices nested reference from array",
+  "ArtifactReferenceService removeReferenceFromStages splices nested reference from array when only the path to the array is given"
+ ],
+ "PASS_TO_PASS": [
+  "array",
+  "exist",
+  "given",
+  "match",
+  "references",
+  "so",
+  "splices nested reference from array when only the path to the array is given",
+  "stage"
+ ],
+ "framework": "js",
+ "f2p_synthetic": false
+}

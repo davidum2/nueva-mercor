@@ -1,0 +1,1755 @@
+diff --git a/Simbody/tests/CMakeLists.txt b/Simbody/tests/CMakeLists.txt
+index f9b6fecf..970b4201 100644
+--- a/Simbody/tests/CMakeLists.txt
++++ b/Simbody/tests/CMakeLists.txt
+@@ -39,3 +39,36 @@ endforeach()
+ 
+ 
+ 
++
++foreach(SUBTEST
++    coefficient
++    invalid_coefficient
++    wrap_angle_helix
++    wrap_angle_sphere
++    wrap_angle_torus
++    wrap_angle_concave
++    wrap_angle_no_contact
++    wrap_angle_stage
++    tension_lengthening
++    tension_shortening
++    tension_zero_rate
++    path_invariance
++    liftoff_tension
++    via_continuity
++    local_wrenches
++    local_wrenches_shortening
++    local_wrenches_zero_rate
++    zero_mu_force_equivalence
++    power_balance
++    slack
++    velocity_stage
++    wrap_angle_ellipsoid
++    force_accumulation
++    interleaved_liftoff_propagation
++    reversibility_symmetry)
++    add_test(NAME "CableSpanFriction.${SUBTEST}"
++        COMMAND TestCableSpanFriction ${SUBTEST})
++    set_tests_properties("CableSpanFriction.${SUBTEST}" PROPERTIES
++        PASS_REGULAR_EXPRESSION "PASSED: ${SUBTEST}"
++        FAIL_REGULAR_EXPRESSION "FAILED at line")
++endforeach()
+diff --git a/Simbody/tests/TestCableSpan.cpp b/Simbody/tests/TestCableSpan.cpp
+index cf489b1d..951f593c 100644
+--- a/Simbody/tests/TestCableSpan.cpp
++++ b/Simbody/tests/TestCableSpan.cpp
+@@ -20,6 +20,7 @@
+ 
+ using namespace SimTK;
+ 
++// CableSpan friction regression verification suite
+ /**
+ This file contains tests for the CableSpan's path over different obstacles and
+ via points.
+diff --git a/Simbody/tests/TestCableSpanFriction.cpp b/Simbody/tests/TestCableSpanFriction.cpp
+new file mode 100644
+index 00000000..c3e91c4e
+--- /dev/null
++++ b/Simbody/tests/TestCableSpanFriction.cpp
+@@ -0,0 +1,1672 @@
++/*-----------------------------------------------------------------------------
++            Simbody(tm) Test: CableSpan Capstan Friction
++-------------------------------------------------------------------------------
++ Copyright (c) 2024 Authors.
++ Authors: Pepijn van den Bos
++ Contributors: Nicholas Bianco
++
++ Licensed under the Apache License, Version 2.0 (the "License"); you may
++ not use this file except in compliance with the License. You may obtain a
++ copy of the License at http://www.apache.org/licenses/LICENSE-2.0.
++
++ Unless required by applicable law or agreed to in writing, software
++ distributed under the License is distributed on an "AS IS" BASIS,
++ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ See the License for the specific language governing permissions and
++ limitations under the License.
++ ----------------------------------------------------------------------------*/
++
++#include "Simbody.h"
++#include <algorithm>
++#include <cmath>
++#include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
++#include <iomanip>
++#include <iostream>
++#include <type_traits>
++#include <functional>
++#include <string>
++#include <vector>
++
++using namespace SimTK;
++
++// Report a failed check and stop; active in every build configuration.
++static void failCheck(int line, const char* fmt, ...)
++{
++    char msg[1024];
++    va_list args;
++    va_start(args, fmt);
++    std::vsnprintf(msg, sizeof(msg), fmt, args);
++    va_end(args);
++    std::cout << "FAILED at line " << line << ": " << msg << std::endl;
++    std::exit(1);
++}
++
++#undef CABLE_CHECK
++#define CABLE_CHECK(cond, ...) \
++    ((cond) ? (void)0 : failCheck(__LINE__, __VA_ARGS__))
++
++static const CableSpanObstacleIndex Obs0(0);
++static const CableSpanObstacleIndex Obs1(1);
++static const CableSpanObstacleIndex Obs2(2);
++
++static Real angleBetween(const Vec3& a, const Vec3& b)
++{
++    return std::atan2((a % b).norm(), dot(a, b));
++}
++
++static Vec3 entryTangent(
++    const CableSpan& cable, const State& s, CableSpanObstacleIndex ix)
++{
++    return Vec3(cable.calcCurveSegmentInitialFrenetFrame(s, ix).R().x());
++}
++
++static Vec3 exitTangent(
++    const CableSpan& cable, const State& s, CableSpanObstacleIndex ix)
++{
++    return Vec3(cable.calcCurveSegmentFinalFrenetFrame(s, ix).R().x());
++}
++
++// On a sphere every geodesic is a great circle, so the turning is arc/radius.
++static Real sphereWrapAngle(
++    const CableSpan& cable, const State& s, CableSpanObstacleIndex ix,
++    Real radius)
++{
++    return cable.calcCurveSegmentArcLength(s, ix) / radius;
++}
++
++// Turning of the tangent along a curve segment, from a fine resampling of it.
++static Real estimateTurning(
++    const CableSpan& cable, const State& s, CableSpanObstacleIndex ix)
++{
++    std::vector<Vec3> pts;
++    cable.calcCurveSegmentResampledPoints(s, ix, 200,
++        [&](Vec3 p) { pts.push_back(p); });
++    std::vector<Vec3> dirs;
++    dirs.push_back(entryTangent(cable, s, ix));
++    for (size_t i = 0; i + 1 < pts.size(); ++i) {
++        dirs.push_back(pts[i + 1] - pts[i]);
++    }
++    dirs.push_back(exitTangent(cable, s, ix));
++    Real turning = 0.;
++    for (size_t i = 0; i + 1 < dirs.size(); ++i) {
++        turning += angleBetween(dirs[i], dirs[i + 1]);
++    }
++    return turning;
++}
++
++// Checks whether CableSpan provides each of the friction methods.
++template <typename T, typename = void>
++struct has_setObstacleFrictionCoefficient : std::false_type {};
++template <typename T>
++struct has_setObstacleFrictionCoefficient<T, std::void_t<
++    decltype(std::declval<T>().setObstacleFrictionCoefficient(Obs0, Real(0)))
++>> : std::true_type {};
++
++template <typename T, typename = void>
++struct has_getObstacleFrictionCoefficient : std::false_type {};
++template <typename T>
++struct has_getObstacleFrictionCoefficient<T, std::void_t<
++    decltype(std::declval<const T>().getObstacleFrictionCoefficient(Obs0))
++>> : std::true_type {};
++
++template <typename T, typename = void>
++struct has_calcCurveSegmentWrapAngle : std::false_type {};
++template <typename T>
++struct has_calcCurveSegmentWrapAngle<T, std::void_t<
++    decltype(std::declval<const T>().calcCurveSegmentWrapAngle(std::declval<const State&>(), Obs0))
++>> : std::true_type {};
++
++template <typename T, typename = void>
++struct has_calcTensionAtTermination : std::false_type {};
++template <typename T>
++struct has_calcTensionAtTermination<T, std::void_t<
++    decltype(std::declval<const T>().calcTensionAtTermination(std::declval<const State&>(), Real(0)))
++>> : std::true_type {};
++
++template <typename T, typename = void>
++struct has_applyBodyForcesWithFriction : std::false_type {};
++template <typename T>
++struct has_applyBodyForcesWithFriction<T, std::void_t<
++    decltype(std::declval<const T>().applyBodyForcesWithFriction(std::declval<const State&>(), Real(0), std::declval<Vector_<SpatialVec>&>()))
++>> : std::true_type {};
++
++template <typename T, typename = void>
++struct has_calcFrictionPowerDissipation : std::false_type {};
++template <typename T>
++struct has_calcFrictionPowerDissipation<T, std::void_t<
++    decltype(std::declval<const T>().calcFrictionPowerDissipation(std::declval<const State&>(), Real(0)))
++>> : std::true_type {};
++
++// Obstacle friction coefficients default to zero and may be set and read independently.
++template <typename C = CableSpan>
++void testCoefficient() {
++    if constexpr (!has_setObstacleFrictionCoefficient<C>::value ||
++                  !has_getObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan::setObstacleFrictionCoefficient / getObstacleFrictionCoefficient not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free body1(matter.Ground(), Vec3(0.), aBody, Transform());
++        MobilizedBody::Free body2(matter.Ground(), Vec3(4., 0., 0.), aBody, Transform());
++
++        C cable(cables, body1, Vec3(0.), body2, Vec3(0.));
++        cable.addObstacle(matter.Ground(), Transform(Vec3(1., 0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.)), Vec3(1., 0.5, 0.));
++        cable.addObstacle(matter.Ground(), Transform(Vec3(3., 0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.)), Vec3(3., 0.5, 0.));
++
++        // 1. Default to 0
++        CABLE_CHECK(cable.getObstacleFrictionCoefficient(Obs0) == 0.,
++            "Default friction coefficient for obstacle 0 must be 0");
++        CABLE_CHECK(cable.getObstacleFrictionCoefficient(Obs1) == 0.,
++            "Default friction coefficient for obstacle 1 must be 0");
++
++        // 2. Set and get independently
++        cable.setObstacleFrictionCoefficient(Obs0, 0.25);
++        cable.setObstacleFrictionCoefficient(Obs1, 0.70);
++
++        CABLE_CHECK(std::abs(cable.getObstacleFrictionCoefficient(Obs0) - 0.25) < 1e-12,
++            "Obstacle 0 friction coefficient should be 0.25");
++        CABLE_CHECK(std::abs(cable.getObstacleFrictionCoefficient(Obs1) - 0.70) < 1e-12,
++            "Obstacle 1 friction coefficient should be 0.70");
++
++        // 3. Update obstacle 0 and confirm obstacle 1 is unaffected
++        cable.setObstacleFrictionCoefficient(Obs0, 0.35);
++        CABLE_CHECK(std::abs(cable.getObstacleFrictionCoefficient(Obs0) - 0.35) < 1e-12,
++            "Obstacle 0 friction coefficient should be 0.35");
++        CABLE_CHECK(std::abs(cable.getObstacleFrictionCoefficient(Obs1) - 0.70) < 1e-12,
++            "Obstacle 1 friction coefficient should remain 0.70");
++    }
++}
++
++// Setting a negative obstacle friction coefficient throws under the repository's SimTK_ERRCHK convention.
++template <typename C = CableSpan>
++void testInvalidCoefficient() {
++    if constexpr (!has_setObstacleFrictionCoefficient<C>::value ||
++                  !has_getObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan::setObstacleFrictionCoefficient not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free body1(matter.Ground(), Vec3(0.), aBody, Transform());
++        MobilizedBody::Free body2(matter.Ground(), Vec3(2., 0., 0.), aBody, Transform());
++
++        C cable(cables, body1, Vec3(0.), body2, Vec3(0.));
++        cable.addObstacle(matter.Ground(), Transform(Vec3(1., 0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.)), Vec3(1., 0.5, 0.));
++
++        cable.setObstacleFrictionCoefficient(Obs0, 0.40);
++        CABLE_CHECK(std::abs(cable.getObstacleFrictionCoefficient(Obs0) - 0.40) < 1e-12,
++            "Friction coefficient should be 0.40");
++
++        bool threw = false;
++        try {
++            cable.setObstacleFrictionCoefficient(Obs0, -0.01);
++        } catch (const std::exception&) {
++            threw = true;
++        }
++        CABLE_CHECK(threw, "Negative friction coefficient -0.01 must throw an exception");
++        CABLE_CHECK(std::abs(cable.getObstacleFrictionCoefficient(Obs0) - 0.40) < 1e-12,
++            "Friction coefficient must remain 0.40 after rejected negative value");
++
++        threw = false;
++        try {
++            cable.setObstacleFrictionCoefficient(Obs0, -5.0);
++        } catch (const std::exception&) {
++            threw = true;
++        }
++        CABLE_CHECK(threw, "Negative friction coefficient -5.0 must throw an exception");
++        CABLE_CHECK(std::abs(cable.getObstacleFrictionCoefficient(Obs0) - 0.40) < 1e-12,
++            "Friction coefficient must remain 0.40 after rejected negative value");
++    }
++}
++
++// The wrap angle is the integral of the normal curvature along the geodesic,
++// which on a helix differs from the angle between the end tangents.
++template <typename C = CableSpan>
++void testHelicalCylinderWrapAngle() {
++    if constexpr (!has_calcCurveSegmentWrapAngle<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcCurveSegmentWrapAngle not implemented");
++    } else {
++        for (const Real radius : {1.0, 0.75}) {
++            MultibodySystem system;
++            SimbodyMatterSubsystem matter(system);
++            CableSubsystem cables(system);
++
++            Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++            MobilizedBody::Free originBody(matter.Ground(), Vec3(-2., 1.5, -2.), aBody, Transform());
++            MobilizedBody::Free termBody(matter.Ground(), Vec3(1.5, -2., 2.), aBody, Transform());
++
++            C cable(cables, originBody, Vec3(0.), termBody, Vec3(0.));
++            cable.setCurveSegmentAccuracy(1e-12);
++            cable.setSmoothnessTolerance(1e-8);
++
++            cable.addObstacle(
++                matter.Ground(),
++                Transform(),
++                std::shared_ptr<ContactGeometry>(new ContactGeometry::Cylinder(radius)),
++                Vec3(0.707 * radius, 0.707 * radius, 0.));
++
++            State s = system.realizeTopology();
++            system.realize(s, Stage::Position);
++
++            CABLE_CHECK(cable.isInContactWithObstacle(s, Obs0),
++                "Cable should be in contact with cylinder obstacle");
++
++            Real arcLen = cable.calcCurveSegmentArcLength(s, Obs0);
++            Vec3 pP = cable.calcCurveSegmentInitialFrenetFrame(s, Obs0).p();
++            Vec3 pQ = cable.calcCurveSegmentFinalFrenetFrame(s, Obs0).p();
++
++            Real phiP = std::atan2(pP[1], pP[0]);
++            Real phiQ = std::atan2(pQ[1], pQ[0]);
++            Real dphi = std::abs(phiQ - phiP);
++
++            // For a helix on a cylinder of radius R the normal curvature is
++            // R*dphi^2/L^2, so the wrap angle is R*dphi^2/L.
++            Real thetaExpected = radius * dphi * dphi / arcLen;
++            Real thetaGot = cable.calcCurveSegmentWrapAngle(s, Obs0);
++            std::cout << "helix radius " << radius << ": theta " << thetaGot
++                      << " expected " << thetaExpected
++                      << " turning " << estimateTurning(cable, s, Obs0) << std::endl;
++
++            CABLE_CHECK(std::abs(thetaGot - thetaExpected) < 1e-4,
++                "Wrap angle (%.9f) does not match the normal curvature integral R*dphi^2/L (%.9f) for radius %f",
++                thetaGot, thetaExpected, radius);
++
++            Real endTangentAngle =
++                angleBetween(entryTangent(cable, s, Obs0), exitTangent(cable, s, Obs0));
++            CABLE_CHECK(std::abs(thetaGot - endTangentAngle) > 5e-3,
++                "Wrap angle (%f) must differ from the angle between the end tangents (%f)",
++                thetaGot, endTangentAngle);
++        }
++    }
++}
++
++// calcCurveSegmentWrapAngle returns NaN when the indexed obstacle is not in contact.
++template <typename C = CableSpan>
++void testWrapAngleNoContact() {
++    if constexpr (!has_calcCurveSegmentWrapAngle<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcCurveSegmentWrapAngle not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        // Position origin and termination above the obstacle (positive y)
++        MobilizedBody::Free originBody(matter.Ground(), Vec3(-2., 2.0, 0.), aBody, Transform());
++        MobilizedBody::Free termBody(matter.Ground(), Vec3(2., 2.0, 0.), aBody, Transform());
++
++        C cable(cables, originBody, Vec3(0.), termBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++
++        // Obstacle at (0, -1, 0) with radius 1, so top is at y = 0
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(Vec3(0., -1.0, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)),
++            Vec3(0., 1.0, 0.));
++
++        system.realizeTopology();
++        State s = system.getDefaultState();
++        system.realize(s, Stage::Position);
++
++        CABLE_CHECK(!cable.isInContactWithObstacle(s, Obs0),
++            "Cable should not be in contact with obstacle");
++
++        Real theta = cable.calcCurveSegmentWrapAngle(s, Obs0);
++        CABLE_CHECK(std::isnan(theta),
++            "calcCurveSegmentWrapAngle must return NaN when obstacle is not in contact");
++    }
++}
++
++// calcCurveSegmentWrapAngle requires the State to be realized through Stage::Position.
++template <typename C = CableSpan>
++void testWrapAngleStageRequirement() {
++    if constexpr (!has_calcCurveSegmentWrapAngle<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcCurveSegmentWrapAngle not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free originBody(matter.Ground(), Vec3(-2., 0., 0.), aBody, Transform());
++        MobilizedBody::Free termBody(matter.Ground(), Vec3(2., 0., 0.), aBody, Transform());
++
++        C cable(cables, originBody, Vec3(0.), termBody, Vec3(0.));
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(Vec3(0., -0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)),
++            Vec3(0., 0.5, 0.));
++
++        system.realizeTopology();
++        State s = system.getDefaultState();
++
++        // Calling at Stage::Time or lower must throw
++        bool threw = false;
++        try {
++            cable.calcCurveSegmentWrapAngle(s, Obs0);
++        } catch (const std::exception&) {
++            threw = true;
++        }
++        CABLE_CHECK(threw, "calcCurveSegmentWrapAngle must throw when state is not realized to Stage::Position");
++
++        // After realize to Stage::Position, must succeed and return finite non-negative angle
++        system.realize(s, Stage::Position);
++        Real theta = cable.calcCurveSegmentWrapAngle(s, Obs0);
++        CABLE_CHECK(!std::isnan(theta) && theta >= 0.0,
++            "calcCurveSegmentWrapAngle must succeed at Stage::Position and return finite non-negative angle");
++    }
++}
++
++// Two unit spheres on Ground under a cable whose termination body can move.
++template <typename C = CableSpan>
++struct TwoObstacleMovingFixture {
++    MultibodySystem system;
++    SimbodyMatterSubsystem matter;
++    CableSubsystem cables;
++    MobilizedBody::Free movingTermBody;
++    C cable;
++
++    TwoObstacleMovingFixture() :
++        matter(system),
++        cables(system),
++        movingTermBody(
++            matter.Ground(),
++            Vec3(5., 0., 0.),
++            Body::Rigid(MassProperties(1., Vec3(0), Inertia(1))),
++            Transform()),
++        cable(cables, matter.Ground(), Vec3(-1., 0., 0.), movingTermBody, Vec3(0.))
++    {
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(Vec3(1., -0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)),
++            Vec3(0., 0.5, 0.));
++
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(Vec3(3., -0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)),
++            Vec3(0., 0.5, 0.));
++    }
++
++    // Wrap angle on either sphere: the cable leaves the endpoint along a
++    // tangent line and runs level between the two spheres.
++    static Real wrapAnglePerSphere()
++    {
++        return std::asin(1. / std::sqrt(4.25)) - std::atan(0.25);
++    }
++
++    // Fresh state with the termination body moving along x.
++    State makeState(Real termSpeed) const
++    {
++        State s = system.realizeTopology();
++        movingTermBody.setU(s, Vec6{0., 0., 0., termSpeed, 0., 0.});
++        system.realize(s, Stage::Velocity);
++        return s;
++    }
++};
++
++// Wrap angles of a great-circle wrap follow from the geometry alone.
++template <typename C = CableSpan>
++void testSphereWrapAngle() {
++    if constexpr (!has_calcCurveSegmentWrapAngle<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcCurveSegmentWrapAngle not implemented");
++    } else {
++        {
++            TwoObstacleMovingFixture<C> fix;
++            State s = fix.makeState(0.);
++            const Real expected = fix.wrapAnglePerSphere();
++            for (CableSpanObstacleIndex ix : {Obs0, Obs1}) {
++                CABLE_CHECK(fix.cable.isInContactWithObstacle(s, ix),
++                    "Obstacle %d must be in contact", int(ix));
++                const Real theta = fix.cable.calcCurveSegmentWrapAngle(s, ix);
++                const Real fromArc = sphereWrapAngle(fix.cable, s, ix, 1.);
++                const Real fromTangents = angleBetween(
++                    entryTangent(fix.cable, s, ix), exitTangent(fix.cable, s, ix));
++                std::cout << "sphere " << int(ix) << ": theta " << theta
++                          << " expected " << expected << " arc/R " << fromArc
++                          << " tangents " << fromTangents << std::endl;
++                CABLE_CHECK(std::abs(theta - expected) < 1e-5,
++                    "Wrap angle on sphere %d is %.9f, expected %.9f", int(ix), theta, expected);
++                CABLE_CHECK(std::abs(theta - fromArc) < 1e-5,
++                    "Wrap angle on sphere %d is %.9f, but arc length / radius is %.9f", int(ix), theta, fromArc);
++                CABLE_CHECK(std::abs(theta - fromTangents) < 1e-5,
++                    "Wrap angle on sphere %d is %.9f, but the tangent turns by %.9f", int(ix), theta, fromTangents);
++            }
++        }
++
++        // A sphere whose radius is not one separates angle from arc length.
++        {
++            MultibodySystem system;
++            SimbodyMatterSubsystem matter(system);
++            CableSubsystem cables(system);
++            Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++            MobilizedBody::Free termBody(matter.Ground(), Vec3(2., 0., 0.), aBody, Transform());
++
++            C cable(cables, matter.Ground(), Vec3(-2., 0., 0.), termBody, Vec3(0.));
++            cable.setCurveSegmentAccuracy(1e-12);
++            cable.setSmoothnessTolerance(1e-8);
++
++            const Real radius = 0.6;
++            cable.addObstacle(
++                matter.Ground(),
++                Transform(Vec3(0., -0.2, 0.)),
++                std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(radius)),
++                Vec3(0., radius, 0.));
++
++            State s = system.realizeTopology();
++            system.realize(s, Stage::Position);
++            CABLE_CHECK(cable.isInContactWithObstacle(s, Obs0), "Small sphere must be in contact");
++
++            const Real expected = 2. * (std::asin(radius / std::sqrt(4.04)) - std::atan(0.1));
++            const Real theta = cable.calcCurveSegmentWrapAngle(s, Obs0);
++            const Real fromArc = sphereWrapAngle(cable, s, Obs0, radius);
++            std::cout << "small sphere: theta " << theta << " expected " << expected
++                      << " arc/R " << fromArc << std::endl;
++            CABLE_CHECK(std::abs(theta - expected) < 1e-5,
++                "Wrap angle on the radius %.1f sphere is %.9f, expected %.9f", radius, theta, expected);
++            CABLE_CHECK(std::abs(theta - fromArc) < 1e-5,
++                "Wrap angle on the radius %.1f sphere is %.9f, but arc length / radius is %.9f", radius, theta, fromArc);
++        }
++    }
++}
++
++// Tension grows by exp(mu*theta) across each wrapped obstacle while the cable lengthens,
++// and decays by the same factor while it shortens.
++template <typename C = CableSpan>
++void checkTensionPropagation(Real termSpeed) {
++    if constexpr (!has_calcTensionAtTermination<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value ||
++                  !has_calcCurveSegmentWrapAngle<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcTensionAtTermination not implemented");
++    } else {
++        TwoObstacleMovingFixture<C> fix;
++
++        const Real mu0 = 0.20;
++        const Real mu1 = 0.45;
++        fix.cable.setObstacleFrictionCoefficient(Obs0, mu0);
++        fix.cable.setObstacleFrictionCoefficient(Obs1, mu1);
++
++        State s = fix.makeState(termSpeed);
++        const Real sign = termSpeed > 0. ? 1. : -1.;
++
++        Real lengthDot = fix.cable.calcLengthDot(s);
++        CABLE_CHECK(sign * lengthDot > 0.05 * std::abs(termSpeed),
++            "Cable length rate must follow the termination speed (got lengthDot=%e)", lengthDot);
++
++        CABLE_CHECK(fix.cable.isInContactWithObstacle(s, Obs0), "Obstacle 0 must be in contact");
++        CABLE_CHECK(fix.cable.isInContactWithObstacle(s, Obs1), "Obstacle 1 must be in contact");
++
++        Real theta0 = fix.cable.calcCurveSegmentWrapAngle(s, Obs0);
++        Real theta1 = fix.cable.calcCurveSegmentWrapAngle(s, Obs1);
++        const Real thetaExpected = fix.wrapAnglePerSphere();
++        CABLE_CHECK(std::abs(theta0 - thetaExpected) < 1e-5,
++            "Wrap angle on obstacle 0 is %.9f, expected %.9f", theta0, thetaExpected);
++        CABLE_CHECK(std::abs(theta1 - thetaExpected) < 1e-5,
++            "Wrap angle on obstacle 1 is %.9f, expected %.9f", theta1, thetaExpected);
++
++        const Real T0 = 13.0;
++        Real gotTterm = fix.cable.calcTensionAtTermination(s, T0);
++        std::cout << "termSpeed " << termSpeed << ": theta0 " << theta0 << " theta1 " << theta1
++                  << " Tterm " << gotTterm << std::endl;
++
++        // Against the wrap angles known from the geometry.
++        Real geometricTterm = T0 * std::exp(sign * (mu0 + mu1) * thetaExpected);
++        CABLE_CHECK(std::abs(gotTterm - geometricTterm) < 1e-5 * geometricTterm,
++            "Termination tension is %.9f, expected %.9f from the wrap geometry",
++            gotTterm, geometricTterm);
++
++        // Against the reported wrap angles.
++        Real expectedTterm = T0 * std::exp(sign * (mu0 * theta0 + mu1 * theta1));
++        CABLE_CHECK(std::abs(gotTterm - expectedTterm) < 1e-6 * expectedTterm,
++            "Tension propagation error: got %.9f, expected %.9f (ratio error %e)",
++            gotTterm, expectedTterm, std::abs(gotTterm - expectedTterm) / expectedTterm);
++        CABLE_CHECK(sign * (gotTterm - T0) > 0.,
++            "Tension must rise toward the termination when lengthening and fall when shortening");
++    }
++}
++
++// A cable that barely creeps is still sliding: only the sign of the length rate matters.
++const Real CreepSpeed = 1e-100;
++
++template <typename C = CableSpan>
++void testLengtheningTensionPropagation() {
++    checkTensionPropagation<C>(2.0);
++    checkTensionPropagation<C>(CreepSpeed);
++}
++
++template <typename C = CableSpan>
++void testShorteningTensionPropagation() {
++    checkTensionPropagation<C>(-2.0);
++    checkTensionPropagation<C>(-CreepSpeed);
++}
++
++// At zero length rate the tension stays uniform whatever the coefficients.
++template <typename C = CableSpan>
++void testZeroRateUniformTension() {
++    if constexpr (!has_calcTensionAtTermination<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcTensionAtTermination not implemented");
++    } else {
++        TwoObstacleMovingFixture<C> fix;
++
++        fix.cable.setObstacleFrictionCoefficient(Obs0, 0.20);
++        fix.cable.setObstacleFrictionCoefficient(Obs1, 0.45);
++
++        State s = fix.makeState(0.);
++
++        Real lengthDot = fix.cable.calcLengthDot(s);
++        CABLE_CHECK(lengthDot == 0., "LengthDot must be zero at static state (got %e)", lengthDot);
++
++        const Real T0 = 13.0;
++        Real gotTterm = fix.cable.calcTensionAtTermination(s, T0);
++        CABLE_CHECK(std::abs(gotTterm - T0) < 1e-12,
++            "Tension must remain uniform when lengthDot == 0: got %f, expected %f", gotTterm, T0);
++    }
++}
++
++// Geometry of the solved path, for comparing two configurations of a cable.
++struct PathSnapshot {
++    Real length;
++    std::vector<bool> contact;
++    std::vector<Real> arcLength;
++    std::vector<Vec3> points;
++
++    template <typename C>
++    PathSnapshot(const C& cable, const State& s, int numObstacles)
++    {
++        length = cable.calcLength(s);
++        for (CableSpanObstacleIndex ix(0); ix < numObstacles; ++ix) {
++            contact.push_back(cable.isInContactWithObstacle(s, ix));
++            arcLength.push_back(cable.calcCurveSegmentArcLength(s, ix));
++            if (!contact.back()) {
++                continue;
++            }
++            cable.calcCurveSegmentResampledPoints(s, ix, 8,
++                [&](Vec3 pt) { points.push_back(pt); });
++            points.push_back(Vec3(cable.calcCurveSegmentInitialFrenetFrame(s, ix).R().x()));
++            points.push_back(Vec3(cable.calcCurveSegmentFinalFrenetFrame(s, ix).R().x()));
++        }
++    }
++};
++
++// Friction coefficients redistribute tension only; the solved path is the frictionless one.
++template <typename C = CableSpan>
++void testFrictionDoesNotChangePath() {
++    if constexpr (!has_setObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan::setObstacleFrictionCoefficient not implemented");
++    } else {
++        const Real tol = 1e-9;
++
++        TwoObstacleMovingFixture<C> fix;
++        State s0 = fix.makeState(0.);
++        const PathSnapshot before(fix.cable, s0, 2);
++        CABLE_CHECK(before.contact[0] && before.contact[1], "Both obstacles must be in contact");
++
++        fix.cable.setObstacleFrictionCoefficient(Obs0, 0.85);
++        fix.cable.setObstacleFrictionCoefficient(Obs1, 1.20);
++
++        State s1 = fix.makeState(0.);
++        const PathSnapshot after(fix.cable, s1, 2);
++
++        CABLE_CHECK(std::abs(before.length - after.length) < tol,
++            "Cable length changed with the friction coefficients: %.12f vs %.12f",
++            before.length, after.length);
++        for (int i = 0; i < 2; ++i) {
++            CABLE_CHECK(before.contact[i] == after.contact[i],
++                "Contact status of obstacle %d changed with the friction coefficients", i);
++            CABLE_CHECK(std::abs(before.arcLength[i] - after.arcLength[i]) < tol,
++                "Arc length on obstacle %d changed with the friction coefficients: %.12f vs %.12f",
++                i, before.arcLength[i], after.arcLength[i]);
++        }
++        CABLE_CHECK(before.points.size() == after.points.size(), "Resampled points count must match");
++        for (size_t i = 0; i < before.points.size(); ++i) {
++            CABLE_CHECK((before.points[i] - after.points[i]).norm() < tol,
++                "Curve segment geometry changed with the friction coefficients (sample %d)", int(i));
++        }
++    }
++}
++
++// Only obstacles currently in contact contribute to the propagated tension.
++template <typename C = CableSpan>
++void testLiftedObstacleExcludedFromTension() {
++    if constexpr (!has_calcTensionAtTermination<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value ||
++                  !has_calcCurveSegmentWrapAngle<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcTensionAtTermination not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++        MobilizedBody::Free movingTermBody(
++            matter.Ground(),
++            Vec3(5., 0., 0.),
++            Body::Rigid(MassProperties(1., Vec3(0), Inertia(1))),
++            Transform());
++
++        C cable(cables, matter.Ground(), Vec3(-1., 0., 0.), movingTermBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++
++        // Obstacle 0 reaches up to y = 0.5 and is wrapped.
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(Vec3(1., -0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)),
++            Vec3(0., 0.5, 0.));
++
++        // Obstacle 1 sits far below the cable.
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(Vec3(3., -5.0, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)),
++            Vec3(0., 1.0, 0.));
++
++        auto makeState = [&]() {
++            State s = system.realizeTopology();
++            movingTermBody.setU(s, Vec6{0., 0., 0., 2.0, 0., 0.});
++            system.realize(s, Stage::Velocity);
++            return s;
++        };
++
++        cable.setObstacleFrictionCoefficient(Obs0, 0.20);
++        cable.setObstacleFrictionCoefficient(Obs1, 4.0);
++        State s = makeState();
++
++        CABLE_CHECK(cable.isInContactWithObstacle(s, Obs0), "Obstacle 0 must be in contact");
++        CABLE_CHECK(!cable.isInContactWithObstacle(s, Obs1), "Obstacle 1 must not be in contact");
++
++        Real theta0 = cable.calcCurveSegmentWrapAngle(s, Obs0);
++        const Real thetaExpected =
++            std::asin(1. / std::sqrt(4.25)) - std::atan(0.25) +
++            std::asin(1. / std::sqrt(16.25)) - std::atan(0.125);
++        std::cout << "theta0 " << theta0 << " expected " << thetaExpected
++                  << " arc/R " << sphereWrapAngle(cable, s, Obs0, 1.) << std::endl;
++        CABLE_CHECK(std::abs(theta0 - thetaExpected) < 1e-5,
++            "Wrap angle on obstacle 0 is %.9f, expected %.9f", theta0, thetaExpected);
++
++        const Real T0 = 13.0;
++        Real expectedTterm = T0 * std::exp(0.20 * theta0);
++        Real gotTterm1 = cable.calcTensionAtTermination(s, T0);
++
++        CABLE_CHECK(std::abs(gotTterm1 - expectedTterm) < 1e-6 * expectedTterm,
++            "Lifted obstacle should not contribute: got %f, expected %f", gotTterm1, expectedTterm);
++
++        // The coefficient of the lifted obstacle has no effect at all.
++        cable.setObstacleFrictionCoefficient(Obs1, 9.0);
++        State s2 = makeState();
++        Real gotTterm2 = cable.calcTensionAtTermination(s2, T0);
++        CABLE_CHECK(std::abs(gotTterm2 - gotTterm1) < 1e-12,
++            "Changing lifted obstacle coefficient must not change tension: got %f vs %f", gotTterm2, gotTterm1);
++    }
++}
++
++// Via points are frictionless and tension is continuous through them.
++template <typename C = CableSpan>
++void testViaPointTensionContinuity() {
++    if constexpr (!has_calcTensionAtTermination<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcTensionAtTermination not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++        MobilizedBody::Free movingTermBody(
++            matter.Ground(),
++            Vec3(3., 0., 0.),
++            Body::Rigid(MassProperties(1., Vec3(0), Inertia(1))),
++            Transform());
++
++        C cable(cables, matter.Ground(), Vec3(0., 0., 0.), movingTermBody, Vec3(0.));
++        // Intervening via point
++        cable.addViaPoint(matter.Ground(), Vec3(1.5, 1.0, 0.));
++
++        system.realizeTopology();
++        State s = system.getDefaultState();
++
++        const Real T0 = 13.0;
++
++        // Lengthening
++        Vec6 u1{0., 0., 0., 1.5, 0., 0.};
++        movingTermBody.setU(s, u1);
++        system.realize(s, Stage::Velocity);
++        Real gotT1 = cable.calcTensionAtTermination(s, T0);
++        CABLE_CHECK(std::abs(gotT1 - T0) < 1e-12,
++            "Via point must have continuous tension when lengthening: got %f, expected %f", gotT1, T0);
++
++        // Shortening
++        Vec6 u2{0., 0., 0., -1.5, 0., 0.};
++        movingTermBody.setU(s, u2);
++        system.realize(s, Stage::Velocity);
++        Real gotT2 = cable.calcTensionAtTermination(s, T0);
++        CABLE_CHECK(std::abs(gotT2 - T0) < 1e-12,
++            "Via point must have continuous tension when shortening: got %f, expected %f", gotT2, T0);
++    }
++}
++
++static Real spatialDiff(const SpatialVec& a, const SpatialVec& b)
++{
++    return std::max((a[0] - b[0]).norm(), (a[1] - b[1]).norm());
++}
++
++// The origin is loaded by the origin tension, the termination by the propagated tension,
++// and the obstacle by its own entry and exit tensions.
++template <typename C = CableSpan>
++void checkLocalWrenches(Real termSpeed) {
++    if constexpr (!has_applyBodyForcesWithFriction<C>::value ||
++                  !has_calcTensionAtTermination<C>::value ||
++                  !has_calcCurveSegmentWrapAngle<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan::applyBodyForcesWithFriction not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free originBody(matter.Ground(), Vec3(-2., 0.0, 0.), aBody, Transform());
++        MobilizedBody::Free obstacleBody(matter.Ground(), Vec3(0.4, -0.9, 0.), aBody, Transform());
++        MobilizedBody::Free movingTermBody(matter.Ground(), Vec3(2., 0.0, 0.), aBody, Transform());
++
++        // Attachment stations and the obstacle surface are offset from their body origins.
++        C cable(cables, originBody, Vec3(-0.3, 0.2, 0.), movingTermBody, Vec3(0.3, 0.2, 0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++
++        const Real radius = 1.0;
++        cable.addObstacle(
++            obstacleBody,
++            Transform(Vec3(-0.4, 0.4, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Cylinder(radius)),
++            Vec3(0., 1.0, 0.));
++
++        const Real mu = 0.35;
++        cable.setObstacleFrictionCoefficient(Obs0, mu);
++
++        State s = system.realizeTopology();
++        movingTermBody.setU(s, Vec6{0., 0., 0., termSpeed, 0., 0.});
++        system.realize(s, Stage::Velocity);
++
++        CABLE_CHECK(cable.isInContactWithObstacle(s, Obs0), "Cylinder must be in contact");
++        const Real lengthDot = cable.calcLengthDot(s);
++        const Real sign = termSpeed > 0. ? 1. : (termSpeed < 0. ? -1. : 0.);
++        CABLE_CHECK(sign == 0. ? lengthDot == 0. : sign * lengthDot > 0.05 * std::abs(termSpeed),
++            "Unexpected cable length rate %e for termination speed %e", lengthDot, termSpeed);
++
++        // The cable stays in a plane normal to the cylinder axis, wrapping a
++        // unit circle centred 0.7 below and 2.3 across from either endpoint.
++        const Real thetaExpected = 2. * (std::asin(1. / std::sqrt(5.78)) - std::atan2(0.7, 2.3));
++        const Real theta = cable.calcCurveSegmentWrapAngle(s, Obs0);
++        CABLE_CHECK(std::abs(theta - thetaExpected) < 1e-5,
++            "Wrap angle on the cylinder is %.9f, expected %.9f", theta, thetaExpected);
++
++        const Real T0 = 13.0;
++        const Real TtermExpected = T0 * std::exp(sign * mu * thetaExpected);
++        const Real Tterm = cable.calcTensionAtTermination(s, T0);
++        std::cout << "termSpeed " << termSpeed << ": lengthDot " << lengthDot << " theta " << theta
++                  << " Tterm " << Tterm << " expected " << TtermExpected << std::endl;
++        CABLE_CHECK(std::abs(Tterm - TtermExpected) < 1e-5 * TtermExpected,
++            "Termination tension is %.9f, expected %.9f", Tterm, TtermExpected);
++
++        const int numBodies = matter.getNumBodies();
++        Vector_<SpatialVec> forces(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++        cable.applyBodyForcesWithFriction(s, T0, forces);
++
++        // Wrenches of a cable under unit tension.
++        Vector_<SpatialVec> unit(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++        cable.applyBodyForces(s, 1.0, unit);
++
++        MobilizedBodyIndex originIx = originBody.getMobilizedBodyIndex();
++        MobilizedBodyIndex obsIx = obstacleBody.getMobilizedBodyIndex();
++        MobilizedBodyIndex termIx = movingTermBody.getMobilizedBodyIndex();
++
++        CABLE_CHECK(spatialDiff(forces[originIx], unit[originIx] * T0) < 1e-6,
++            "Origin wrench must be the unit-tension wrench scaled by the origin tension (error %e)",
++            spatialDiff(forces[originIx], unit[originIx] * T0));
++        CABLE_CHECK(std::abs(forces[originIx][1].norm() - T0) < 1e-6,
++            "Origin force magnitude (%f) does not match T0 (%f)", forces[originIx][1].norm(), T0);
++
++        CABLE_CHECK(spatialDiff(forces[termIx], unit[termIx] * Tterm) < 1e-6,
++            "Termination wrench must be the unit-tension wrench scaled by the termination tension (error %e)",
++            spatialDiff(forces[termIx], unit[termIx] * Tterm));
++        CABLE_CHECK(std::abs(forces[termIx][1].norm() - Tterm) < 1e-6,
++            "Termination force magnitude (%f) does not match Tterm (%f)", forces[termIx][1].norm(), Tterm);
++
++        // Obstacle wrench about the obstacle body origin.
++        Transform XP = cable.calcCurveSegmentInitialFrenetFrame(s, Obs0);
++        Transform XQ = cable.calcCurveSegmentFinalFrenetFrame(s, Obs0);
++        Vec3 x_GB = obstacleBody.getBodyOriginLocation(s);
++
++        Vec3 r_P = XP.p() - x_GB;
++        Vec3 r_Q = XQ.p() - x_GB;
++        Vec3 t_P(XP.R().x());
++        Vec3 t_Q(XQ.R().x());
++
++        const SpatialVec unitExpected(r_Q % t_Q - r_P % t_P, t_Q - t_P);
++        CABLE_CHECK(spatialDiff(unit[obsIx], unitExpected) < 1e-9,
++            "Unit-tension obstacle wrench differs from the contact frame geometry (error %e)",
++            spatialDiff(unit[obsIx], unitExpected));
++
++        const SpatialVec expected(
++            r_Q % (Tterm * t_Q) - r_P % (T0 * t_P),
++            Tterm * t_Q - T0 * t_P);
++        std::cout << "obstacle wrench " << forces[obsIx] << " expected " << expected << std::endl;
++        CABLE_CHECK((forces[obsIx][1] - expected[1]).norm() < 1e-5,
++            "Obstacle force error too large: %e", (forces[obsIx][1] - expected[1]).norm());
++        CABLE_CHECK((forces[obsIx][0] - expected[0]).norm() < 1e-5,
++            "Obstacle moment error too large: %e", (forces[obsIx][0] - expected[0]).norm());
++
++        if (sign == 0.) {
++            // Without sliding the friction-aware forces are the uniform-tension ones.
++            Vector_<SpatialVec> uniform(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++            cable.applyBodyForces(s, T0, uniform);
++            for (int i = 0; i < numBodies; ++i) {
++                CABLE_CHECK(spatialDiff(forces[i], uniform[i]) < 1e-9,
++                    "Body %d wrench differs from the uniform-tension wrench at zero length rate (error %e)",
++                    i, spatialDiff(forces[i], uniform[i]));
++            }
++        } else {
++            CABLE_CHECK(sign * (Tterm - T0) > 0.1,
++                "Tension must rise toward the termination when lengthening and fall when shortening");
++        }
++    }
++}
++
++template <typename C = CableSpan>
++void testLocalTensionWrenches() {
++    checkLocalWrenches<C>(1.5);
++    checkLocalWrenches<C>(CreepSpeed);
++}
++
++template <typename C = CableSpan>
++void testLocalTensionWrenchesShortening() {
++    checkLocalWrenches<C>(-1.5);
++    checkLocalWrenches<C>(-CreepSpeed);
++}
++
++template <typename C = CableSpan>
++void testLocalTensionWrenchesZeroRate() { checkLocalWrenches<C>(0.); }
++
++// With every coefficient zero or unset, applyBodyForcesWithFriction reproduces applyBodyForces exactly.
++template <typename C = CableSpan>
++void testZeroMuForceEquivalence() {
++    if constexpr (!has_applyBodyForcesWithFriction<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan::applyBodyForcesWithFriction not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free obsBody(matter.Ground(), Vec3(1., -1.0, 0.), aBody, Transform());
++        MobilizedBody::Free movingTermBody(matter.Ground(), Vec3(4., 1.0, 0.), aBody, Transform());
++
++        C cable(cables, matter.Ground(), Vec3(-2., 1.0, 0.), movingTermBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++
++        cable.addViaPoint(matter.Ground(), Vec3(-0.5, 1.0, 0.));
++        cable.addObstacle(
++            obsBody,
++            Transform(),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)),
++            Vec3(0., 1.0, 0.));
++
++        system.realizeTopology();
++        State s = system.getDefaultState();
++
++        Vec6 u{0., 0., 0., 1.5, 0., 0.};
++        movingTermBody.setU(s, u);
++        system.realize(s, Stage::Velocity);
++
++        const int numBodies = matter.getNumBodies();
++        const Real T0 = 13.0;
++
++        // 1. Unset coefficients: equivalence within numerical tolerance
++        Vector_<SpatialVec> forcesUniform(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++        Vector_<SpatialVec> forcesFriction(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++        cable.applyBodyForces(s, T0, forcesUniform);
++        cable.applyBodyForcesWithFriction(s, T0, forcesFriction);
++
++        for (int i = 0; i < numBodies; ++i) {
++            CABLE_CHECK((forcesUniform[i] - forcesFriction[i]).norm() < 1e-12,
++                "Spatial force/moment for body %i does not match applyBodyForces within tolerance: diff norm %e",
++                i, (forcesUniform[i] - forcesFriction[i]).norm());
++        }
++
++        // 2. Explicit zero coefficient: equivalence within tolerance
++        cable.setObstacleFrictionCoefficient(Obs0, 0.0);
++        State sZero = system.realizeTopology();
++        movingTermBody.setU(sZero, u);
++        system.realize(sZero, Stage::Velocity);
++        Vector_<SpatialVec> forcesFrictionZero(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++        cable.applyBodyForcesWithFriction(sZero, T0, forcesFrictionZero);
++
++        for (int i = 0; i < numBodies; ++i) {
++            CABLE_CHECK((forcesUniform[i] - forcesFrictionZero[i]).norm() < 1e-12,
++                "Spatial force/moment for body %i with explicit mu=0 does not match applyBodyForces within tolerance: diff norm %e",
++                i, (forcesUniform[i] - forcesFrictionZero[i]).norm());
++        }
++    }
++}
++
++// The dissipated power is lengthDot * (Tterm - T0) and never negative.
++template <typename C = CableSpan>
++void testFrictionPowerBalance() {
++    if constexpr (!has_calcFrictionPowerDissipation<C>::value ||
++                  !has_calcTensionAtTermination<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan::calcFrictionPowerDissipation not implemented");
++    } else {
++        TwoObstacleMovingFixture<C> fix;
++
++        const Real mu0 = 0.25;
++        const Real mu1 = 0.40;
++        fix.cable.setObstacleFrictionCoefficient(Obs0, mu0);
++        fix.cable.setObstacleFrictionCoefficient(Obs1, mu1);
++
++        const Real T0 = 13.0;
++
++        // Lengthening and shortening.
++        for (const Real sign : {1., -1.}) {
++            State s = fix.makeState(sign * 2.0);
++
++            Real P = fix.cable.calcFrictionPowerDissipation(s, T0);
++            CABLE_CHECK(P >= 0.0, "Friction dissipation must be non-negative (got %f)", P);
++
++            Real Tterm = fix.cable.calcTensionAtTermination(s, T0);
++            Real lengthDot = fix.cable.calcLengthDot(s);
++            Real P_expected = lengthDot * (Tterm - T0);
++            std::cout << "lengthDot " << lengthDot << ": Tterm " << Tterm << " P " << P << std::endl;
++
++            CABLE_CHECK(std::abs(P - P_expected) < 1e-10,
++                "Power balance error: got %f, expected %f (diff %e)", P, P_expected, std::abs(P - P_expected));
++
++            // Against the wrap angles known from the geometry.
++            Real geometricTterm = T0 * std::exp(sign * (mu0 + mu1) * fix.wrapAnglePerSphere());
++            Real P_geometric = lengthDot * (geometricTterm - T0);
++            CABLE_CHECK(P_geometric > 0.1 && std::abs(P - P_geometric) < 1e-4 * P_geometric,
++                "Dissipated power is %.9f, expected %.9f from the wrap geometry", P, P_geometric);
++        }
++
++        // At rest nothing is dissipated.
++        {
++            State s = fix.makeState(0.);
++            Real P = fix.cable.calcFrictionPowerDissipation(s, T0);
++            CABLE_CHECK(std::abs(P) < 1e-14, "Power dissipation must be zero at zero speed (got %e)", P);
++        }
++
++        // Without friction nothing is dissipated.
++        {
++            fix.cable.setObstacleFrictionCoefficient(Obs0, 0.0);
++            fix.cable.setObstacleFrictionCoefficient(Obs1, 0.0);
++            State s = fix.makeState(2.0);
++            Real P = fix.cable.calcFrictionPowerDissipation(s, T0);
++            CABLE_CHECK(std::abs(P) < 1e-14, "Power dissipation must be zero when mu=0 (got %e)", P);
++        }
++    }
++}
++
++// A nonpositive origin tension represents slack: termination tension and dissipation are zero and force application is a no-op.
++template <typename C = CableSpan>
++void testSlackCable() {
++    if constexpr (!has_calcTensionAtTermination<C>::value ||
++                  !has_calcFrictionPowerDissipation<C>::value ||
++                  !has_applyBodyForcesWithFriction<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan slack APIs not implemented");
++    } else {
++        TwoObstacleMovingFixture<C> fix;
++
++        fix.cable.setObstacleFrictionCoefficient(Obs0, 0.35);
++        fix.cable.setObstacleFrictionCoefficient(Obs1, 0.50);
++
++        State s = fix.makeState(2.0);
++
++        const int numBodies = fix.matter.getNumBodies();
++        Vector_<SpatialVec> sentinels(numBodies);
++        for (int i = 0; i < numBodies; ++i) {
++            sentinels[i] = SpatialVec(Vec3(i * 1.1 + 0.1, i * 2.2 + 0.2, i * 3.3 + 0.3),
++                                      Vec3(i * 4.4 + 0.4, i * 5.5 + 0.5, i * 6.6 + 0.6));
++        }
++
++        for (Real slackTension : {0.0, -3.0}) {
++            Real Tterm = fix.cable.calcTensionAtTermination(s, slackTension);
++            CABLE_CHECK(Tterm == 0.0,
++                "Termination tension for slack tension %f must be 0 (got %f)", slackTension, Tterm);
++
++            Real P = fix.cable.calcFrictionPowerDissipation(s, slackTension);
++            CABLE_CHECK(P == 0.0,
++                "Power dissipation for slack tension %f must be 0 (got %f)", slackTension, P);
++
++            Vector_<SpatialVec> testForces = sentinels;
++            fix.cable.applyBodyForcesWithFriction(s, slackTension, testForces);
++
++            for (int i = 0; i < numBodies; ++i) {
++                CABLE_CHECK(testForces[i][0] == sentinels[i][0] && testForces[i][1] == sentinels[i][1],
++                    "applyBodyForcesWithFriction for slack tension %f must leave body %i forces unchanged", slackTension, i);
++            }
++        }
++    }
++}
++
++// calcTensionAtTermination, applyBodyForcesWithFriction, and calcFrictionPowerDissipation require Stage::Velocity.
++template <typename C = CableSpan>
++void testVelocityStageRequirements() {
++    if constexpr (!has_calcTensionAtTermination<C>::value ||
++                  !has_applyBodyForcesWithFriction<C>::value ||
++                  !has_calcFrictionPowerDissipation<C>::value) {
++        CABLE_CHECK(false, "CableSpan velocity-stage APIs not implemented");
++    } else {
++        TwoObstacleMovingFixture<C> fix;
++        State s = fix.system.realizeTopology();
++
++        // Realize only to Stage::Position
++        fix.system.realize(s, Stage::Position);
++
++        const Real T0 = 13.0;
++        const int numBodies = fix.matter.getNumBodies();
++        Vector_<SpatialVec> forces(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++
++        // 1. calcTensionAtTermination throws at Stage::Position
++        bool threwTension = false;
++        try {
++            fix.cable.calcTensionAtTermination(s, T0);
++        } catch (const std::exception&) {
++            threwTension = true;
++        }
++        CABLE_CHECK(threwTension, "calcTensionAtTermination must throw when state is only at Stage::Position");
++
++        // 2. applyBodyForcesWithFriction throws at Stage::Position
++        bool threwForces = false;
++        try {
++            fix.cable.applyBodyForcesWithFriction(s, T0, forces);
++        } catch (const std::exception&) {
++            threwForces = true;
++        }
++        CABLE_CHECK(threwForces, "applyBodyForcesWithFriction must throw when state is only at Stage::Position");
++
++        // 3. calcFrictionPowerDissipation throws at Stage::Position
++        bool threwPower = false;
++        try {
++            fix.cable.calcFrictionPowerDissipation(s, T0);
++        } catch (const std::exception&) {
++            threwPower = true;
++        }
++        CABLE_CHECK(threwPower, "calcFrictionPowerDissipation must throw when state is only at Stage::Position");
++
++        // After realize to Stage::Velocity, all three succeed
++        fix.system.realize(s, Stage::Velocity);
++
++        Real Tterm = fix.cable.calcTensionAtTermination(s, T0);
++        CABLE_CHECK(!std::isnan(Tterm) && Tterm > 0.0, "calcTensionAtTermination must succeed at Stage::Velocity");
++
++        fix.cable.applyBodyForcesWithFriction(s, T0, forces);
++        CABLE_CHECK(forces[fix.movingTermBody.getMobilizedBodyIndex()][1].norm() > 0.0,
++            "applyBodyForcesWithFriction must succeed and accumulate forces at Stage::Velocity");
++
++        Real P = fix.cable.calcFrictionPowerDissipation(s, T0);
++        CABLE_CHECK(!std::isnan(P) && P >= 0.0, "calcFrictionPowerDissipation must succeed at Stage::Velocity");
++    }
++}
++
++// On a surface without a closed-form geodesic the wrap angle still matches the
++// turning of the path tangent, and drives the tension the same way.
++template <typename C = CableSpan>
++void testEllipsoidWrapAngle() {
++    if constexpr (!has_calcCurveSegmentWrapAngle<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value ||
++                  !has_calcTensionAtTermination<C>::value) {
++        CABLE_CHECK(false, "CableSpan friction APIs not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free originBody(matter.Ground(), Vec3(-2., -0.2, -0.5), aBody, Transform());
++        MobilizedBody::Free movingTermBody(matter.Ground(), Vec3(2., -0.2, 0.5), aBody, Transform());
++
++        C cable(cables, originBody, Vec3(0.), movingTermBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-6);
++
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(Vec3(0., -0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Ellipsoid({1.0, 0.5, 0.75})),
++            Vec3(0., 0.5, 0.));
++
++        const Real mu = 0.30;
++        cable.setObstacleFrictionCoefficient(Obs0, mu);
++
++        State s = system.realizeTopology();
++        movingTermBody.setU(s, Vec6{0., 0., 0., 1.5, 0., 0.});
++        system.realize(s, Stage::Velocity);
++
++        CABLE_CHECK(cable.isInContactWithObstacle(s, Obs0),
++            "Cable should be in contact with ellipsoid obstacle");
++
++        Real theta = cable.calcCurveSegmentWrapAngle(s, Obs0);
++        Real arcLen = cable.calcCurveSegmentArcLength(s, Obs0);
++
++        CABLE_CHECK(!std::isnan(theta) && theta > 0.05,
++            "Ellipsoid wrap angle must be positive and finite (got %f)", theta);
++        CABLE_CHECK(arcLen > 0.05, "Arc length must be positive (got %f)", arcLen);
++
++        const Real turning = estimateTurning(cable, s, Obs0);
++        std::cout << "ellipsoid: theta " << theta << " turning " << turning
++                  << " arc " << arcLen << std::endl;
++        CABLE_CHECK(std::abs(theta - turning) < 0.01 * theta + 1e-3,
++            "Ellipsoid wrap angle (%.9f) deviates from the turning of the path tangent (%.9f) by %e",
++            theta, turning, std::abs(theta - turning));
++
++        Real lengthDot = cable.calcLengthDot(s);
++        CABLE_CHECK(lengthDot > 0.1, "Cable must be lengthening");
++
++        const Real T0 = 10.0;
++        Real expectedTterm = T0 * std::exp(mu * theta);
++        Real gotTterm = cable.calcTensionAtTermination(s, T0);
++
++        CABLE_CHECK(std::abs(gotTterm - expectedTterm) < 1e-6 * expectedTterm,
++            "Ellipsoid tension propagation mismatch: got %f, expected %f (ratio error %e)",
++            gotTterm, expectedTterm, std::abs(gotTterm - expectedTterm) / expectedTterm);
++    }
++}
++
++// A cable threaded through a torus wraps the tube along a meridian circle.
++template <typename C = CableSpan>
++void testTorusWrapAngle() {
++    if constexpr (!has_calcCurveSegmentWrapAngle<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value ||
++                  !has_calcTensionAtTermination<C>::value) {
++        CABLE_CHECK(false, "CableSpan friction APIs not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free movingTermBody(matter.Ground(), Vec3(3., -1., 0.), aBody, Transform());
++
++        C cable(cables, matter.Ground(), Vec3(-3., -1., 0.), movingTermBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-7);
++
++        // The tube cross-section in the cable plane is a unit circle centred at (0, -1, 0).
++        const Real tubeRadius = 1.;
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(Rotation(0.5 * Pi, YAxis), Vec3(0., 9., 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Torus(10., tubeRadius)),
++            Vec3(0., -9., 0.));
++
++        const Real mu = 0.30;
++        cable.setObstacleFrictionCoefficient(Obs0, mu);
++
++        State s = system.realizeTopology();
++        movingTermBody.setU(s, Vec6{0., 0., 0., 1.5, 0., 0.});
++        system.realize(s, Stage::Velocity);
++
++        CABLE_CHECK(cable.isInContactWithObstacle(s, Obs0),
++            "Cable should be in contact with the torus");
++
++        const Real thetaExpected = 2. * std::asin(tubeRadius / 3.);
++        const Real theta = cable.calcCurveSegmentWrapAngle(s, Obs0);
++        const Real arcLen = cable.calcCurveSegmentArcLength(s, Obs0);
++        std::cout << "torus: theta " << theta << " expected " << thetaExpected
++                  << " arc " << arcLen
++                  << " turning " << estimateTurning(cable, s, Obs0) << std::endl;
++        CABLE_CHECK(std::abs(arcLen - tubeRadius * thetaExpected) < 1e-4,
++            "Arc length on the torus is %.9f, expected %.9f", arcLen, tubeRadius * thetaExpected);
++        CABLE_CHECK(std::abs(theta - thetaExpected) < 1e-4,
++            "Wrap angle on the torus is %.9f, expected %.9f", theta, thetaExpected);
++
++        CABLE_CHECK(cable.calcLengthDot(s) > 0.1, "Cable must be lengthening");
++
++        const Real T0 = 10.0;
++        Real expectedTterm = T0 * std::exp(mu * thetaExpected);
++        Real gotTterm = cable.calcTensionAtTermination(s, T0);
++        CABLE_CHECK(std::abs(gotTterm - expectedTterm) < 1e-4 * expectedTterm,
++            "Torus tension propagation mismatch: got %.9f, expected %.9f", gotTterm, expectedTterm);
++    }
++}
++
++// Integral of the surface normal curvature along a curve segment on a torus
++// centred at the Ground origin with its axis along z. The principal curvatures
++// are cos(v)/rho around the axis and 1/tubeRadius around the tube.
++static Real torusNormalCurvatureIntegral(
++    const CableSpan& cable, const State& s, CableSpanObstacleIndex ix,
++    Real torusRadius, Real tubeRadius)
++{
++    std::vector<Vec3> pts;
++    cable.calcCurveSegmentResampledPoints(s, ix, 2001,
++        [&](Vec3 p) { pts.push_back(p); });
++    Real integral = 0.;
++    for (size_t i = 0; i + 1 < pts.size(); ++i) {
++        const Vec3 mid = 0.5 * (pts[i] + pts[i + 1]);
++        const Vec3 step = pts[i + 1] - pts[i];
++        const Real rho = std::hypot(mid[0], mid[1]);
++        const Real tube = std::hypot(rho - torusRadius, mid[2]);
++        const Real cosV = (rho - torusRadius) / tube;
++        const Real sinV = mid[2] / tube;
++        const Vec3 aroundAxis(-mid[1] / rho, mid[0] / rho, 0.);
++        const Vec3 aroundTube(-sinV * mid[0] / rho, -sinV * mid[1] / rho, cosV);
++        const Real du = dot(step, aroundAxis);
++        const Real dv = dot(step, aroundTube);
++        const Real ds = std::sqrt(du * du + dv * dv);
++        if (ds > 0.) {
++            integral += (cosV / rho * du * du + dv * dv / tubeRadius) / ds;
++        }
++    }
++    return integral;
++}
++
++// A cable passing through the hole of a torus touches the inner rim, where the
++// surface is concave along the path, so the wrap angle is negative.
++template <typename C = CableSpan>
++void testConcaveWrapAngle() {
++    if constexpr (!has_calcCurveSegmentWrapAngle<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value ||
++                  !has_calcTensionAtTermination<C>::value ||
++                  !has_applyBodyForcesWithFriction<C>::value) {
++        CABLE_CHECK(false, "CableSpan friction APIs not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free termBody(matter.Ground(), Vec3(-3.5, -0.1, -2.3), aBody, Transform());
++
++        C cable(cables, matter.Ground(), Vec3(3.5, -0.1, 2.3), termBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++        cable.setSolverMaxIterations(100);
++
++        const Real torusRadius = 2.;
++        const Real tubeRadius = 1.;
++        cable.addObstacle(
++            matter.Ground(),
++            Transform(),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Torus(torusRadius, tubeRadius)),
++            Vec3(0., torusRadius - tubeRadius, 0.));
++
++        const Real mu = 0.5;
++        cable.setObstacleFrictionCoefficient(Obs0, mu);
++
++        State s = system.realizeTopology();
++        system.realize(s, Stage::Position);
++
++        CABLE_CHECK(cable.isInContactWithObstacle(s, Obs0),
++            "Cable should be in contact with the inner rim of the torus");
++
++        const Real arcLen = cable.calcCurveSegmentArcLength(s, Obs0);
++        const Real thetaExpected =
++            torusNormalCurvatureIntegral(cable, s, Obs0, torusRadius, tubeRadius);
++        const Real theta = cable.calcCurveSegmentWrapAngle(s, Obs0);
++        std::cout << "concave: theta " << theta << " expected " << thetaExpected
++                  << " arc " << arcLen
++                  << " smoothness " << cable.getSmoothness(s) << std::endl;
++
++        CABLE_CHECK(arcLen > 1. && thetaExpected < -0.4,
++            "Contact should run along the concave inner rim (arc %f, curvature integral %f)",
++            arcLen, thetaExpected);
++        CABLE_CHECK(std::abs(theta - thetaExpected) < 1e-3,
++            "Wrap angle on the inner rim of the torus is %.9f, expected the normal curvature integral %.9f",
++            theta, thetaExpected);
++
++        // The capstan factor uses the signed wrap angle: here the tension
++        // falls toward the termination while lengthening and rises while shortening.
++        const Real T0 = 10.0;
++        const Real signs[] = {1., -1.};
++        for (Real sign : signs) {
++            termBody.setU(s, Vec6{0., 0., 0., -1.5 * sign, 0., -1.0 * sign});
++            system.realize(s, Stage::Velocity);
++            const Real lengthDot = cable.calcLengthDot(s);
++            CABLE_CHECK(sign * lengthDot > 0.1,
++                "Unexpected cable length rate %f on the inner rim of the torus", lengthDot);
++
++            const Real expectedTterm = T0 * std::exp(sign * mu * thetaExpected);
++            const Real gotTterm = cable.calcTensionAtTermination(s, T0);
++            std::cout << "concave: lengthDot " << lengthDot << " Tterm " << gotTterm
++                      << " expected " << expectedTterm << std::endl;
++            CABLE_CHECK(std::abs(gotTterm - expectedTterm) < 1e-3 * expectedTterm,
++                "Termination tension with a negative wrap angle is %.9f, expected %.9f",
++                gotTterm, expectedTterm);
++
++            Vector_<SpatialVec> forces(matter.getNumBodies(), SpatialVec(Vec3(0.), Vec3(0.)));
++            cable.applyBodyForcesWithFriction(s, T0, forces);
++            const Real termForce = forces[termBody.getMobilizedBodyIndex()][1].norm();
++            CABLE_CHECK(std::abs(termForce - expectedTterm) < 1e-3 * expectedTterm,
++                "Termination force magnitude with a negative wrap angle is %.9f, expected %.9f",
++                termForce, expectedTterm);
++        }
++    }
++}
++
++// applyBodyForcesWithFriction accumulates into bodyForcesInG (superposition with pre-existing forces).
++template <typename C = CableSpan>
++void testForceAccumulationSuperposition() {
++    if constexpr (!has_applyBodyForcesWithFriction<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan::applyBodyForcesWithFriction not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free obsBody(matter.Ground(), Vec3(1., -1.0, 0.), aBody, Transform());
++        MobilizedBody::Free movingTermBody(matter.Ground(), Vec3(4., 1.0, 0.), aBody, Transform());
++
++        C cable(cables, matter.Ground(), Vec3(-2., 1.0, 0.), movingTermBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++
++        cable.addViaPoint(matter.Ground(), Vec3(-0.5, 1.0, 0.));
++        cable.addObstacle(
++            obsBody,
++            Transform(),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)),
++            Vec3(0., 1.0, 0.));
++
++        cable.setObstacleFrictionCoefficient(Obs0, 0.35);
++
++        system.realizeTopology();
++        State s = system.getDefaultState();
++
++        Vec6 u{0., 0., 0., 1.5, 0., 0.};
++        movingTermBody.setU(s, u);
++        system.realize(s, Stage::Velocity);
++
++        const int numBodies = matter.getNumBodies();
++        const Real T0 = 13.0;
++
++        Vector_<SpatialVec> initialForces(numBodies);
++        for (int i = 0; i < numBodies; ++i) {
++            initialForces[i] = SpatialVec(Vec3(i * 10. + 1., i * 10. + 2., i * 10. + 3.),
++                                          Vec3(i * 10. + 4., i * 10. + 5., i * 10. + 6.));
++        }
++
++        Vector_<SpatialVec> accumulatedForces = initialForces;
++        cable.applyBodyForcesWithFriction(s, T0, accumulatedForces);
++
++        Vector_<SpatialVec> isolatedForces(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++        cable.applyBodyForcesWithFriction(s, T0, isolatedForces);
++
++        for (int i = 0; i < numBodies; ++i) {
++            SpatialVec expected = initialForces[i] + isolatedForces[i];
++            CABLE_CHECK((accumulatedForces[i] - expected).norm() < 1e-12,
++                "Accumulated force on body %i does not match initial + isolated: diff norm %e",
++                i, (accumulatedForces[i] - expected).norm());
++        }
++    }
++}
++
++// In a multi-obstacle chain with interleaved liftoff, tension propagates across free spans and non-contacting obstacles.
++template <typename C = CableSpan>
++void testInterleavedLiftoffPropagation() {
++    if constexpr (!has_calcTensionAtTermination<C>::value ||
++                  !has_applyBodyForcesWithFriction<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value ||
++                  !has_calcCurveSegmentWrapAngle<C>::value) {
++        CABLE_CHECK(false, "CableSpan friction APIs not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free movingTermBody(matter.Ground(), Vec3(8., 0., 0.), aBody, Transform());
++        MobilizedBody::Free obs0Body(matter.Ground(), Vec3(1., -0.5, 0.), aBody, Transform());
++        MobilizedBody::Free obs1Body(matter.Ground(), Vec3(3., -5.0, 0.), aBody, Transform());
++        MobilizedBody::Free viaBody(matter.Ground(), Vec3(4.5, 0.0, 0.), aBody, Transform());
++        MobilizedBody::Free obs2Body(matter.Ground(), Vec3(6., -0.5, 0.), aBody, Transform());
++
++        C cable(cables, matter.Ground(), Vec3(-1., 0., 0.), movingTermBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++
++        // Obstacle 0 (contact)
++        cable.addObstacle(obs0Body, Transform(),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)), Vec3(0., 0.5, 0.));
++
++        // Obstacle 1 (lifted off)
++        cable.addObstacle(obs1Body, Transform(),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)), Vec3(0., 1.0, 0.));
++
++        // Intervening frictionless via point attached to viaBody
++        cable.addViaPoint(viaBody, Vec3(0.));
++
++        // Obstacle 2 (contact)
++        cable.addObstacle(obs2Body, Transform(),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)), Vec3(0., 0.5, 0.));
++
++        const Real mu0 = 0.25;
++        const Real mu1 = 1.50;
++        const Real mu2 = 0.40;
++        cable.setObstacleFrictionCoefficient(Obs0, mu0);
++        cable.setObstacleFrictionCoefficient(Obs1, mu1);
++        cable.setObstacleFrictionCoefficient(Obs2, mu2);
++
++        system.realizeTopology();
++        State s = system.getDefaultState();
++
++        Vec6 u{0., 0., 0., 2.0, 0., 0.};
++        movingTermBody.setU(s, u);
++        system.realize(s, Stage::Velocity);
++
++        CABLE_CHECK(cable.isInContactWithObstacle(s, Obs0), "Obstacle 0 must be in contact");
++        CABLE_CHECK(!cable.isInContactWithObstacle(s, Obs1), "Obstacle 1 must NOT be in contact");
++        CABLE_CHECK(cable.isInContactWithObstacle(s, Obs2), "Obstacle 2 must be in contact");
++
++        Real theta0 = cable.calcCurveSegmentWrapAngle(s, Obs0);
++        Real theta1 = cable.calcCurveSegmentWrapAngle(s, Obs1);
++        Real theta2 = cable.calcCurveSegmentWrapAngle(s, Obs2);
++
++        CABLE_CHECK(std::isnan(theta1), "Lifted obstacle 1 wrap angle must be NaN");
++        CABLE_CHECK(std::abs(theta0 - sphereWrapAngle(cable, s, Obs0, 1.)) < 1e-5,
++            "Wrap angle on obstacle 0 is %.9f, but arc length / radius is %.9f",
++            theta0, sphereWrapAngle(cable, s, Obs0, 1.));
++        CABLE_CHECK(std::abs(theta2 - sphereWrapAngle(cable, s, Obs2, 1.)) < 1e-5,
++            "Wrap angle on obstacle 2 is %.9f, but arc length / radius is %.9f",
++            theta2, sphereWrapAngle(cable, s, Obs2, 1.));
++
++        const Real T0 = 13.0;
++        Real expectedTterm = T0 * std::exp(mu0 * theta0 + mu2 * theta2);
++        Real gotTterm = cable.calcTensionAtTermination(s, T0);
++
++        CABLE_CHECK(std::abs(gotTterm - expectedTterm) < 1e-6 * expectedTterm,
++            "Interleaved liftoff tension mismatch: got %f, expected %f (ratio error %e)",
++            gotTterm, expectedTterm, std::abs(gotTterm - expectedTterm) / expectedTterm);
++
++        const int numBodies = matter.getNumBodies();
++        Vector_<SpatialVec> forces(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++        cable.applyBodyForcesWithFriction(s, T0, forces);
++
++        MobilizedBodyIndex obs1Ix = obs1Body.getMobilizedBodyIndex();
++        CABLE_CHECK(forces[obs1Ix].norm() < 1e-12,
++            "Lifted obstacle 1 must receive zero spatial wrench (got norm %e)", forces[obs1Ix].norm());
++
++        // Check via point scaling under local continuous tension: T_via = T0 * exp(mu0 * theta0)
++        MobilizedBodyIndex viaIx = viaBody.getMobilizedBodyIndex();
++        Vector_<SpatialVec> forcesUniform(numBodies, SpatialVec(Vec3(0.), Vec3(0.)));
++        cable.applyBodyForces(s, 1.0, forcesUniform);
++        SpatialVec viaUnitForce = forcesUniform[viaIx];
++        CABLE_CHECK(viaUnitForce[1].norm() > 1e-4,
++            "Via point unit force magnitude must be nonzero (got %e)", viaUnitForce[1].norm());
++
++        Real T_via = T0 * std::exp(mu0 * theta0);
++        SpatialVec expectedViaWrench = viaUnitForce * T_via;
++        CABLE_CHECK((forces[viaIx] - expectedViaWrench).norm() < 1e-5,
++            "Via point spatial wrench mismatch under friction: got norm %e, diff norm %e",
++            forces[viaIx].norm(), (forces[viaIx] - expectedViaWrench).norm());
++        CABLE_CHECK((forces[viaIx] - viaUnitForce * T0).norm() > 1e-4,
++            "Via point wrench must separate from T0 scaling: got norm %e vs T0 norm %e",
++            forces[viaIx].norm(), (viaUnitForce * T0).norm());
++
++        Real T_entry2 = T0 * std::exp(mu0 * theta0);
++        Real T_exit2 = expectedTterm;
++
++        Transform XP2 = cable.calcCurveSegmentInitialFrenetFrame(s, Obs2);
++        Transform XQ2 = cable.calcCurveSegmentFinalFrenetFrame(s, Obs2);
++        Vec3 x_GB2 = obs2Body.getBodyOriginLocation(s);
++
++        Vec3 r_P2 = XP2.p() - x_GB2;
++        Vec3 r_Q2 = XQ2.p() - x_GB2;
++        UnitVec3 t_P2 = XP2.R().x();
++        UnitVec3 t_Q2 = XQ2.R().x();
++
++        SpatialVec expectedWrench2;
++        expectedWrench2[0] = r_Q2 % (T_exit2 * t_Q2) - r_P2 % (T_entry2 * t_P2);
++        expectedWrench2[1] = T_exit2 * t_Q2 - T_entry2 * t_P2;
++
++        MobilizedBodyIndex obs2Ix = obs2Body.getMobilizedBodyIndex();
++        SpatialVec diff2 = forces[obs2Ix] - expectedWrench2;
++        CABLE_CHECK(diff2.norm() < 1e-5,
++            "Obstacle 2 spatial wrench error (%e) exceeds tolerance", diff2.norm());
++    }
++}
++
++// Reciprocal tension ratio symmetry and positive dissipation across direction reversal.
++template <typename C = CableSpan>
++void testReversibilitySymmetry() {
++    if constexpr (!has_calcTensionAtTermination<C>::value ||
++                  !has_calcFrictionPowerDissipation<C>::value ||
++                  !has_setObstacleFrictionCoefficient<C>::value) {
++        CABLE_CHECK(false, "CableSpan friction APIs not implemented");
++    } else {
++        MultibodySystem system;
++        SimbodyMatterSubsystem matter(system);
++        CableSubsystem cables(system);
++
++        Body::Rigid aBody(MassProperties(1., Vec3(0), Inertia(1)));
++        MobilizedBody::Free movingTermBody(matter.Ground(), Vec3(5., 0., 0.), aBody, Transform());
++
++        C cable(cables, matter.Ground(), Vec3(-1., 0., 0.), movingTermBody, Vec3(0.));
++        cable.setCurveSegmentAccuracy(1e-12);
++        cable.setSmoothnessTolerance(1e-8);
++
++        cable.addObstacle(matter.Ground(), Transform(Vec3(1., -0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)), Vec3(0., 0.5, 0.));
++        cable.addObstacle(matter.Ground(), Transform(Vec3(3., -0.5, 0.)),
++            std::shared_ptr<ContactGeometry>(new ContactGeometry::Sphere(1.0)), Vec3(0., 0.5, 0.));
++
++        cable.setObstacleFrictionCoefficient(Obs0, 0.28);
++        cable.setObstacleFrictionCoefficient(Obs1, 0.42);
++
++        system.realizeTopology();
++        State s = system.getDefaultState();
++
++        const Real T0 = 17.5;
++
++        // Lengthening state
++        Vec6 u_plus{0., 0., 0., 2.5, 0., 0.};
++        movingTermBody.setU(s, u_plus);
++        system.realize(s, Stage::Velocity);
++
++        Real ldot_plus = cable.calcLengthDot(s);
++        Real T_plus = cable.calcTensionAtTermination(s, T0);
++        Real P_plus = cable.calcFrictionPowerDissipation(s, T0);
++        Real R_plus = T_plus / T0;
++
++        // Shortening state (exact negated velocity)
++        Vec6 u_minus{0., 0., 0., -2.5, 0., 0.};
++        movingTermBody.setU(s, u_minus);
++        system.realize(s, Stage::Velocity);
++
++        Real ldot_minus = cable.calcLengthDot(s);
++        Real T_minus = cable.calcTensionAtTermination(s, T0);
++        Real P_minus = cable.calcFrictionPowerDissipation(s, T0);
++        Real R_minus = T_minus / T0;
++
++        CABLE_CHECK(ldot_plus > 0.1, "Lengthening lengthDot must be positive (got %f)", ldot_plus);
++        CABLE_CHECK(ldot_minus < -0.1, "Shortening lengthDot must be negative (got %f)", ldot_minus);
++
++        // Reciprocal ratio symmetry: R_plus * R_minus == 1
++        CABLE_CHECK(std::abs(R_plus * R_minus - 1.0) < 1e-12,
++            "Capstan ratio product (%f) does not equal 1.0 (diff %e)",
++            R_plus * R_minus, std::abs(R_plus * R_minus - 1.0));
++
++        // Both dissipated powers must be strictly positive
++        CABLE_CHECK(P_plus > 0.0, "Lengthening friction power must be positive (got %f)", P_plus);
++        CABLE_CHECK(P_minus > 0.0, "Shortening friction power must be positive (got %f)", P_minus);
++    }
++}
++
++int main(int argc, char** argv) {
++    std::string testToRun = "";
++    if (argc > 1) {
++        testToRun = argv[1];
++    }
++
++    struct TestCase {
++        std::string name;
++        std::function<void()> func;
++    };
++
++    std::vector<TestCase> tests = {
++        {"coefficient", testCoefficient<>},
++        {"invalid_coefficient", testInvalidCoefficient<>},
++        {"wrap_angle_helix", testHelicalCylinderWrapAngle<>},
++        {"wrap_angle_sphere", testSphereWrapAngle<>},
++        {"wrap_angle_torus", testTorusWrapAngle<>},
++        {"wrap_angle_concave", testConcaveWrapAngle<>},
++        {"wrap_angle_no_contact", testWrapAngleNoContact<>},
++        {"wrap_angle_stage", testWrapAngleStageRequirement<>},
++        {"tension_lengthening", testLengtheningTensionPropagation<>},
++        {"tension_shortening", testShorteningTensionPropagation<>},
++        {"tension_zero_rate", testZeroRateUniformTension<>},
++        {"path_invariance", testFrictionDoesNotChangePath<>},
++        {"liftoff_tension", testLiftedObstacleExcludedFromTension<>},
++        {"via_continuity", testViaPointTensionContinuity<>},
++        {"local_wrenches", testLocalTensionWrenches<>},
++        {"local_wrenches_shortening", testLocalTensionWrenchesShortening<>},
++        {"local_wrenches_zero_rate", testLocalTensionWrenchesZeroRate<>},
++        {"zero_mu_force_equivalence", testZeroMuForceEquivalence<>},
++        {"power_balance", testFrictionPowerBalance<>},
++        {"slack", testSlackCable<>},
++        {"velocity_stage", testVelocityStageRequirements<>},
++        {"wrap_angle_ellipsoid", testEllipsoidWrapAngle<>},
++        {"force_accumulation", testForceAccumulationSuperposition<>},
++        {"interleaved_liftoff_propagation", testInterleavedLiftoffPropagation<>},
++        {"reversibility_symmetry", testReversibilitySymmetry<>}
++    };
++
++    std::cout << std::setprecision(15);
++    bool found = false;
++    try {
++        for (const auto& tc : tests) {
++            if (!testToRun.empty() && tc.name != testToRun) {
++                continue;
++            }
++            found = true;
++            std::cout << "Running test: " << tc.name << std::endl;
++            tc.func();
++            std::cout << "PASSED: " << tc.name << std::endl;
++        }
++    } catch (const std::exception& e) {
++        std::cout << "FAILED with exception: " << e.what() << std::endl;
++        return 1;
++    }
++    if (!found) {
++        std::cout << "Unknown test: " << testToRun << std::endl;
++        return 1;
++    }
++    return 0;
++}
+diff --git a/Simbody/tests/TestCableSpan_Forces.cpp b/Simbody/tests/TestCableSpan_Forces.cpp
+index aba87955..bee6910e 100644
+--- a/Simbody/tests/TestCableSpan_Forces.cpp
++++ b/Simbody/tests/TestCableSpan_Forces.cpp
+@@ -20,6 +20,7 @@
+ 
+ using namespace SimTK;
+ 
++// CableSpan friction regression verification suite
+ /**
+ This file contains simple tests for checking computed forces and moments.
+ **/
+diff --git a/Simbody/tests/TestCableSpan_LengthDot.cpp b/Simbody/tests/TestCableSpan_LengthDot.cpp
+index 18a0108e..08a36a9f 100644
+--- a/Simbody/tests/TestCableSpan_LengthDot.cpp
++++ b/Simbody/tests/TestCableSpan_LengthDot.cpp
+@@ -20,6 +20,7 @@
+ 
+ using namespace SimTK;
+ 
++// CableSpan friction regression verification suite
+ /**
+ This file contains simple tests for checking computed path lengthening speeds.
+ **/

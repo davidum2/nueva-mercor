@@ -1,0 +1,23 @@
+Added `dlp/src/deidentify_cloud_storage.php` with the required public function:
+
+```php
+deidentify_cloud_storage(...)
+```
+
+The sample:
+
+- Reads files from a configurable Cloud Storage path.
+- Writes de-identified files to a separate Cloud Storage path.
+- Configures templates for unstructured, structured, and image content.
+- Stores transformation details in a configurable BigQuery table.
+- Polls until the DLP job reaches a terminal state.
+- Prints the job name and each discovered info type with its count.
+- Reports job errors when processing does not complete successfully.
+- Closes the DLP client reliably.
+
+Validation completed:
+
+- PHP syntax check passed.
+- Protobuf request construction and serialization passed.
+- PHP CS Fixer dry run passed.
+- Full PHPUnit execution was unavailable because `vendor/bin/phpunit` is not installed.

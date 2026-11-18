@@ -1,0 +1,24 @@
+diff --git a/build/vite/conf.js b/build/vite/conf.js
+index cfeff62..e97c58f 100644
+--- a/build/vite/conf.js
++++ b/build/vite/conf.js
+@@ -70,8 +70,8 @@ const manualChunks = (id) => {
+     if (id.includes('manate')) {
+       return 'manate'
+     }
+-    if (id.includes('zmodem-ts')) {
+-      return 'zmodem-ts'
++    if (id.includes('zmodem-wasm')) {
++      return 'zmodem-wasm'
+     }
+     if (id.includes('electerm-icons')) {
+       return 'electerm-icons'
+@@ -180,7 +180,7 @@ export default defineConfig({
+     }
+   },
+   optimizeDeps: {
+-    exclude: ['ironrdp-wasm']
++    exclude: ['ironrdp-wasm', 'zmodem-wasm']
+   },
+   // optimizeDeps: {
+   //   esbuildOptions: {

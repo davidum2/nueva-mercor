@@ -1,0 +1,650 @@
+Studio
+Annotator
+Tasks
+Dashboards
+Project
+Project Anton | SWE Trajectory QC Annotation
+Toggle theme
+HOME
+View
+TASK
+spinnaker-deck-5107 [model A/B]
+Annotating
+
+Created by [EXP] Edgar D · Updated by [EXP] Edgar D · Needs attention from [EXP] Edgar D
+
+Save Changes
+Tabs
+A · How this task works:
+How this task works
+B · Task bundle
+Task bundle
+Task Details
+Trajectory Viewer
+Trajectory Viewer
+1 · Agent solution A
+1 · Agent solution B
+Rubric (create)
+Rubric
+Rubric count
+Deliverable AutoQC
+Submit review
+Reviewer Feedback
+Navigation
+A · HOW THIS TASK WORKS:
+
+Read this first. It describes the annotation workflow end to end.
+
+HOW THIS TASK WORKS
+
+Read the instructions below carefully.
+
+What you do
+
+You are not authoring the task. The task, both agent rollouts, and the goal-completeness call arrive already seeded. Your job is to judge the two rollouts against each other.
+
+Work through the tabs in order. Everything below is required unless it says otherwise.
+
+Read the task (tab B). Browse the bundle: environment/, solution/, tests/, instruction.md and task.toml. Set Task type, classifying it from the metadata in task.toml.
+Score rollout A (tab C). Read the agent solution, then the trajectory. Score dimensions 2 to 9 on 1 to 5, each with a written reason, and give a final quality score for the side. Dimension 0 is already filled from the recorded run and is read-only for you.
+Score rollout B (tab D). The same, for the other rollout. Score it on its own merits before you compare the two.
+Rubrics (tab E). Write 8 to 15 binary questions where YES is always the good answer. Each one maps to a single dimension and must come from the prompt, from the environment, or from common engineering knowledge. Do not invent them. Record how many you wrote in Rubric count, then answer every one for both sides with a reason citing evidence in that trajectory. Rubrics 1 to 8 are required; 9 to 15 are optional and only apply if you wrote that many.
+Pairwise comparison (tab F). Give an overall preference of A against B and write a comparative rationale. The preference has to agree with your two final quality scores.
+AutoQC and submit (tab G). Run AutoQC, fix whatever it flags, then submit. Passing sends the task to review. Failing returns it to you with the issues.
+
+Tab H is the independent reviewer's, not yours.
+
+B · TASK BUNDLE
+
+environment/, solution/, tests/, instruction.md and task.toml.
+
+TASK BUNDLE
+
+environment/, solution/, tests/, instruction.md and task.toml for this task.
+
+EXPLORER
+environment
+Dockerfile
+solution
+golden.patch
+solve.sh
+tests
+config.json
+grade.py
+test.patch
+test.sh
+instruction.md
+task.toml
+config.json
+grade.py
+test.patch
+test.sh
+instruction.md
+task.toml
+spinnaker-deck-5107 [model A/B] / task.toml
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+22
+23
+schema_version = "1.1"
+[task]
+name = "spinnaker/deck"
+description = "## Description  When an artifact is removed from a Spinnaker pipeline, other stages that reference that artifact by ID are not automatically cleaned up. This leaves stale artifact references scattered across stage configurations, causing inconsistencies in pipeline state. There i"
+authors = [
+    { name = "SWE-Bench Extended" },
+]
+keywords = [
+    "javascript",
+    "software-engineering",
+]
+[task.metadata]
+deal_id = ""
+[metadata]
+language = "JavaScript/TypeScript"
+version = "1.0"
+author_name = "swe-bench-extended"
+difficulty = "hard"
+difficulty_explanation = "Measured Opus-4.8 pass@8 = 0/8 (offline, in-harness). Unsolved in all 8 rollouts; Hard band is 0-2/8 -> hard."
+pass_at_k_gpt_5_5 = ""
+TASK DETAILS
+Task type*
+
+Classify the task from the metadata in task.toml in the bundle (tab B).
+
+Select...
+TRAJECTORY VIEWER
+TRAJECTORY VIEWER
+
+Read the rollout: prompt, diff and logs. Model A = run A, Model B = run B.
+
+Model A
+Model B
+Model A
+completed
+0.0s
+PROMPT
+User
+## Description
+
+When an artifact is removed from a Spinnaker pipeline, other stages that reference that artifact by ID are not automatically cleaned up. This leaves stale artifact references scattered across stage configurations, causing inconsistencies in pipeline state. There is currently no centralized mechanism that allows stage types to declare which of their fields hold artifact references and ensures those fields are cleared when an artifact is deleted.
+
+## Expected Behavior
+
+Show more
+FINAL ANSWER
+ArtifactReferenceServiceProvider has been implemented in core/artifact/artifactReferenceServiceProvider.ts and registered with the core artifact module.
+Summary of Implementation:
+ArtifactReferenceServiceProvider: Allows stage types to register field paths holding artifact references (registerReferencePath, registerReferencePaths, register).
+Traversal and Cleanup: Handles top-level properties, deeply nested dot/bracket paths, indexed array elements, and general array
+Show more
+DIFF
+LOGS
+1 · AGENT SOLUTION A · TRAJECTORY A
+6 FILES CHANGED
++704
+-7
+
+The patch this rollout produced.
+
+1 · AGENT SOLUTION B · TRAJECTORY B
+6 FILES CHANGED
++23
+-7
+
+The patch this rollout produced.
+
+RUBRIC (CREATE)
+RUBRIC
+Rubric
+
+Write 8 to 15 binary questions where YES is always the good answer. Each maps to one dimension and comes from the prompt, the environment, or common engineering knowledge.
+
+Google Sheets
+Open in New Tab
+Add Rubric Item
+World Rubric
+
+Criteria that apply to every task in this world
+
+	Index
+	Verifier Type
+	Depends on
+
+	
+1
+	
+Lighthouse Overall Result (all-or-nothing task score)
+Programmatic
+		
+
+Task Rubric
+
+Criteria specific to this task
+
+Structured
+Spreadsheet
+All changes saved
+Columns
+#	TYPE
+	CRITERIA*
+	MAPPED DIMENSION*
+	SOURCE*
+	DEPENDENCIES
+
+
+1
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent create a TypeScript class named ArtifactReferenceServiceProvider?
+	
+2 · Architecture, Modularity & Trade-off Soundness
+	
+EXPLICIT_PROMPT
+	
+
+
+2
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent register the service as an Angular module provider using module().provider()?
+	
+3 · Codebase Conventions & Utility Reuse
+	
+INFERRABLE_FROM_ENVIRONMENT
+	
+
+
+3
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent implement a registration method that allows stage types to declare their artifact-reference fields?
+	
+2 · Architecture, Modularity & Trade-off Soundness
+	
+EXPLICIT_PROMPT
+	
+
+
+4
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent implement a sweep method that traverses pipeline stages to remove artifact references?
+	
+4 · Robustness, Safety & API Stability
+	
+EXPLICIT_PROMPT
+	
+
+
+5
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent correctly traverse arrays during the sweep?
+	
+4 · Robustness, Safety & API Stability
+	
+EXPLICIT_PROMPT
+	
+
+
+6
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent splice (remove) matching artifact IDs from arrays during the sweep?
+	
+4 · Robustness, Safety & API Stability
+	
+EXPLICIT_PROMPT
+	
+
+
+7
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the patch avoid adding files under the tmp/ directory?
+	
+3 · Codebase Conventions & Utility Reuse
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+8
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent avoid adding public methods whose bodies only delegate to another public method without adding behavior?
+	
+3 · Codebase Conventions & Utility Reuse
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+9
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent add committed focused tests for artifact-reference cleanup?
+	
+7 · Verification & Testing Discipline
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+
+
+10
+	
+Prompt-specific rubric (binary YES/NO)
+	
+Did the agent record a successful execution of focused artifact-reference tests?
+	
+9 · Final Summary & Presentation Quality
+	
+COMMON_ENGINEERING_KNOWLEDGE
+	
+Add rubric item
+↑↓←→ move
+⇧+arrows select range
+Enter / type to edit
+⌘C / ⌘V copy/paste
+Del clear
+Click row #/header to select a row/column
+Drag the row handle to reorder
+RUBRIC COUNT
+
+How many rubrics did you add above?
+
+Rubric count*
+
+How many rubrics did you write? Minimum 8, maximum 15.
+
+Select...
+DELIVERABLE AUTOQC
+SUBMIT REVIEW
+REVIEWER FEEDBACK
+
+Feedback for writer to follow in order to ahve the task approved!
+
+Adjudication rationale
+NAVIGATION
+Before you submit
+Task type required
+Rubric count required
+Pairwise Evaluation required
+Comparative Rationale required
+2 · Architecture, Modularity & Trade-off Soundness (A) required
+2 · reason (A) required
+3 · Codebase Conventions & Utility Reuse (A) required
+3 · reason (A) required
+4 · Robustness, Safety & API Stability (A) required
+4 · reason (A) required
+5 · Instruction Following & Scope Discipline (A) required
+5 · reason (A) required
+6 · Planning, Research & Tool Proficiency (A) required
+6 · reason (A) required
+7 · Verification & Testing Discipline (A) required
+7 · reason (A) required
+8 · Intermediate Communication & Risk Explanation (A) required
+8 · reason (A) required
+Rubric 1 · answer (A) required
+Rubric 1 · reason (A) required
+Rubric 2 · answer (A) required
+Rubric 2 · reason (A) required
+Rubric 3 · answer (A) required
+Rubric 3 · reason (A) required
+Rubric 4 · answer (A) required
+Rubric 4 · reason (A) required
+Rubric 5 · answer (A) required
+Rubric 5 · reason (A) required
+Rubric 6 · answer (A) required
+Rubric 6 · reason (A) required
+Rubric 7 · answer (A) required
+Rubric 7 · reason (A) required
+Rubric 8 · answer (A) required
+Rubric 8 · reason (A) required
+Final quality score (A) required
+2 · Architecture, Modularity & Trade-off Soundness (B) required
+2 · reason (B) required
+3 · Codebase Conventions & Utility Reuse (B) required
+3 · reason (B) required
+4 · Robustness, Safety & API Stability (B) required
+4 · reason (B) required
+5 · Instruction Following & Scope Discipline (B) required
+5 · reason (B) required
+6 · Planning, Research & Tool Proficiency (B) required
+6 · reason (B) required
+7 · Verification & Testing Discipline (B) required
+7 · reason (B) required
+8 · Intermediate Communication & Risk Explanation (B) required
+8 · reason (B) required
+Rubric 1 · answer (B) required
+Rubric 1 · reason (B) required
+Rubric 2 · answer (B) required
+Rubric 2 · reason (B) required
+Rubric 3 · answer (B) required
+Rubric 3 · reason (B) required
+Rubric 4 · answer (B) required
+Rubric 4 · reason (B) required
+Rubric 5 · answer (B) required
+Rubric 5 · reason (B) required
+Rubric 6 · answer (B) required
+Rubric 6 · reason (B) required
+Rubric 7 · answer (B) required
+Rubric 7 · reason (B) required
+Rubric 8 · answer (B) required
+Rubric 8 · reason (B) required
+Final quality score (B) required
+9 · Final Summary & Presentation Quality (A) required
+9 · reason (A) required
+9 · Final Summary & Presentation Quality (B) required
+9 · reason (B) required
+Length limits: 2 · reason (A)
+Length limits: 3 · reason (A)
+Length limits: 4 · reason (A)
+Length limits: 5 · reason (A)
+Length limits: 6 · reason (A)
+Length limits: 7 · reason (A)
+Length limits: 8 · reason (A)
+Length limits: 2 · reason (B)
+Length limits: 3 · reason (B)
+Length limits: 4 · reason (B)
+Length limits: 5 · reason (B)
+Length limits: 6 · reason (B)
+Length limits: 7 · reason (B)
+Length limits: 8 · reason (B)
+Length limits: 9 · reason (A)
+Length limits: 9 · reason (B)
+AutoQC failures resolved
+AutoQC up to date
+Submit for Final QC
+Unclaim
+Flag Defective Task
+HISTORY
+Status	Transitioned By	Updated By	Updated At
+Seed	
+MB
+Mayank Bharati
+	
+MB
+Mayank Bharati
+	5/9/2026, 18:44:56 GMT-6
+Claimable	
+MB
+Mayank Bharati
+	
+MB
+Mayank Bharati
+	6/9/2026, 0:14:45 GMT-6
+Annotating	
+[A
+[EXP] Abraham Ekene-onwon
+	
+[A
+[EXP] Abraham Ekene-onwon
+	6/9/2026, 22:37:15 GMT-6
+Final QC / Review	
+[A
+[EXP] Abraham Ekene-onwon
+	
+[A
+[EXP] Abraham Ekene-onwon
+	6/9/2026, 22:52:11 GMT-6
+In Review	
+[E
+[EXP] Elaine A
+	
+[E
+[EXP] Elaine A
+	7/9/2026, 11:25:26 GMT-6
+Final QC / Review	
+[E
+[EXP] Elaine A
+	
+[E
+[EXP] Elaine A
+	7/9/2026, 11:25:32 GMT-6
+In Review	
+[A
+[EXP] Amir R
+	
+MB
+Mayank Bharati
+	8/9/2026, 9:07:58 GMT-6
+Annotating	
+[L
+[EXP] Lorent Sinani
+	
+[A
+[EXP] Abraham Ekene-onwon
+	10/9/2026, 7:11:50 GMT-6
+Final QC / Review	
+[A
+[EXP] Abraham Ekene-onwon
+	
+MB
+Mayank Bharati
+	11/9/2026, 15:04:27 GMT-6
+In Review	
+[W
+[EXP] Warren F
+	
+[W
+[EXP] Warren F
+	14/9/2026, 21:59:13 GMT-6
+Annotating	
+[W
+[EXP] Warren F
+	
+[A
+[EXP] Abraham Ekene-onwon
+	16/9/2026, 3:51:35 GMT-6
+Final QC / Review	
+[A
+[EXP] Abraham Ekene-onwon
+	
+[A
+[EXP] Abraham Ekene-onwon
+	16/9/2026, 4:15:04 GMT-6
+In Review	
+[T
+[EXP] Tyler M
+	
+[T
+[EXP] Tyler M
+	16/9/2026, 13:34:30 GMT-6
+Annotating	
+[T
+[EXP] Tyler M
+	
+[A
+[EXP] Abraham Ekene-onwon
+	16/9/2026, 15:14:34 GMT-6
+Final QC / Review	
+[A
+[EXP] Abraham Ekene-onwon
+	
+[A
+[EXP] Abraham Ekene-onwon
+	16/9/2026, 23:35:06 GMT-6
+In Review	
+[K
+[EXP] Khaled Badawy
+	
+[K
+[EXP] Khaled Badawy
+	17/9/2026, 19:38:08 GMT-6
+Annotating	
+[K
+[EXP] Khaled Badawy
+	
+[A
+[EXP] Abraham Ekene-onwon
+	18/9/2026, 17:04:32 GMT-6
+Claimable	
+[A
+[EXP] Abraham Ekene-onwon
+	
+[A
+[EXP] Abraham Ekene-onwon
+	19/9/2026, 8:42:52 GMT-6
+Annotating	
+[P
+[EXP] Pranav G
+	
+WX
+Winston Xu
+	21/9/2026, 16:25:16 GMT-6
+Claimable	
+WX
+Winston Xu
+	
+WX
+Winston Xu
+	21/9/2026, 16:25:34 GMT-6
+Annotating	
+[Z
+[EXP] Zachary M
+	
+WX
+Winston Xu
+	23/9/2026, 21:02:31 GMT-6
+Claimable	
+WX
+Winston Xu
+	
+WX
+Winston Xu
+	23/9/2026, 21:03:50 GMT-6
+Annotating	
+[E
+[EXP] Edgar D
+	
+[E
+[EXP] Edgar D
+	23/9/2026, 21:16:54 GMT-6
+Annotation A
+Annotation B
+Pairwise verdict
+History
+Comments
+Flags
+ANNOTATION A
+DIMENSION 0 · GOAL COMPLETENESS (A)
+
+Seeded from the recorded run. Read-only for annotators.
+
+Dimension 0 · Goal completeness (A)*
+
+Prefilled from the recorded run when available. The annotator must verify and correct this PASS / PARTIAL / FAIL verdict as needed. For non-grandfathered tasks, a verdict and written reason are required before Submit for Final QC.
+
+FAIL
+3 · ANNOTATION A
+
+Score dimensions 2-9 for this rollout. Every score needs a reason.
+
+2 · Architecture, Modularity & Trade-off Soundness (A)*
+
+Dimension 2: Architecture, Modularity & Trade-off Soundness
+
+Evaluates structural design, abstraction level, and qualitative engineering trade-offs. Labelers must calibrate expectations based on the task context: prioritize modularity and maintainability for architectural features, or surgical precision and minimal scope for bug fixes. The agent should demonstrate judgment in choosing the appropriate scoping and complexity for the specific goal.
+
+🟣 5: Production ready
+
+Demonstrates senior-level engineering judgment and domain-appropriate architecture.
+Makes sound qualitative and algorithmic trade-offs (e.g., O(1) hash lookup vs O(n²) nested loop; streaming large datasets vs loading into memory).
+Chooses clean extensibility over ad-hoc wiring or short-term hacks.
+Modularity is well-balanced—avoids both unmaintainable hacks for production code and over-abstracted enterprise hierarchies for simple MVPs.
+Proactively selects the optimal strategy for the task's scope (e.g., minimal invasive changes for bug fixes vs. robust, extensible design for new features).
+
+🟢 4: Minor polish only
+
+Demonstrates solid architectural design and appropriate data structure selection.
+Fulfills qualitative architectural requirements cleanly.
+Exhibits only minor, inconsequential design imperfect

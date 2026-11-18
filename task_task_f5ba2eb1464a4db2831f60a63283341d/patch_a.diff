@@ -1,0 +1,25 @@
+# Reconstructed from the agent's edit/write tool calls -- the harness did not
+# capture a diff for this rollout. Hunk offsets are RELATIVE to each edited
+# region, not absolute file line numbers, so this will not `git apply` cleanly.
+
+diff --git a/build/vite/conf.js b/build/vite/conf.js
+--- a/build/vite/conf.js
++++ b/build/vite/conf.js
+@@ -4,9 +4,6 @@
+     if (id.includes('manate')) {
+       return 'manate'
+     }
+-    if (id.includes('zmodem-ts')) {
+-      return 'zmodem-ts'
+-    }
+     if (id.includes('electerm-icons')) {
+       return 'electerm-icons'
+     }
+diff --git a/build/vite/conf.js b/build/vite/conf.js
+--- a/build/vite/conf.js
++++ b/build/vite/conf.js
+@@ -1,3 +1,3 @@
+   optimizeDeps: {
+-    exclude: ['ironrdp-wasm']
++    exclude: ['ironrdp-wasm', 'trzsz']
+   },

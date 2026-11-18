@@ -1,0 +1,155 @@
+{
+  "createdResults": [
+    {
+      "idx": 0,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 1,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 2,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 3,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 4,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 5,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 6,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 7,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 8,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 9,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 10,
+      "skipped": true,
+      "note": "Already exists"
+    },
+    {
+      "idx": 11,
+      "status": 201,
+      "ok": true,
+      "id": "ver_f089360caebf462592690f71aa16031a"
+    },
+    {
+      "idx": 12,
+      "status": 201,
+      "ok": true,
+      "id": "ver_c1edf3d7330449e1b351286330f42ebb"
+    }
+  ],
+  "patchStatus": 200,
+  "patchOk": true,
+  "updatedAt": "2026-09-23T02:22:16.995454Z",
+  "finalVerifiersCount": 13,
+  "finalVerifiers": [
+    {
+      "id": "ver_81cf796b00b7499d9094585a89a98330",
+      "idx": 0,
+      "ans_a": "YES",
+      "ans_b": "NO"
+    },
+    {
+      "id": "ver_7dda937c36f24292bc06be412fbbd729",
+      "idx": 1,
+      "ans_a": "NO",
+      "ans_b": "NO"
+    },
+    {
+      "id": "ver_820863c5a07d4ad18925de208f1c7bea",
+      "idx": 2,
+      "ans_a": "NO",
+      "ans_b": "YES"
+    },
+    {
+      "id": "ver_0cee99eca3c34c0abc432217b4e68cb7",
+      "idx": 3,
+      "ans_a": "YES",
+      "ans_b": "YES"
+    },
+    {
+      "id": "ver_818c1b416406417182b69fd160e570bb",
+      "idx": 4,
+      "ans_a": "YES",
+      "ans_b": "YES"
+    },
+    {
+      "id": "ver_a001845eb61f40a480d632767533805d",
+      "idx": 5,
+      "ans_a": "NO",
+      "ans_b": "NO"
+    },
+    {
+      "id": "ver_20f59b7003694f739f4287274dcb6299",
+      "idx": 6,
+      "ans_a": "NO",
+      "ans_b": "YES"
+    },
+    {
+      "id": "ver_409872ec9b674f5fbe60452bc077e3e3",
+      "idx": 7,
+      "ans_a": "YES",
+      "ans_b": "YES"
+    },
+    {
+      "id": "ver_2ed743084af8497192d38950d3c7e9bd",
+      "idx": 8,
+      "ans_a": "YES",
+      "ans_b": "YES"
+    },
+    {
+      "id": "ver_3505ba0870754e8a81b5b4152a42c76f",
+      "idx": 9,
+      "ans_a": "YES",
+      "ans_b": "NO"
+    },
+    {
+      "id": "ver_4af2b63c2c864e39888d96d5eee36984",
+      "idx": 10,
+      "ans_a": "YES",
+      "ans_b": "NO"
+    },
+    {
+      "id": "ver_f089360caebf462592690f71aa16031a",
+      "idx": 11,
+      "ans_a": "YES",
+      "ans_b": "YES"
+    },
+    {
+      "id": "ver_c1edf3d7330449e1b351286330f42ebb",
+      "idx": 12,
+      "ans_a": "YES",
+      "ans_b": "NO"
+    }
+  ]
+}

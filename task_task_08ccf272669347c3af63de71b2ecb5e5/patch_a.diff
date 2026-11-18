@@ -1,0 +1,782 @@
+# Reconstructed from the agent's edit/write tool calls -- the harness did not
+# capture a diff for this rollout. Hunk offsets are RELATIVE to each edited
+# region, not absolute file line numbers, so this will not `git apply` cleanly.
+
+diff --git a/app/scripts/modules/core/src/artifact/artifactReferenceServiceProvider.ts b/app/scripts/modules/core/src/artifact/artifactReferenceServiceProvider.ts
+new file mode 100644
+--- /dev/null
++++ b/app/scripts/modules/core/src/artifact/artifactReferenceServiceProvider.ts
+@@ -0,0 +1,381 @@
++import { auto, IServiceProvider, module } from 'angular';
++import { uniq } from 'lodash';
++
++import { IExpectedArtifact, IPipeline, IStage } from 'core/domain';
++
++export class ArtifactReferenceServiceProvider implements IServiceProvider {
++  private $injector: auto.IInjectorService;
++  private referencePaths: Map<string, Set<string>> = new Map<string, Set<string>>();
++
++  public $get($injector?: auto.IInjectorService): ArtifactReferenceServiceProvider {
++    if ($injector) {
++      this.$injector = $injector;
++    }
++    return this;
++  }
++
++  public registerReferencePath(stageType: string, path: string): void {
++    if (!stageType || !path) {
++      return;
++    }
++    if (!this.referencePaths.has(stageType)) {
++      this.referencePaths.set(stageType, new Set<string>());
++    }
++    this.referencePaths.get(stageType).add(path);
++  }
++
++  public registerReferencePaths(stageType: string, paths: string[]): void {
++    if (!stageType || !paths) {
++      return;
++    }
++    paths.forEach((path: string) => this.registerReferencePath(stageType, path));
++  }
++
++  public register(stageType: string, paths: string | string[]): void {
++    if (Array.isArray(paths)) {
++      this.registerReferencePaths(stageType, paths);
++    } else {
++      this.registerReferencePath(stageType, paths);
++    }
++  }
++
++  public registerArtifactReference(stageType: string, path: string): void {
++    this.registerReferencePath(stageType, path);
++  }
++
++  public registerArtifactReferences(stageType: string, paths: string[]): void {
++    this.registerReferencePaths(stageType, paths);
++  }
++
++  public registerReference(stageType: string, path: string): void {
++    this.registerReferencePath(stageType, path);
++  }
++
++  public registerPath(stageType: string, path: string): void {
++    this.registerReferencePath(stageType, path);
++  }
++
++  public registerPaths(stageType: string, paths: string[]): void {
++    this.registerReferencePaths(stageType, paths);
++  }
++
++  public getRegisteredReferencePaths(stageType: string): string[] {
++    const paths: string[] = [];
++    if (this.referencePaths.has(stageType)) {
++      paths.push(...Array.from(this.referencePaths.get(stageType)));
++    }
++    if (stageType !== '*' && this.referencePaths.has('*')) {
++      paths.push(...Array.from(this.referencePaths.get('*')));
++    }
++    if (this.$injector && this.$injector.has('pipelineConfig')) {
++      try {
++        const pipelineConfig = this.$injector.get<any>('pipelineConfig');
++        const stageConfig = pipelineConfig.getStageConfig({ type: stageType });
++        if (stageConfig) {
++          if (stageConfig.provides && this.referencePaths.has(stageConfig.provides)) {
++            paths.push(...Array.from(this.referencePaths.get(stageConfig.provides)));
++          }
++          if (stageConfig.alias && this.referencePaths.has(stageConfig.alias)) {
++            paths.push(...Array.from(this.referencePaths.get(stageConfig.alias)));
++          }
++          if (stageConfig.artifactReferenceFields && Array.isArray(stageConfig.artifactReferenceFields)) {
++            paths.push(...stageConfig.artifactReferenceFields);
++          }
++        }
++      } catch (e) {
++        // Fall back to registered paths
++      }
++    }
++    return uniq(paths);
++  }
++
++  public getReferencePaths(stageType?: string): string[] | { [stageType: string]: string[] } {
++    if (stageType) {
++      return this.getRegisteredReferencePaths(stageType);
++    }
++    const result: { [stageType: string]: string[] } = {};
++    this.referencePaths.forEach((paths: Set<string>, key: string) => {
++      result[key] = Array.from(paths);
++    });
++    return result;
++  }
++
++  public getReferencePathsForStageType(stageType: string): string[] {
++    return this.getRegisteredReferencePaths(stageType);
++  }
++
++  public getReferencesFor(stageType: string): string[] {
++    return this.getRegisteredReferencePaths(stageType);
++  }
++
++  public hasReferencePaths(stageType: string): boolean {
++    return this.getRegisteredReferencePaths(stageType).length > 0;
++  }
++
++  public hasReference(stageType: string): boolean {
++    return this.hasReferencePaths(stageType);
++  }
++
++  private extractArtifactId(expectedArtifact: string | IExpectedArtifact): string {
++    if (!expectedArtifact) {
++      return null;
++    }
++    if (typeof expectedArtifact === 'string') {
++      return expectedArtifact;
++    }
++    if (typeof expectedArtifact === 'object' && expectedArtifact.id) {
++      return expectedArtifact.id;
++    }
++    return null;
++  }
++
++  public removeArtifactFromPipeline(pipelineOrArtifact: IPipeline | string | IExpectedArtifact, artifactOrPipeline?: IPipeline | string | IExpectedArtifact): void {
++    let pipeline: IPipeline = null;
++    let artifact: string | IExpectedArtifact = null;
++
++    if (pipelineOrArtifact && typeof pipelineOrArtifact === 'object' && (pipelineOrArtifact as IPipeline).stages) {
++      pipeline = pipelineOrArtifact as IPipeline;
++      artifact = artifactOrPipeline;
++    } else if (artifactOrPipeline && typeof artifactOrPipeline === 'object' && (artifactOrPipeline as IPipeline).stages) {
++      pipeline = artifactOrPipeline as IPipeline;
++      artifact = pipelineOrArtifact;
++    } else if (pipelineOrArtifact && typeof pipelineOrArtifact === 'object' && !('id' in pipelineOrArtifact) && !('type' in pipelineOrArtifact)) {
++      pipeline = pipelineOrArtifact as IPipeline;
++      artifact = artifactOrPipeline;
++    } else {
++      artifact = pipelineOrArtifact;
++      pipeline = artifactOrPipeline as IPipeline;
++    }
++
++    const artifactId: string = this.extractArtifactId(artifact);
++    if (!artifactId || !pipeline || !pipeline.stages || !Array.isArray(pipeline.stages)) {
++      return;
++    }
++
++    this.removeArtifactFromStages(artifactId, pipeline.stages);
++  }
++
++  public removeArtifactFromStages(artifactOrStages: string | IExpectedArtifact | IStage[], stagesOrArtifact?: string | IExpectedArtifact | IStage[]): void {
++    let stages: IStage[] = null;
++    let artifact: string | IExpectedArtifact = null;
++
++    if (Array.isArray(artifactOrStages)) {
++      stages = artifactOrStages;
++      artifact = stagesOrArtifact as string | IExpectedArtifact;
++    } else if (Array.isArray(stagesOrArtifact)) {
++      stages = stagesOrArtifact;
++      artifact = artifactOrStages;
++    }
++
++    const artifactId: string = this.extractArtifactId(artifact);
++    if (!artifactId || !stages || !Array.isArray(stages)) {
++      return;
++    }
++
++    stages.forEach((stage: IStage) => this.removeArtifactFromStage(artifactId, stage));
++  }
++
++  public removeArtifactFromStage(artifactOrStage: string | IExpectedArtifact | IStage, stageOrArtifact?: string | IExpectedArtifact | IStage): void {
++    let stage: IStage = null;
++    let artifact: string | IExpectedArtifact = null;
++
++    if (artifactOrStage && typeof artifactOrStage === 'object' && ('type' in artifactOrStage)) {
++      stage = artifactOrStage as IStage;
++      artifact = stageOrArtifact as string | IExpectedArtifact;
++    } else if (stageOrArtifact && typeof stageOrArtifact === 'object' && ('type' in stageOrArtifact)) {
++      stage = stageOrArtifact as IStage;
++      artifact = artifactOrStage;
++    }
++
++    const artifactId: string = this.extractArtifactId(artifact);
++    if (!artifactId || !stage || !stage.type) {
++      return;
++    }
++
++    const paths: string[] = this.getRegisteredReferencePaths(stage.type);
++    if (!paths || paths.length === 0) {
++      return;
++    }
++
++    paths.forEach((path: string) => this.removeReferencePath(stage, path, artifactId));
++  }
++
++  public removeArtifactReferences(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  public removeArtifactReferenceFromPipeline(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  public removeArtifact(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  public removeReferenceFromPipeline(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  public removeArtifactReference(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  public removeArtifactReferenceFromStages(artifactOrStages: string | IExpectedArtifact | IStage[], stagesOrArtifact?: string | IExpectedArtifact | IStage[]): void {
++    this.removeArtifactFromStages(artifactOrStages, stagesOrArtifact);
++  }
++
++  public removeArtifactReferenceFromStage(artifactOrStage: string | IExpectedArtifact | IStage, stageOrArtifact?: string | IExpectedArtifact | IStage): void {
++    this.removeArtifactFromStage(artifactOrStage, stageOrArtifact);
++  }
++
++  public removeReferenceFromStage(artifactOrStage: string | IExpectedArtifact | IStage, stageOrArtifact?: string | IExpectedArtifact | IStage): void {
++    this.removeArtifactFromStage(artifactOrStage, stageOrArtifact);
++  }
++
++  public sweepArtifact(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  public sweepArtifactReferences(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  public cleanArtifactReferences(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  public sweep(artifactOrPipeline: string | IExpectedArtifact | IPipeline, pipelineOrArtifact?: IPipeline | string | IExpectedArtifact): void {
++    this.removeArtifactFromPipeline(artifactOrPipeline, pipelineOrArtifact);
++  }
++
++  private normalizePath(path: string): string[] {
++    if (!path) {
++      return [];
++    }
++    const normalized: string = path
++      .replace(/\[(\d+)\]/g, '.$1')
++      .replace(/\[\*\]/g, '.*')
++      .replace(/\[\]/g, '.*');
++    return normalized.split('.').filter((p: string) => p.length > 0);
++  }
++
++  public removeReferencePath(stage: IStage, path: string, artifactId: string): void {
++    const tokens: string[] = this.normalizePath(path);
++    if (tokens.length === 0) {
++      return;
++    }
++    this.removePathFromObject(stage, tokens, artifactId);
++  }
++
++  private matchesArtifactId(item: any, artifactId: string): boolean {
++    if (item === artifactId) {
++      return true;
++    }
++    if (item && typeof item === 'object') {
++      return item.id === artifactId || item.expectedArtifactId === artifactId || item.artifactId === artifactId;
++    }
++    return false;
++  }
++
++  private removePathFromObject(obj: any, tokens: string[], artifactId: string): void {
++    if (!obj || typeof obj !== 'object' || !tokens || tokens.length === 0) {
++      return;
++    }
++
++    if (tokens.length === 1) {
++      const lastToken: string = tokens[0];
++      if (lastToken === '*' || lastToken === '[]') {
++        if (Array.isArray(obj)) {
++          for (let i = obj.length - 1; i >= 0; i--) {
++            if (this.matchesArtifactId(obj[i], artifactId)) {
++              obj.splice(i, 1);
++            }
++          }
++        }
++        return;
++      }
++
++      if (Array.isArray(obj)) {
++        const index: number = parseInt(lastToken, 10);
++        if (!isNaN(index) && index >= 0 && index < obj.length) {
++          if (this.matchesArtifactId(obj[index], artifactId)) {
++            obj.splice(index, 1);
++          }
++        } else {
++          for (const item of obj) {
++            this.removePathFromObject(item, tokens, artifactId);
++          }
++        }
++        return;
++      }
++
++      if (lastToken in obj) {
++        const val: any = obj[lastToken];
++        if (val === artifactId) {
++          delete obj[lastToken];
++        } else if (Array.isArray(val)) {
++          for (let i = val.length - 1; i >= 0; i--) {
++            if (this.matchesArtifactId(val[i], artifactId)) {
++              val.splice(i, 1);
++            }
++          }
++        } else if (val && typeof val === 'object') {
++          if (this.matchesArtifactId(val, artifactId)) {
++            delete obj[lastToken];
++          }
++        }
++      }
++      return;
++    }
++
++    const currentToken: string = tokens[0];
++    const remainingTokens: string[] = tokens.slice(1);
++
++    if (currentToken === '*' || currentToken === '[]') {
++      if (Array.isArray(obj)) {
++        for (const item of obj) {
++          this.removePathFromObject(item, remainingTokens, artifactId);
++        }
++      }
++      return;
++    }
++
++    if (Array.isArray(obj)) {
++      const index: number = parseInt(currentToken, 10);
++      if (!isNaN(index) && index >= 0 && index < obj.length) {
++        this.removePathFromObject(obj[index], remainingTokens, artifactId);
++      } else {
++        for (const item of obj) {
++          this.removePathFromObject(item, tokens, artifactId);
++        }
++      }
++      return;
++    }
++
++    if (currentToken in obj) {
++      const nextObj: any = obj[currentToken];
++      if (Array.isArray(nextObj)) {
++        const nextToken: string = remainingTokens[0];
++        if (nextToken === '*' || nextToken === '[]' || !isNaN(parseInt(nextToken, 10))) {
++          this.removePathFromObject(nextObj, remainingTokens, artifactId);
++        } else {
++          for (const item of nextObj) {
++            this.removePathFromObject(item, remainingTokens, artifactId);
++          }
++        }
++      } else if (nextObj && typeof nextObj === 'object') {
++        this.removePathFromObject(nextObj, remainingTokens, artifactId);
++      }
++    }
++  }
++}
++
++export const ARTIFACT_REFERENCE_SERVICE_PROVIDER = 'spinnaker.core.artifacts.reference.service.provider';
++export const ARTIFACT_REFERENCE_SERVICE = 'spinnaker.core.artifacts.reference.service';
++
++module(ARTIFACT_REFERENCE_SERVICE_PROVIDER, [])
++  .provider('artifactReferenceService', ArtifactReferenceServiceProvider);
++
++module(ARTIFACT_REFERENCE_SERVICE, [
++  ARTIFACT_REFERENCE_SERVICE_PROVIDER,
++]);
+diff --git a/app/scripts/modules/core/src/artifact/artifact.module.ts b/app/scripts/modules/core/src/artifact/artifact.module.ts
+--- a/app/scripts/modules/core/src/artifact/artifact.module.ts
++++ b/app/scripts/modules/core/src/artifact/artifact.module.ts
+@@ -2,11 +2,13 @@
+ import { EXPECTED_ARTIFACT_SERVICE } from './expectedArtifact.service';
+ import { EXPECTED_ARTIFACT_MULTI_SELECTOR_COMPONENT } from './expectedArtifactMultiSelector.component';
+ import { IMAGE_SOURCE_SELECTOR_COMPONENT } from './imageSourceSelector.component';
++import { ARTIFACT_REFERENCE_SERVICE_PROVIDER } from './artifactReferenceServiceProvider';
+ 
+ export const ARTIFACT_MODULE = 'spinnaker.core.artifact';
+ module(ARTIFACT_MODULE, [
+   EXPECTED_ARTIFACT_MULTI_SELECTOR_COMPONENT,
+   EXPECTED_ARTIFACT_SELECTOR_COMPONENT,
+   EXPECTED_ARTIFACT_SERVICE,
+-  IMAGE_SOURCE_SELECTOR_COMPONENT
++  IMAGE_SOURCE_SELECTOR_COMPONENT,
++  ARTIFACT_REFERENCE_SERVICE_PROVIDER,
+ ]);
+diff --git a/app/scripts/modules/core/src/artifact/index.ts b/app/scripts/modules/core/src/artifact/index.ts
+--- a/app/scripts/modules/core/src/artifact/index.ts
++++ b/app/scripts/modules/core/src/artifact/index.ts
+@@ -1,3 +1,4 @@
+ export * from './expectedArtifactSelector.component';
+ export * from './expectedArtifact.service';
+ export * from './imageSourceSelector.component';
++export * from './artifactReferenceServiceProvider';
+diff --git a/app/scripts/modules/core/src/domain/IStageTypeConfig.ts b/app/scripts/modules/core/src/domain/IStageTypeConfig.ts
+--- a/app/scripts/modules/core/src/domain/IStageTypeConfig.ts
++++ b/app/scripts/modules/core/src/domain/IStageTypeConfig.ts
+@@ -1,4 +1,7 @@
+   accountExtractor?: (stage: IStage) => string;
+   addAliasToConfig?: boolean;
+   alias?: string;
++  artifactExtractor?: (stage: IStage) => string;
++  artifactReferenceFields?: string[];
++  artifactReferences?: string[];
+   cloudProvider?: string;
+diff --git a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+--- a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
++++ b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+@@ -1,3 +1,4 @@
++import { ARTIFACT_REFERENCE_SERVICE_PROVIDER } from 'core/artifact/artifactReferenceServiceProvider';
+ import { PIPELINE_CONFIG_PROVIDER } from 'core/pipeline/config/pipelineConfigProvider';
+ import { UUIDGenerator } from 'core/utils/uuid.service';
+ 
+@@ -5,6 +6,7 @@
+ 
+ module.exports = angular.module('spinnaker.core.pipeline.config.trigger.triggersDirective', [
+   PIPELINE_CONFIG_PROVIDER,
++  ARTIFACT_REFERENCE_SERVICE_PROVIDER,
+ ])
+   .directive('triggers', function() {
+     return {
+@@ -18,7 +20,7 @@
+       templateUrl: require('./triggers.html')
+     };
+   })
+-  .controller('triggersCtrl', function($scope, pipelineConfig) {
++  .controller('triggersCtrl', function($scope, pipelineConfig, artifactReferenceService) {
+     this.addTrigger = function() {
+       var triggerTypes = pipelineConfig.getTriggerTypes(),
+           newTrigger = {enabled: true};
+@@ -44,11 +46,13 @@
+       pipeline.expectedArtifacts = pipeline.expectedArtifacts
+         .filter(a => a.id !== expectedArtifact.id);
+ 
+-      if (!pipeline.triggers) {
+-        return;
++      if (pipeline.triggers) {
++        pipeline.triggers
++          .forEach(t => t.expectedArtifactIds = (t.expectedArtifactIds || [])
++            .filter(eid => expectedArtifact.id !== eid));
+       }
+ 
+-      pipeline.triggers
+-        .forEach(t => t.expectedArtifactIds = t.expectedArtifactIds
+-          .filter(eid => expectedArtifact.id !== eid));
++      if (artifactReferenceService) {
++        artifactReferenceService.removeArtifactFromPipeline(pipeline, expectedArtifact.id);
++      }
+     };
+diff --git a/app/scripts/modules/core/src/artifact/artifactReferenceServiceProvider.spec.ts b/app/scripts/modules/core/src/artifact/artifactReferenceServiceProvider.spec.ts
+new file mode 100644
+--- /dev/null
++++ b/app/scripts/modules/core/src/artifact/artifactReferenceServiceProvider.spec.ts
+@@ -0,0 +1,306 @@
++import { auto, mock } from 'angular';
++
++import { IPipeline, IStage } from 'core/domain';
++import {
++  ARTIFACT_REFERENCE_SERVICE_PROVIDER,
++  ArtifactReferenceServiceProvider
++} from './artifactReferenceServiceProvider';
++
++describe('ArtifactReferenceServiceProvider', () => {
++  let provider: ArtifactReferenceServiceProvider;
++  let service: ArtifactReferenceServiceProvider;
++
++  beforeEach(() => {
++    mock.module(
++      ARTIFACT_REFERENCE_SERVICE_PROVIDER,
++      (artifactReferenceServiceProvider: ArtifactReferenceServiceProvider) => {
++        provider = artifactReferenceServiceProvider;
++      }
++    );
++
++    mock.inject(($injector: auto.IInjectorService) => {
++      service = provider.$get($injector);
++    });
++  });
++
++  describe('registration', () => {
++    it('registers single reference path for a stage type', () => {
++      provider.registerReferencePath('deployManifest', 'manifestArtifactId');
++      expect(service.getRegisteredReferencePaths('deployManifest')).toEqual(['manifestArtifactId']);
++    });
++
++    it('registers multiple reference paths for a stage type', () => {
++      provider.registerReferencePaths('deployManifest', ['manifestArtifactId', 'requiredArtifactIds']);
++      expect(service.getRegisteredReferencePaths('deployManifest')).toEqual([
++        'manifestArtifactId',
++        'requiredArtifactIds'
++      ]);
++    });
++
++    it('accumulates multiple registrations for the same stage type', () => {
++      provider.registerReferencePath('customStage', 'fieldA');
++      provider.registerReferencePath('customStage', 'fieldB');
++      provider.registerReferencePaths('customStage', ['fieldC', 'fieldD']);
++      expect(service.getRegisteredReferencePaths('customStage')).toEqual([
++        'fieldA',
++        'fieldB',
++        'fieldC',
++        'fieldD'
++      ]);
++    });
++
++    it('handles register with string and array', () => {
++      provider.register('stageA', 'pathA');
++      provider.register('stageB', ['pathB1', 'pathB2']);
++      expect(service.getRegisteredReferencePaths('stageA')).toEqual(['pathA']);
++      expect(service.getRegisteredReferencePaths('stageB')).toEqual(['pathB1', 'pathB2']);
++    });
++
++    it('returns empty array for unregistered stage type', () => {
++      expect(service.getRegisteredReferencePaths('unknownStage')).toEqual([]);
++    });
++
++    it('includes wildcard paths for all stage types', () => {
++      provider.registerReferencePath('*', 'commonArtifactId');
++      provider.registerReferencePath('deployManifest', 'manifestArtifactId');
++
++      expect(service.getRegisteredReferencePaths('deployManifest')).toEqual([
++        'manifestArtifactId',
++        'commonArtifactId'
++      ]);
++      expect(service.getRegisteredReferencePaths('otherStage')).toEqual(['commonArtifactId']);
++    });
++
++    it('checks hasReferencePaths correctly', () => {
++      expect(service.hasReferencePaths('stageA')).toBe(false);
++      provider.registerReferencePath('stageA', 'fieldA');
++      expect(service.hasReferencePaths('stageA')).toBe(true);
++    });
++  });
++
++  describe('artifact removal sweep', () => {
++    beforeEach(() => {
++      provider.registerReferencePaths('deployManifest', [
++        'manifestArtifactId',
++        'requiredArtifactIds'
++      ]);
++      provider.registerReferencePaths('customStage', [
++        'nested.expectedArtifactId',
++        'artifacts[0]',
++        'containers[0].artifactId',
++        'containers.imageDescription.artifactId'
++      ]);
++    });
++
++    it('removes top-level matching property and leaves other properties untouched', () => {
++      const stage: IStage = {
++        type: 'deployManifest',
++        name: 'Deploy',
++        manifestArtifactId: 'art-123',
++        cloudProvider: 'kubernetes'
++      } as any;
++
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).manifestArtifactId).toBeUndefined();
++      expect(stage.name).toBe('Deploy');
++      expect(stage.cloudProvider).toBe('kubernetes');
++    });
++
++    it('leaves top-level property untouched if artifact ID does not match', () => {
++      const stage: IStage = {
++        type: 'deployManifest',
++        name: 'Deploy',
++        manifestArtifactId: 'art-456'
++      } as any;
++
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).manifestArtifactId).toBe('art-456');
++    });
++
++    it('removes deeply nested matching property', () => {
++      const stage: IStage = {
++        type: 'customStage',
++        name: 'Custom',
++        nested: {
++          expectedArtifactId: 'art-123',
++          otherConfig: 'keepMe'
++        }
++      } as any;
++
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).nested.expectedArtifactId).toBeUndefined();
++      expect((stage as any).nested.otherConfig).toBe('keepMe');
++    });
++
++    it('leaves stage unchanged if nested path cannot be fully resolved', () => {
++      const stage: IStage = {
++        type: 'customStage',
++        name: 'Custom'
++      } as any;
++
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).nested).toBeUndefined();
++      expect(stage.name).toBe('Custom');
++    });
++
++    it('removes all matching occurrences from an array field and preserves non-matching entries', () => {
++      const stage: IStage = {
++        type: 'deployManifest',
++        name: 'Deploy',
++        requiredArtifactIds: ['art-123', 'art-456', 'art-123', 'art-789']
++      } as any;
++
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).requiredArtifactIds).toEqual(['art-456', 'art-789']);
++    });
++
++    it('removes array element referenced by index if matching', () => {
++      const stage: IStage = {
++        type: 'customStage',
++        name: 'Custom',
++        artifacts: ['art-123', 'art-456']
++      } as any;
++
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).artifacts).toEqual(['art-456']);
++    });
++
++    it('leaves array untouched when element at referenced index does not match', () => {
++      const stage: IStage = {
++        type: 'customStage',
++        name: 'Custom',
++        artifacts: ['art-456', 'art-123']
++      } as any;
++
++      // path artifacts[0] is art-456, not art-123
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).artifacts).toEqual(['art-456', 'art-123']);
++    });
++
++    it('removes nested field within array element referenced by index', () => {
++      const stage: IStage = {
++        type: 'customStage',
++        name: 'Custom',
++        containers: [
++          { artifactId: 'art-123', image: 'nginx' },
++          { artifactId: 'art-123', image: 'redis' }
++        ]
++      } as any;
++
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).containers[0].artifactId).toBeUndefined();
++      expect((stage as any).containers[0].image).toBe('nginx');
++      expect((stage as any).containers[1].artifactId).toBe('art-123');
++    });
++
++    it('removes nested fields across all array elements when array path without index is used', () => {
++      const stage: IStage = {
++        type: 'customStage',
++        name: 'Custom',
++        containers: [
++          { imageDescription: { artifactId: 'art-123', tag: 'latest' } },
++          { imageDescription: { artifactId: 'art-456', tag: 'v1' } },
++          { imageDescription: { artifactId: 'art-123', tag: 'v2' } }
++        ]
++      } as any;
++
++      service.removeArtifactFromStage('art-123', stage);
++
++      expect((stage as any).containers[0].imageDescription.artifactId).toBeUndefined();
++      expect((stage as any).containers[0].imageDescription.tag).toBe('latest');
++      expect((stage as any).containers[1].imageDescription.artifactId).toBe('art-456');
++      expect((stage as any).containers[2].imageDescription.artifactId).toBeUndefined();
++      expect((stage as any).containers[2].imageDescription.tag).toBe('v2');
++    });
++
++    it('sweeps across all stages in a pipeline', () => {
++      const pipeline: IPipeline = {
++        stages: [
++          {
++            type: 'deployManifest',
++            name: 'Stage 1',
++            manifestArtifactId: 'art-123',
++            requiredArtifactIds: ['art-123', 'art-999']
++          },
++          {
++            type: 'deployManifest',
++            name: 'Stage 2',
++            manifestArtifactId: 'art-999',
++            requiredArtifactIds: ['art-888']
++          },
++          {
++            type: 'customStage',
++            name: 'Stage 3',
++            nested: { expectedArtifactId: 'art-123' }
++          },
++          {
++            type: 'manualJudgment',
++            name: 'Stage 4',
++            instructions: 'Approve this stage'
++          }
++        ]
++      } as any;
++
++      service.removeArtifactFromPipeline(pipeline, 'art-123');
++
++      const s1: any = pipeline.stages[0];
++      const s2: any = pipeline.stages[1];
++      const s3: any = pipeline.stages[2];
++      const s4: any = pipeline.stages[3];
++
++      expect(s1.manifestArtifactId).toBeUndefined();
++      expect(s1.requiredArtifactIds).toEqual(['art-999']);
++
++      expect(s2.manifestArtifactId).toBe('art-999');
++      expect(s2.requiredArtifactIds).toEqual(['art-888']);
++
++      expect(s3.nested.expectedArtifactId).toBeUndefined();
++
++      expect(s4.instructions).toBe('Approve this stage');
++    });
++
++    it('accepts expectedArtifact object or artifactId string interchangeably', () => {
++      const pipeline: IPipeline = {
++        stages: [
++          {
++            type: 'deployManifest',
++            manifestArtifactId: 'art-123'
++          }
++        ]
++      } as any;
++
++      service.removeArtifactFromPipeline(pipeline, { id: 'art-123' } as any);
++      expect((pipeline.stages[0] as any).manifestArtifactId).toBeUndefined();
++    });
++
++    it('handles argument order flexibility', () => {
++      const pipeline: IPipeline = {
++        stages: [
++          {
++            type: 'deployManifest',
++            manifestArtifactId: 'art-123'
++          }
++        ]
++      } as any;
++
++      service.removeArtifactFromPipeline('art-123', pipeline);
++      expect((pipeline.stages[0] as any).manifestArtifactId).toBeUndefined();
++    });
++
++    it('handles null/undefined pipeline or stages gracefully', () => {
++      expect(() => service.removeArtifactFromPipeline(null, 'art-123')).not.toThrow();
++      expect(() => service.removeArtifactFromPipeline({} as any, 'art-123')).not.toThrow();
++      expect(() => service.removeArtifactFromPipeline({ stages: null } as any, 'art-123')).not.toThrow();
++      expect(() => service.removeArtifactFromStage('art-123', null)).not.toThrow();
++      expect(() => service.removeArtifactFromStage('art-123', {} as any)).not.toThrow();
++    });
++  });
++});

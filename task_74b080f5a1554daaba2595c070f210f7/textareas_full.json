@@ -1,0 +1,170 @@
+[
+  {
+    "index": 0,
+    "label": "",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 1,
+    "label": "Adjudication rationale",
+    "value": "Thanks, solid work here, the dimension reasoning is detailed and your entry citations all check out.\n\nTwo things to fix.\n\n1. Rubric 6 side B should be YES. B did add replacement tests, step 39 adds them and step 61 lists them from test.xml, including `testFileOutput_wrongType`, which covers the case `testDirectoryOutput` used to. As it stands it also contradicts rubric 9's side B reason and your Dimension 7 note about B's six tests.\n\n2. That flip puts B at 80% pass rate, so you'll need another item or two that both sides genuinely fail. One candidate is that both keep `missing_path` alongside the new wrong-type field, leaving a category the updated test reconstruction no longer handles.\n\nA few small things I already fixed. Dimension 4 side B said \"two things\" but listed one. Rubric 8's side A reason claimed A never reads the field it added, but its `logSymlink` does. Rubric 5's criterion now points at the accessor the repo's tests expect rather than sibling naming. ",
+    "valueLength": 980
+  },
+  {
+    "index": 2,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 3,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 4,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 5,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 6,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 7,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 8,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 9,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 10,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 11,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 12,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 13,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 14,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 15,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 16,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 17,
+    "label": "0 / ≥ 15 words",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 18,
+    "label": "Rubric 1 · reason (B)*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 19,
+    "label": "Rubric 2 · reason (B)*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 20,
+    "label": "Rubric 3 · reason (B)*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 21,
+    "label": "Rubric 4 · reason (B)*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 22,
+    "label": "Rubric 5 · reason (B)*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 23,
+    "label": "Rubric 6 · reason (B)*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 24,
+    "label": "Rubric 7 · reason (B)*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 25,
+    "label": "Rubric 8 · reason (B)*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 26,
+    "label": "Comparative Rationale*",
+    "value": "",
+    "valueLength": 0
+  },
+  {
+    "index": 27,
+    "label": "Add Comment",
+    "value": "",
+    "valueLength": 0
+  }
+]

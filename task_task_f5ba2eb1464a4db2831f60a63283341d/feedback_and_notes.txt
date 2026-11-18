@@ -1,0 +1,12 @@
+=== REVIEW FEEDBACK ===
+null
+
+=== NOTES ===
+seeded from task_0037b040eefa458f8abc407155e6cbd8
+
+=== ADJ RATIONALE (FEEDBACK) ===
+Hello!
+
+Could you change Dimension 6 for A so the score is consistent with its reason? It is currently scored 3 even though the reason describes a substantial unrelated detour into implementing a WebAssembly module and translating the TypeScript implementation into Rust.
+
+Could you also revise the rubric set so it provides more pairwise signal? 8/10 answers are currently identical between A and B.

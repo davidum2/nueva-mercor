@@ -1,0 +1,26 @@
+{
+  "verifier_id": "ver_ba4b3ca5431d445f8409c43719affcb2",
+  "verifier_version": 1,
+  "world_id": null,
+  "task_id": "task_74b080f5a1554daaba2595c070f210f7",
+  "eval_config_id": "evalcfg_prompt_specific_rubric",
+  "verifier_values": {
+    "criteria": "Does a declared symlink output that is an actual symlink on disk get its target path recorded in the log?"
+  },
+  "verifier_custom_field_values": {
+    "answer_a": "YES",
+    "answer_b": "YES",
+    "reason_a": "A adds symlink_target_path to the File message and logs it when a declared symlink output is found to be a symlink on disk, via its logSymlink helper in the compact context and a matching branch in the expanded one.",
+    "reason_b": "Yes. I found the code in B's transcript rather than its patch - the harness reconstruction only kept the proto and two imports, but B reads its own files back and the lines are there. In the UNRESOLVED_SYMLINK branch it calls addActualOutputsBuilder().setPath(output.getExecPathString()).setSymlinkTargetPath(path.readSymbolicLink().getPathString()), so the target is written, and File.symlink_target_path is in the proto it extended.",
+    "rubric_source": "EXPLICIT_PROMPT",
+    "mapped_dimension": "5 \ufffd Instruction Following & Scope Discipline"
+  },
+  "verifier_index": 0,
+  "verifier_dependencies": [],
+  "created_by": "user_cf9d3e95d81740ff8621db1d3e67eccf",
+  "updated_by": "user_a571447166a749f085d21762b20e9e4d",
+  "created_at": "2026-09-09T02:10:53.041243Z",
+  "updated_at": "2026-09-16T13:04:37.007414Z",
+  "archived_at": null,
+  "is_latest": true
+}

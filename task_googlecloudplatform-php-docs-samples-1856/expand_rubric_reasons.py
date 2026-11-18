@@ -1,0 +1,164 @@
+import json
+
+rubrics_data = [
+    {
+        "rubric_index": 1,
+        "question_id": "Q01",
+        "dimension": 2,
+        "dimension_name": "Functional Correctness & Code Architecture",
+        "source": "EXPLICIT_PROMPT",
+        "rubric_text": "Does the sample implement the required 'deidentify_cloud_storage' function with exactly 8 parameters matching downstream test callers?",
+        "answer_a": "YES",
+        "reason_a": "Model A declares function deidentify_cloud_storage with exactly 8 parameters matching the call contract in dlpTest.php: $callingProjectId, $inputGcsUri, $outputGcsUri, $deidentifyTemplate, $structuredDeidentifyTemplate, $imageRedactTemplate, $datasetId, and $tableId (patch_a.diff:L60-68).",
+        "answer_b": "NO",
+        "reason_b": "Model B adds an unauthorized 9th parameter '$transformationDetailsTableProjectId' at position 7 (patch_b.diff:L67). When dlpTest.php invokes the function with 8 arguments, PHP 8 throws an uncaught fatal ArgumentCountError, crashing execution."
+    },
+    {
+        "rubric_index": 2,
+        "question_id": "Q05",
+        "dimension": 2,
+        "dimension_name": "Functional Correctness & Code Architecture",
+        "source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "rubric_text": "Does the sample resolve template names using DlpServiceBaseClient::projectDeidentifyTemplateName rather than passing unvalidated raw strings?",
+        "answer_a": "NO",
+        "reason_a": "Model A passes raw string template arguments directly to setDeidentifyTemplate, setStructuredDeidentifyTemplate, and setImageRedactTemplate without invoking DlpServiceBaseClient::projectDeidentifyTemplateName to construct the canonical resource path (patch_a.diff:L81-84).",
+        "answer_b": "NO",
+        "reason_b": "Model B directly assigns raw template name strings to TransformationConfig methods on patch_b.diff:L80-83 without qualifying them via DlpServiceBaseClient::projectDeidentifyTemplateName($callingProjectId, ...) as expected by the Google Cloud DLP client."
+    },
+    {
+        "rubric_index": 3,
+        "question_id": "Q07",
+        "dimension": 2,
+        "dimension_name": "Functional Correctness & Code Architecture",
+        "source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "rubric_text": "Does the sample attach an InspectConfig object to the InspectJobConfig to specify inspect settings?",
+        "answer_a": "NO",
+        "reason_a": "Model A initializes InspectJobConfig with setStorageConfig and setActions, but completely omits setInspectConfig (patch_a.diff:L110-112). It never attaches an InspectConfig object containing the target infoTypes to the inspection job configuration.",
+        "answer_b": "YES",
+        "reason_b": "Model B instantiates and attaches an InspectConfig object to InspectJobConfig via setInspectConfig(new InspectConfig()) on patch_b.diff:L100, fulfilling the DLP inspect job configuration contract."
+    },
+    {
+        "rubric_index": 4,
+        "question_id": "Q11",
+        "dimension": 3,
+        "dimension_name": "Readability, Clean Code & Coding Standards",
+        "source": "ENVIRONMENT",
+        "rubric_text": "Does the sample include standard Google Cloud documentation region tags '[START dlp_deidentify_cloud_storage]' and '[END dlp_deidentify_cloud_storage]'?",
+        "answer_a": "YES",
+        "reason_a": "Model A correctly encloses the sample code within Google Cloud documentation region tags, placing '# [START dlp_deidentify_cloud_storage]' at line 33 and '# [END dlp_deidentify_cloud_storage]' at line 159 (patch_a.diff).",
+        "answer_b": "YES",
+        "reason_b": "Model B adheres to Google Cloud documentation standards by adding '# [START dlp_deidentify_cloud_storage]' at line 33 and '# [END dlp_deidentify_cloud_storage]' at line 141 (patch_b.diff)."
+    },
+    {
+        "rubric_index": 5,
+        "question_id": "Q13",
+        "dimension": 3,
+        "dimension_name": "Readability, Clean Code & Coding Standards",
+        "source": "ENVIRONMENT",
+        "rubric_text": "Does the sample provide complete PHPDoc documentation with @param tags for all function arguments?",
+        "answer_a": "YES",
+        "reason_a": "Model A includes a comprehensive PHPDoc block above the function defining @param string annotations and detailed descriptions for all 8 function parameters from line 50 through 58 (patch_a.diff).",
+        "answer_b": "YES",
+        "reason_b": "Model B provides structured PHPDoc comments detailing @param string types and semantic descriptions for all parameters in its authored header block on lines 50 to 59 (patch_b.diff)."
+    },
+    {
+        "rubric_index": 6,
+        "question_id": "Q17",
+        "dimension": 4,
+        "dimension_name": "Robustness, Error Handling & Defensiveness",
+        "source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "rubric_text": "Does the sample implement a bounded polling loop with a maximum retry counter or timeout to prevent infinite hanging?",
+        "answer_a": "NO",
+        "reason_a": "Model A implements an unbounded while loop 'while ($job->getState() == JobState::RUNNING || $job->getState() == JobState::PENDING)' without any maximum attempt counter or timeout guard, risking an infinite freeze if the DLP backend stalls (patch_a.diff:L122-126).",
+        "answer_b": "NO",
+        "reason_b": "Model B uses an unbounded while loop 'while (in_array($job->getState(), [JobState::PENDING, JobState::RUNNING], true))' with sleep(10) on patch_b.diff:L109-112, lacking a maximum retry count or timeout mechanism to avoid deadlocking."
+    },
+    {
+        "rubric_index": 7,
+        "question_id": "Q18",
+        "dimension": 4,
+        "dimension_name": "Robustness, Error Handling & Defensiveness",
+        "source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "rubric_text": "Does the sample close the DLP service client in a finally block to guarantee gRPC/channel cleanup?",
+        "answer_a": "NO",
+        "reason_a": "Model A instantiates $dlp = new DlpServiceClient() on line 70 but never invokes $dlp->close() anywhere in patch_a.diff, failing to clean up active gRPC channel transport resources upon completion.",
+        "answer_b": "YES",
+        "reason_b": "Model B safely wraps the entire DLP job lifecycle in a try-finally block on lines 73 to 139, explicitly calling $dlp->close() in the finally clause (patch_b.diff:L138) to guarantee socket closure."
+    },
+    {
+        "rubric_index": 8,
+        "question_id": "Q19",
+        "dimension": 4,
+        "dimension_name": "Robustness, Error Handling & Defensiveness",
+        "source": "EXPLICIT_PROMPT",
+        "rubric_text": "Does the sample inspect and handle non-terminal job states (e.g. FAILED) by reporting job errors?",
+        "answer_a": "YES",
+        "reason_a": "Model A handles failure states defensively by evaluating a switch on $job->getState(), printing error notices and inspecting $job->getErrors() details when JobState::FAILED occurs (patch_a.diff:L145-151).",
+        "answer_b": "YES",
+        "reason_b": "Model B checks whether $job->getState() !== JobState::DONE on patch_b.diff:L116-122, looping through $job->getErrors() and printing error messages when the DLP job fails."
+    },
+    {
+        "rubric_index": 9,
+        "question_id": "Q25",
+        "dimension": 5,
+        "dimension_name": "Instruction Following & Scope Discipline",
+        "source": "EXPLICIT_PROMPT",
+        "rubric_text": "Is the new sample file placed in the exact directory requested ('dlp/src/deidentify_cloud_storage.php')?",
+        "answer_a": "YES",
+        "reason_a": "Model A creates the newly requested sample file strictly at 'dlp/src/deidentify_cloud_storage.php' as specified in the prompt instructions, without creating unauthorized auxiliary files (patch_a.diff:L1).",
+        "answer_b": "YES",
+        "reason_b": "Model B places the authored sample exactly at 'dlp/src/deidentify_cloud_storage.php' on patch_b.diff:L1, adhering precisely to the target directory requirement specified in the prompt."
+    },
+    {
+        "rubric_index": 10,
+        "question_id": "Q28",
+        "dimension": 5,
+        "dimension_name": "Instruction Following & Scope Discipline",
+        "source": "EXPLICIT_PROMPT",
+        "rubric_text": "Does the implementation adhere strictly to the requested scope without splitting BigQuery dataset configuration into extraneous unrequested project parameters?",
+        "answer_a": "YES",
+        "reason_a": "Model A adheres strictly to the prompt scope by using the provided $callingProjectId for the BigQuery table while taking $datasetId and $tableId as requested (patch_a.diff:L66-67, L87-90).",
+        "answer_b": "NO",
+        "reason_b": "Model B violates scope discipline by injecting an unrequested parameter '$transformationDetailsTableProjectId' into the public API signature (patch_b.diff:L67), altering the expected 8-argument interface."
+    },
+    {
+        "rubric_index": 11,
+        "question_id": "Q33",
+        "dimension": 6,
+        "dimension_name": "Planning, Research & Exploration",
+        "source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "rubric_text": "Did the agent demonstrate effective navigation without repeatedly failing commands due to invalid working directories?",
+        "answer_a": "YES",
+        "reason_a": "Model A navigated the repository systematically in /workspace/repo without executing failing path navigation commands, locating DLP samples and tests cleanly across Steps 1 through 28.",
+        "answer_b": "NO",
+        "reason_b": "Model B repeatedly suffered command failures due to invalid directory assumptions, failing with 'No such file or directory' while attempting to access '/workspace/repo' and '/workspace' in Step 11, Step 12, and Step 32."
+    },
+    {
+        "rubric_index": 12,
+        "question_id": "Q37",
+        "dimension": 7,
+        "dimension_name": "Verification & Testing Rigor",
+        "source": "ENVIRONMENT",
+        "rubric_text": "Did the agent run a PHP syntax linter ('php -l') on the authored sample to verify zero syntax errors?",
+        "answer_a": "YES",
+        "reason_a": "Model A verified code integrity in Step 50 by executing 'php -l /workspace/repo/dlp/src/deidentify_cloud_storage.php', confirming 'No syntax errors detected' prior to final submission.",
+        "answer_b": "YES",
+        "reason_b": "Model B executed PHP syntax validation in Step 34, confirming that the written sample passed syntax linting without syntax errors before completing its trajectory."
+    },
+    {
+        "rubric_index": 13,
+        "question_id": "Q48",
+        "dimension": 9,
+        "dimension_name": "Summary & Deliverable Precision",
+        "source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "rubric_text": "Does the final deliverable include the exact public function name and signature details without omitting required parameter names?",
+        "answer_a": "YES",
+        "reason_a": "Model A's final answer explicitly identifies 'deidentify_cloud_storage' in dlp/src/deidentify_cloud_storage.php and details the configured Cloud Storage locations, templates, and BigQuery table accurately in final_answer_a.txt.",
+        "answer_b": "NO",
+        "reason_b": "Model B's final answer obscures its broken 9-parameter signature by writing 'deidentify_cloud_storage(...)' (final_answer_b.txt:L5), failing to disclose the unrequested parameter that broke compatibility with dlpTest.php."
+    }
+]
+
+with open('selected_rubrics_13.json', 'w', encoding='utf-8') as f:
+    json.dump(rubrics_data, f, indent=2, ensure_ascii=False)
+print(f"Updated selected_rubrics_13.json with {len(rubrics_data)} verified rubrics.")

@@ -1,0 +1,499 @@
+diff --git a/Simbody/include/simbody/internal/CableSpan.h b/Simbody/include/simbody/internal/CableSpan.h
+index 0e22c5c5..f3f556b4 100644
+--- a/Simbody/include/simbody/internal/CableSpan.h
++++ b/Simbody/include/simbody/internal/CableSpan.h
+@@ -405,6 +405,22 @@ public:
+         CableSpanObstacleIndex ix,
+         Vec3 contactPointHint_S);
+ 
++    /** Set the Coulomb friction coefficient between the cable and an obstacle.
++    The default friction coefficient is zero. Friction affects only the cable
++    tension profile: it does not affect the cable path, contact status, or
++    curve arc lengths.
++    @param ix The index of the obstacle in this CableSpan.
++    @param value The nonnegative Coulomb friction coefficient. **/
++    void setObstacleFrictionCoefficient(
++        CableSpanObstacleIndex ix,
++        Real value);
++
++    /** Get the Coulomb friction coefficient between the cable and an obstacle.
++    @param ix The index of the obstacle in this CableSpan.
++    @return The Coulomb friction coefficient. **/
++    Real getObstacleFrictionCoefficient(
++        CableSpanObstacleIndex ix) const;
++
+     ///@}
+ 
+     /** @name Via point configuration */
+@@ -525,6 +541,29 @@ public:
+     @return The time derivative of the total cable length. **/
+     Real calcLengthDot(const State& state) const;
+ 
++    /** Propagate the cable tension from the origin to the termination using
++    the Euler-Eytelwein capstan relation at each obstacle in contact with the
++    cable.
++    State must be realized to Stage::Velocity.
++    @param state System State.
++    @param originTension The tensile force at the cable origin.
++    @return The tensile force at the cable termination. Returns zero when
++    `originTension` is non-positive. **/
++    Real calcTensionAtTermination(
++        const State& state,
++        Real originTension) const;
++
++    /** Compute the mechanical power dissipated by Coulomb friction along the
++    cable path.
++    State must be realized to Stage::Velocity.
++    @param state System State.
++    @param originTension The tensile force at the cable origin.
++    @return The nonnegative frictional power dissipation. Returns zero when
++    `originTension` is non-positive. **/
++    Real calcFrictionPowerDissipation(
++        const State& state,
++        Real originTension) const;
++
+     /** Given a tension > 0 acting uniformly along this cable, compute the
+     resulting forces applied to the bodies it touches.
+     The body forces are added into the appropriate slots in the supplied Array
+@@ -536,6 +575,18 @@ public:
+         Real tension,
+         Vector_<SpatialVec>& bodyForcesInG) const;
+ 
++    /** Given a tension > 0 at the cable origin, compute the forces applied to
++    the bodies it touches using the local cable tension profile resulting from
++    Coulomb friction at obstacles in contact with the cable.
++    The body forces are added into the appropriate slots in the supplied Array
++    which has one entry per body in the same format as is supplied to the
++    calcForce() method of force elements. If the supplied tension is <= 0,
++    signifying a slack cable, this method does nothing. **/
++    void applyBodyForcesWithFriction(
++        const State& state,
++        Real originTension,
++        Vector_<SpatialVec>& bodyForcesInG) const;
++
+     /** Compute the cable power.
+     State must be realized to Stage::Position.
+     @param state State of the system.
+@@ -616,6 +667,20 @@ public:
+         const State& state,
+         CableSpanObstacleIndex ix) const;
+ 
++    /** Get the signed wrap angle of the obstacle's geodesic curve segment.
++    The wrap angle is the integral along the segment of the signed surface
++    normal curvature in the path tangent direction. It is positive for convex
++    wrapping, such as over a sphere or cylinder, and negative for contact along
++    a concave surface region. Returns NaN if the obstacle is not in contact
++    with the path.
++    State must be realized to Stage::Position.
++    @param state System State.
++    @param ix The index of the obstacle in this CableSpan.
++    @return The signed wrap angle in radians. **/
++    Real calcCurveSegmentWrapAngle(
++        const State& state,
++        CableSpanObstacleIndex ix) const;
++
+     /** Compute points along the obstacle's curve segment at equal length
+     intervals.
+ 
+diff --git a/Simbody/src/CableSpan.cpp b/Simbody/src/CableSpan.cpp
+index d421684f..fd2568ea 100644
+--- a/Simbody/src/CableSpan.cpp
++++ b/Simbody/src/CableSpan.cpp
+@@ -392,6 +392,9 @@ struct CurveSegmentData {
+         // contain valid data.
+         ObstacleWrappingStatus wrappingStatus =
+             ObstacleWrappingStatus::InitialGuess;
++        // Integral of the signed surface normal curvature in the geodesic's
++        // tangent direction, over the geodesic's arc length.
++        Real wrapAngle = NaN;
+     };
+     struct Position final {
+         // Position and orientation of contact geometry w.r.t. ground.
+@@ -835,6 +838,21 @@ public:
+         m_geometry = std::move(geometry);
+     }
+ 
++    void setFrictionCoefficient(Real frictionCoefficient)
++    {
++        SimTK_ERRCHK1_ALWAYS(
++            frictionCoefficient >= 0.,
++            "CableSpan::setObstacleFrictionCoefficient()",
++            "Friction coefficient must be nonnegative (got %g)",
++            frictionCoefficient);
++        m_frictionCoefficient = frictionCoefficient;
++    }
++
++    Real getFrictionCoefficient() const
++    {
++        return m_frictionCoefficient;
++    }
++
+     const MobilizedBody& getMobilizedBody() const
+     {
+         return getSubsystem()
+@@ -931,6 +949,14 @@ public:
+                dataInst.wrappingStatus == ObstacleWrappingStatus::InitialGuess;
+     }
+ 
++    Real calcWrapAngle(const State& state) const
++    {
++        if (!isInContactWithSurface(state)) {
++            return NaN;
++        }
++        return getDataInst(state).wrapAngle;
++    }
++
+     //--------------------------------------------------------------------------
+     //  Helper Functions: Finding next and previous CurveSegments
+     //--------------------------------------------------------------------------
+@@ -994,6 +1020,28 @@ public:
+         // at the first and last contact point of the surface.
+         std::array<ContactGeometry::GeodesicKnotPoint, 2>
+             geodesicBoundaryStates;
++        Real wrapAngle                      = 0.;
++        bool havePreviousKnotPoint          = false;
++        ContactGeometry::GeodesicKnotPoint previousKnotPoint;
++        Real previousCurvature              = NaN;
++
++        // Integrate the signed normal curvature of the surface in the geodesic
++        // tangent direction over the geodesic's arc length.
++        auto integrateWrapAngle =
++            [&](const ContactGeometry::GeodesicKnotPoint& knotPoint)
++        {
++            const Real curvature = calcSurfaceCurvature(
++                geometry,
++                calcFrenetFrameFromGeodesicState(geometry, knotPoint),
++                TangentAxis);
++            if (havePreviousKnotPoint) {
++                wrapAngle += 0.5 * (previousCurvature + curvature) *
++                             (knotPoint.arcLength - previousKnotPoint.arcLength);
++            }
++            previousKnotPoint     = knotPoint;
++            previousCurvature     = curvature;
++            havePreviousKnotPoint = true;
++        };
+ 
+         // First determine if this geometry has an analytic form.
+         const ContactGeometry& geometry = getContactGeometry();
+@@ -1012,6 +1060,7 @@ public:
+                 // Copy the state at the boundary frames.
+                 [&](const ContactGeometry::GeodesicKnotPoint& q)
+                 {
++                    integrateWrapAngle(q);
+                     geodesicBoundaryStates.at(knotIx) = q;
+                     ++knotIx;
+                 });
+@@ -1032,6 +1081,7 @@ public:
+                 [&](const ContactGeometry::GeodesicKnotPoint& q)
+                 {
+                     // Store the knot points in the cache.
++                    integrateWrapAngle(q);
+                     dataInst.geodesicKnotPoints.push_back(q);
+                 });
+ 
+@@ -1086,6 +1136,7 @@ public:
+ 
+         // Store the arc length.
+         dataInst.arcLength = length;
++        dataInst.wrapAngle  = wrapAngle;
+ 
+         // Update the initial integrator step size:
+         if (!useAnalyticGeodesic) { // does not apply to analytic surfaces.
+@@ -1150,6 +1201,7 @@ public:
+     {
+         dataInst.wrappingStatus = ObstacleWrappingStatus::LiftedFromSurface;
+         dataInst.arcLength      = NaN;
++        dataInst.wrapAngle      = NaN;
+         dataInst.trackingPointOnLine_S = trackingPoint_S;
+     }
+ 
+@@ -1513,6 +1565,8 @@ private:
+ 
+     // Obstacle surface.
+     std::shared_ptr<const ContactGeometry> m_geometry;
++    // Coulomb friction coefficient between the cable and this obstacle.
++    Real m_frictionCoefficient = 0.;
+ 
+     // Topology cache.
+     CacheEntryIndex m_indexDataPos        = CacheEntryIndex::Invalid();
+@@ -1942,6 +1996,14 @@ public:
+     // Accessors
+     //--------------------------------------------------------------------------
+ 
++    struct TensionProfile {
++        Real terminationTension = NaN;
++        Real frictionPowerDissipation = NaN;
++        Array_<Real, ObstacleIndex> obstacleEntryTension;
++        Array_<Real, ObstacleIndex> obstacleExitTension;
++        Array_<Real, ViaPointIndex> viaPointTension;
++    };
++
+     const CurveSegment& getObstacleCurveSegment(ObstacleIndex ix) const
+     {
+         return m_curveSegments.at(ix);
+@@ -2183,8 +2245,25 @@ public:
+         Real tension,
+         Vector_<SpatialVec>& bodyForcesInG) const;
+ 
++    void applyBodyForcesWithFriction(
++        const State& state,
++        Real originTension,
++        Vector_<SpatialVec>& bodyForcesInG) const;
++
+     Real calcCablePower(const State& state, Real tension) const;
+ 
++    Real calcTensionAtTermination(
++        const State& state,
++        Real originTension) const;
++
++    Real calcFrictionPowerDissipation(
++        const State& state,
++        Real originTension) const;
++
++    TensionProfile calcTensionProfile(
++        const State& state,
++        Real originTension) const;
++
+     void calcDecorativePathPoints(
+         const State& state,
+         const std::function<void(Vec3 point_G)>& sink) const
+@@ -2902,6 +2981,175 @@ Real CableSpan::Impl::calcCablePower(const State& state, Real tension) const
+     return unitPower * tension;
+ }
+ 
++CableSpan::Impl::TensionProfile CableSpan::Impl::calcTensionProfile(
++    const State& state,
++    Real originTension) const
++{
++    realizeVelocity(state);
++
++    TensionProfile profile;
++    profile.obstacleEntryTension.resize(getNumObstacles());
++    profile.obstacleExitTension.resize(getNumObstacles());
++    profile.viaPointTension.resize(getNumViaPoints());
++
++    const Real lengthDot = getDataVel(state).lengthDot;
++    const Real lengthRateSign =
++        lengthDot > 0. ? 1. : (lengthDot < 0. ? -1. : 0.);
++
++    Real tension = originTension;
++    profile.frictionPowerDissipation = 0.;
++
++    for (CableSegmentIndex segmentIx(0);
++         segmentIx < getNumCableSegments();
++         ++segmentIx) {
++        const CableSegment& cableSegment = getCableSegment(segmentIx);
++
++        for (ObstacleIndex obstacleIx :
++             cableSegment.getObstacleIndexes()) {
++            const CurveSegment& curve = getObstacleCurveSegment(obstacleIx);
++            const Real entryTension = tension;
++
++            if (curve.isInContactWithSurface(state)) {
++                const Real wrapAngle = curve.calcWrapAngle(state);
++                const Real frictionCoefficient =
++                    curve.getFrictionCoefficient();
++                const Real exitTension = entryTension *
++                    std::exp(lengthRateSign * frictionCoefficient * wrapAngle);
++
++                profile.frictionPowerDissipation +=
++                    std::abs(lengthDot * (exitTension - entryTension));
++                tension = exitTension;
++                profile.obstacleExitTension[obstacleIx] = exitTension;
++            } else {
++                profile.obstacleExitTension[obstacleIx] = entryTension;
++            }
++
++            profile.obstacleEntryTension[obstacleIx] = entryTension;
++        }
++
++        if (cableSegment.getFinalViaPointIndex().isValid()) {
++            profile.viaPointTension[cableSegment.getFinalViaPointIndex()] =
++                tension;
++        }
++    }
++
++    profile.terminationTension = tension;
++    return profile;
++}
++
++Real CableSpan::Impl::calcTensionAtTermination(
++    const State& state,
++    Real originTension) const
++{
++    realizeVelocity(state);
++
++    if (originTension <= 0.) {
++        return 0.;
++    }
++    return calcTensionProfile(state, originTension).terminationTension;
++}
++
++Real CableSpan::Impl::calcFrictionPowerDissipation(
++    const State& state,
++    Real originTension) const
++{
++    realizeVelocity(state);
++
++    if (originTension <= 0.) {
++        return 0.;
++    }
++    return calcTensionProfile(state, originTension).frictionPowerDissipation;
++}
++
++void CableSpan::Impl::applyBodyForcesWithFriction(
++    const State& state,
++    Real originTension,
++    Vector_<SpatialVec>& bodyForcesInG) const
++{
++    realizeVelocity(state);
++
++    if (originTension <= 0.) {
++        return;
++    }
++
++    const TensionProfile profile =
++        calcTensionProfile(state, originTension);
++
++    // Force applied at cable origin point.
++    {
++        SpatialVec unitForce_G;
++        calcUnitForceAtCableOrigin(*this, state, unitForce_G);
++        getOriginBody().applyBodyForce(
++            state,
++            unitForce_G * originTension,
++            bodyForcesInG);
++    }
++
++    // Forces applied to each obstacle body in contact with the cable. The
++    // entry and exit tensions can differ when there is friction.
++    for (CableSegmentIndex segmentIx(0);
++         segmentIx < getNumCableSegments();
++         ++segmentIx) {
++        const CableSegment& cableSegment = getCableSegment(segmentIx);
++
++        for (ObstacleIndex obstacleIx :
++             cableSegment.getObstacleIndexes()) {
++            const CurveSegment& curve = getObstacleCurveSegment(obstacleIx);
++            if (!curve.isInContactWithSurface(state)) {
++                continue;
++            }
++
++            const CurveSegmentData::Position& dataPos = curve.getDataPos(state);
++            const Vec3& x_GB =
++                curve.getMobilizedBody().getBodyOriginLocation(state);
++            const Vec3 r_P = dataPos.X_GP.p() - x_GB;
++            const Vec3 r_Q = dataPos.X_GQ.p() - x_GB;
++            const UnitVec3& t_P = getTangent(dataPos.X_GP);
++            const UnitVec3& t_Q = getTangent(dataPos.X_GQ);
++
++            const Real entryTension =
++                profile.obstacleEntryTension[obstacleIx];
++            const Real exitTension =
++                profile.obstacleExitTension[obstacleIx];
++            const Vec3 force_P = Vec3(t_P) * entryTension;
++            const Vec3 force_Q = Vec3(t_Q) * exitTension;
++
++            const SpatialVec frictionForce_G(
++                r_Q % force_Q - r_P % force_P,
++                force_Q - force_P);
++            curve.getMobilizedBody().applyBodyForce(
++                state,
++                frictionForce_G,
++                bodyForcesInG);
++        }
++
++        // Forces applied to each via point. Via points are frictionless, so
++        // the incoming and outgoing tensions are continuous.
++        if (cableSegment.getFinalViaPointIndex().isValid()) {
++            const ViaPointIndex viaPointIx =
++                cableSegment.getFinalViaPointIndex();
++            const ViaPoint& viaPoint = getViaPoint(viaPointIx);
++
++            SpatialVec unitForce_G;
++            calcUnitForceExertedByViaPoint(viaPoint, state, unitForce_G);
++            viaPoint.getMobilizedBody().applyBodyForce(
++                state,
++                unitForce_G * profile.viaPointTension[viaPointIx],
++                bodyForcesInG);
++        }
++    }
++
++    // Force applied at cable termination point.
++    {
++        SpatialVec unitForce_G;
++        calcUnitForceAtCableTermination(*this, state, unitForce_G);
++        getTerminationBody().applyBodyForce(
++            state,
++            unitForce_G * profile.terminationTension,
++            bodyForcesInG);
++    }
++}
++
+ //==============================================================================
+ //                             Path Error Vector and Jacobian
+ //==============================================================================
+@@ -4741,6 +4989,16 @@ void CableSpan::setObstacleContactPointHint(
+         initialContactPointHint);
+ }
+ 
++void CableSpan::setObstacleFrictionCoefficient(ObstacleIndex ix, Real value)
++{
++    updImpl().updObstacleCurveSegment(ix).setFrictionCoefficient(value);
++}
++
++Real CableSpan::getObstacleFrictionCoefficient(ObstacleIndex ix) const
++{
++    return getImpl().getObstacleCurveSegment(ix).getFrictionCoefficient();
++}
++
+ const MobilizedBodyIndex& CableSpan::getViaPointMobilizedBodyIndex(
+     ViaPointIndex ix) const
+ {
+@@ -4797,6 +5055,14 @@ Real CableSpan::calcCurveSegmentArcLength(
+     return getImpl().getObstacleCurveSegment(ix).getDataInst(state).arcLength;
+ }
+ 
++Real CableSpan::calcCurveSegmentWrapAngle(
++    const State& state,
++    CableSpanObstacleIndex ix) const
++{
++    getImpl().realizePosition(state);
++    return getImpl().getObstacleCurveSegment(ix).calcWrapAngle(state);
++}
++
+ Real CableSpan::getCurveSegmentAccuracy() const
+ {
+     return getImpl().getParameters().geodesicIntegratorAccuracy;
+@@ -4861,6 +5127,31 @@ void CableSpan::applyBodyForces(
+     return getImpl().applyBodyForces(s, tension, bodyForcesInG);
+ }
+ 
++void CableSpan::applyBodyForcesWithFriction(
++    const State& s,
++    Real originTension,
++    Vector_<SpatialVec>& bodyForcesInG) const
++{
++    return getImpl().applyBodyForcesWithFriction(
++        s,
++        originTension,
++        bodyForcesInG);
++}
++
++Real CableSpan::calcTensionAtTermination(
++    const State& state,
++    Real originTension) const
++{
++    return getImpl().calcTensionAtTermination(state, originTension);
++}
++
++Real CableSpan::calcFrictionPowerDissipation(
++    const State& state,
++    Real originTension) const
++{
++    return getImpl().calcFrictionPowerDissipation(state, originTension);
++}
++
+ void CableSpan::calcDecorativePathPoints(
+     const State& state,
+     const std::function<void(Vec3 point_G)>& sink) const

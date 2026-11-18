@@ -1,0 +1,51 @@
+schema_version = "1.1"
+
+[task]
+name = "GoogleCloudPlatform/php-docs-samples"
+description = "## Description  The PHP documentation samples for Google Cloud Data Loss Prevention currently lack an example showing how to de-identify files stored in Cloud Storage. Developers who want to protect sensitive information in their Cloud Storage buckets by running de-identification"
+authors = [{name = "SWE-Bench Extended"}]
+keywords = ["php", "libraries-frameworks", "general"]
+
+[task.metadata]
+deal_id = ""
+
+[metadata]
+version = "1.0"
+author_name = "swe-bench-extended"
+difficulty = "medium"
+difficulty_explanation = "Medium-difficulty Software Engineering task. Opus-4.8 solves it in some but not all offline rollouts (discriminating: both passing and failing trajectories observed), indicating non-trivial but tractable reasoning. Reported pass@8 band: 4/8."
+pass_at_k_gpt_5_5 = ""
+pass_at_k_opus_4_8 = "4/8"
+category = "Software Engineering"
+subcategory = "Web, API, and networking software"
+objective_labels = ["Implement"]
+artifact_labels = ["Codebase", "Single script or program", "Network endpoint or protocol artifact"]
+source = "pr"
+tags = ["php", "swe-bench-extended", "pr", "junit"]
+expert_time_estimate = 3600
+junior_time_estimate = 10800
+
+[verifier]
+timeout_sec = 3000.0
+
+[agent]
+timeout_sec = 3000.0
+
+[environment]
+os = "linux"
+workdir = "/workspace/repo"
+build_timeout_sec = 1800.0
+cpus = 1
+memory_mb = 4096
+storage_mb = 10240
+gpus = 0
+allow_internet = false
+network_mode = "no-network"
+allowed_hosts = []
+mcp_servers = []
+
+[verifier.env]
+
+[environment.env]
+
+[solution.env]

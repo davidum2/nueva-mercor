@@ -1,0 +1,172 @@
+[
+  {
+    "idx": 0,
+    "label": "Adjudication rationale",
+    "valPreview": "Thanks, solid work here, the dimension reasoning is detailed and your entry citations all check out.  Two things to fix."
+  },
+  {
+    "idx": 1,
+    "label": "2 · reason (A)*",
+    "valPreview": "A restructures the output loop correctly in both context classes, but writes the same nested if/else out twice rather th"
+  },
+  {
+    "idx": 2,
+    "label": "3 · reason (A)*",
+    "valPreview": "On diff shape, A's patch is larger than the change needs. It writes the same four-way type-matching chain into CompactSp"
+  },
+  {
+    "idx": 3,
+    "label": "4 · reason (A)*",
+    "valPreview": "The three behaviours work, and A handles dangling symlinks deliberately by testing path.exists(Symlinks.NOFOLLOW) before"
+  },
+  {
+    "idx": 4,
+    "label": "5 · reason (A)*",
+    "valPreview": "All three requested behaviours are delivered: symlink targets are captured, wrong-type outputs get their own invalid_pat"
+  },
+  {
+    "idx": 5,
+    "label": "6 · reason (A)*",
+    "valPreview": "A spent 107 terminal calls across its rollout log and did read widely, opening SpawnLogModule.java and the surrounding e"
+  },
+  {
+    "idx": 6,
+    "label": "7 · reason (A)*",
+    "valPreview": "A authored the broader suite by a clear margin, adding twelve test methods including testDanglingSymlinkOutput, testFile"
+  },
+  {
+    "idx": 7,
+    "label": "8 · reason (A)*",
+    "valPreview": "A's trajectory consists of 107 tool calls, 107 tool results and one final answer, with no assistant message at any point"
+  },
+  {
+    "idx": 8,
+    "label": "9 · reason (A)*",
+    "valPreview": "A's 946-character summary is accurate and organised against the three requirements, naming the proto fields it added and"
+  },
+  {
+    "idx": 9,
+    "label": "2 · reason (B)*",
+    "valPreview": "\"B extracts the classification into one shared helper, getOutputType(output, path) on SpawnLogContext, returning FILE, D"
+  },
+  {
+    "idx": 10,
+    "label": "3 · reason (B)*",
+    "valPreview": "B's names line up with what the package already implies and with what the repository's own test suite goes on to call: u"
+  },
+  {
+    "idx": 11,
+    "label": "4 · reason (B)*",
+    "valPreview": "B's compact log keeps every output kind distinguishable, so a consumer can tell a symlink from a file, and it preserves "
+  },
+  {
+    "idx": 12,
+    "label": "5 · reason (B)*",
+    "valPreview": "All three behaviours are there and I checked each against the code rather than the summary. invalid_output_path sits in "
+  },
+  {
+    "idx": 13,
+    "label": "6 · reason (B)*",
+    "valPreview": "B reached a wider restructure than trajectory A in 65 terminal calls against A's 107, and the research shows in the resu"
+  },
+  {
+    "idx": 14,
+    "label": "7 · reason (B)*",
+    "valPreview": "B ran its work to a recorded result: the recorded log shows //src/test/java/com/google/devtools/build/lib/exec:ExecTests"
+  },
+  {
+    "idx": 15,
+    "label": "8 · reason (B)*",
+    "valPreview": "B's 2654-character summary is the strongest artifact on either side. It works file by file, cites SpawnLogContext.java:1"
+  },
+  {
+    "idx": 16,
+    "label": "9 · reason (B)*",
+    "valPreview": "B's 2654-character summary is the strongest artifact on either side. It works file by file, cites SpawnLogContext.java:1"
+  },
+  {
+    "idx": 17,
+    "label": "Rubric 1 · reason (B)*",
+    "valPreview": "Yes. I found the code in B's transcript rather than its patch - the harness reconstruction only kept the proto and two i"
+  },
+  {
+    "idx": 18,
+    "label": "Rubric 2 · reason (B)*",
+    "valPreview": "Yes. Model B introduces invalid_output_path in ExecLogEntry.Output and distinguishes outputs that exist on disk with the"
+  },
+  {
+    "idx": 19,
+    "label": "Rubric 3 · reason (B)*",
+    "valPreview": "Yes. Model B introduces invalid_output_path in ExecLogEntry.Output and distinguishes outputs that exist on disk with the"
+  },
+  {
+    "idx": 20,
+    "label": "Rubric 4 · reason (B)*",
+    "valPreview": "B adds int32 unresolved_symlink_id to the Output oneof as a sibling of file_id and directory_id, backed by a dedicated U"
+  },
+  {
+    "idx": 21,
+    "label": "Rubric 5 · reason (B)*",
+    "valPreview": "B names the field invalid_output_path, matching the missing_path sibling beside it in the same oneof and matching the ge"
+  },
+  {
+    "idx": 22,
+    "label": "Rubric 6 · reason (B)*",
+    "valPreview": "Model B added replacement test cases in SpawnLogContextTestBase.java, specifically introducing testFileOutput_wrongType "
+  },
+  {
+    "idx": 23,
+    "label": "Rubric 7 · reason (B)*",
+    "valPreview": "Model B added replacement test cases in SpawnLogContextTestBase.java, specifically introducing testFileOutput_wrongType "
+  },
+  {
+    "idx": 24,
+    "label": "Rubric 8 · reason (B)*",
+    "valPreview": "No. While Model B introduced testFileOutput_wrongType for a direct directory-as-file mismatch, it did not add tests exer"
+  },
+  {
+    "idx": 25,
+    "label": "Rubric 9 · reason (B)",
+    "valPreview": "No. While Model B introduced testFileOutput_wrongType for a direct directory-as-file mismatch, it did not add tests exer"
+  },
+  {
+    "idx": 26,
+    "label": "Rubric 10 · reason (B)",
+    "valPreview": "The execution log of Model B records //src/test/java/com/google/devtools/build/lib/exec:ExecTests PASSED in 8.7s under c"
+  },
+  {
+    "idx": 27,
+    "label": "Rubric 11 · reason (B)",
+    "valPreview": "The execution log of Model B records //src/test/java/com/google/devtools/build/lib/exec:ExecTests PASSED in 8.7s under c"
+  },
+  {
+    "idx": 28,
+    "label": "Rubric 12 · reason (B)",
+    "valPreview": "B reports that ExecTests passes with 37 classes and zero failures or errors, that all 16 new parameterized cases ran, an"
+  },
+  {
+    "idx": 29,
+    "label": "Rubric 13 · reason (B)",
+    "valPreview": "B's log carries 28 assistant messages across 65 tool calls, so its exploration of the exec package and its decisions abo"
+  },
+  {
+    "idx": 30,
+    "label": "Rubric 14 · reason (B)",
+    "valPreview": "B's recorded patch is 4758 characters: the proto edits, three static imports, a Symlinks import and the deletion of list"
+  },
+  {
+    "idx": 31,
+    "label": "Rubric 15 · reason (B)",
+    "valPreview": "No. Model B added tests for standard symlink and wrong-type outputs, but did not include a test covering a dangling inte"
+  },
+  {
+    "idx": 32,
+    "label": "Comparative Rationale*",
+    "valPreview": "Both rollouts restructure the output loop the same way in principle, matching a declared output's type against what is a"
+  },
+  {
+    "idx": 33,
+    "label": "Add Comment",
+    "valPreview": ""
+  }
+]

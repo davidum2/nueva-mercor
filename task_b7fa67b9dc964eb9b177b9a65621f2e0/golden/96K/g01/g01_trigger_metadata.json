@@ -1,0 +1,13 @@
+{
+  "compaction_count": 1,
+  "compaction_trigger": "harness_default",
+  "context_window_tokens": 96000,
+  "harness": "codex",
+  "harness_version": "0.155.1",
+  "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/25cb62a8-ec91-4cf2-b772-fa6d25daacd4/output-artifacts.tar.gz",
+  "round": 1,
+  "summary_format": "editable",
+  "summary_message_id": "codex:01a1ec04-bdbb-75d2-9b18-2b71e6628ab7:343",
+  "trigger_tokens": null,
+  "window_tokens": 96000
+}

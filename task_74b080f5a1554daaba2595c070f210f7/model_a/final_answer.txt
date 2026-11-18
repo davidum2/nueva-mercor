@@ -1,0 +1,6 @@
+FINAL ANSWER
+I have updated Bazel's spawn execution logging to properly handle symbolic link outputs and type mismatches:
+Unresolved symlink outputs: Added symlink_target_path to File and ExecLogEntry.File in spawn.proto. When an output declared as an unresolved symlink exists as a symlink on disk, its target path is captured and logged in actual_outputs.
+Type mismatch vs missing outputs: Added invalid_path to ExecLogEntry.Output in spawn.proto. When declared file, directory, or symlink outputs exist on disk with an unexpected filesystem type, they are logged as invalid_path in compact logs and omitted from actual_outputs in expanded logs, distinguishing them from truly absent outputs (missing_path).
+Indirect outputs through symlinks: For declared file and directory outputs that are symbolic links pointing to actual content elsewhere, symlinks are followed to compute file digests or directory contents.
+Show less

@@ -1,0 +1,264 @@
+{
+  "verifiers": [
+    {
+      "verifier_id": "ver_3b96fe8b905b421c9f12ee13249e75c3",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent create a TypeScript class named ArtifactReferenceServiceProvider?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "YES",
+        "answer_b": "YES",
+        "reason_a": "The  agent A created   artifactReferenceServiceProvider.ts and also  exported it from core/src/artifact/index.ts .",
+        "reason_b": "The Agent B also   created artifactReference.service.ts with the class.",
+        "rubric_source": "EXPLICIT_PROMPT",
+        "mapped_dimension": "2 · Architecture, Modularity & Trade-off Soundness"
+      },
+      "verifier_index": 0,
+      "verifier_dependencies": [],
+      "created_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "updated_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "created_at": "2026-09-06T17:09:43.611393Z",
+      "updated_at": "2026-09-18T22:58:11.176630Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_1adf638767c14027bb05a018ca8837bc",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent register the service as an Angular module provider using module().provider()?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "YES",
+        "answer_b": "YES",
+        "reason_a": "The Agent A registered the provider by calling the module(ARTIFACT_REFERENCE_SERVICE_PROVIDER, []).provider('artifactReferenceService', ArtifactReferenceServiceProvider) in the artifactReferenceServiceProvider.ts.",
+        "reason_b": "The Agent B also registered  the provider with module(ARTIFACT_REFERENCE_SERVICE_PROVIDER, []) in artifact.module.ts.",
+        "rubric_source": "INFERRABLE_FROM_ENVIRONMENT",
+        "mapped_dimension": "3 · Codebase Conventions & Utility Reuse"
+      },
+      "verifier_index": 1,
+      "verifier_dependencies": [],
+      "created_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "updated_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "created_at": "2026-09-06T17:11:25.327475Z",
+      "updated_at": "2026-09-18T13:50:20.994319Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_8e911283cf6b43128dfa292b16f9a50f",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent implement a registration method that allows stage types to declare their artifact-reference fields?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "YES",
+        "answer_b": "YES",
+        "reason_a": "A's provider exposes registration methods for stage types and reference paths.",
+        "reason_b": "B's trajectory and final wiring record a registerReference method for stage-specific artifact fields.",
+        "rubric_source": "EXPLICIT_PROMPT",
+        "mapped_dimension": "2 · Architecture, Modularity & Trade-off Soundness"
+      },
+      "verifier_index": 2,
+      "verifier_dependencies": [],
+      "created_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "updated_by": "user_ddc3b018c38242189822336ecd590732",
+      "created_at": "2026-09-06T17:15:10.419507Z",
+      "updated_at": "2026-09-20T10:49:06.774129Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_035d7e4a979e4605b7d935a8bb6505a3",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent implement a sweep method that traverses pipeline stages to remove artifact references?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "YES",
+        "answer_b": "NO",
+        "reason_a": "Agent A implemented removeArtifactFromPipeline and removeArtifactFromStages in artifactReferenceServiceProvider.ts which traverse all pipeline stages and remove matching artifact references.",
+        "reason_b": "B's visible six-file diff omits the service body, so the sweep implementation itself is not available to inspect despite the trigger wiring.",
+        "rubric_source": "EXPLICIT_PROMPT",
+        "mapped_dimension": "4 · Robustness, Safety & API Stability"
+      },
+      "verifier_index": 3,
+      "verifier_dependencies": [],
+      "created_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "updated_by": "user_ddc3b018c38242189822336ecd590732",
+      "created_at": "2026-09-06T17:17:52.515976Z",
+      "updated_at": "2026-09-20T10:37:26.063581Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_f98832803105491ca403613f4149317a",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent correctly traverse arrays during the sweep?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "YES",
+        "answer_b": "YES",
+        "reason_a": "Agent A's removePathFromObject handles array traversal with Array.isArray guards, numeric index parsing, and recursive traversal.",
+        "reason_b": "B's transcript reports indexed-array removal, nested property removal, and dropping all matching array occurrences.",
+        "rubric_source": "EXPLICIT_PROMPT",
+        "mapped_dimension": "4 · Robustness, Safety & API Stability"
+      },
+      "verifier_index": 4,
+      "verifier_dependencies": [],
+      "created_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "updated_by": "user_ddc3b018c38242189822336ecd590732",
+      "created_at": "2026-09-06T17:19:03.134060Z",
+      "updated_at": "2026-09-20T10:51:16.829555Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_517b5e7fcb5a4e46aa98527a5376dc3f",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent splice (remove) matching artifact IDs from arrays during the sweep?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "YES",
+        "answer_b": "NO",
+        "reason_a": "A's visible provider logic and spec cover splicing matching array entries during cleanup.",
+        "reason_b": "B's final reconstructed diff omits the service body, so array-splice implementation cannot be independently verified.",
+        "rubric_source": "EXPLICIT_PROMPT",
+        "mapped_dimension": "4 · Robustness, Safety & API Stability"
+      },
+      "verifier_index": 5,
+      "verifier_dependencies": [],
+      "created_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "updated_by": "user_ddc3b018c38242189822336ecd590732",
+      "created_at": "2026-09-06T17:20:27.714151Z",
+      "updated_at": "2026-09-20T10:49:46.526128Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_d1f719950d9e4df789bc7c9b35bd08f2",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the patch avoid adding files under the tmp/ directory?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "YES",
+        "answer_b": "NO",
+        "reason_a": "The visible A patch paths contain the provider, module, trigger, and spec files; no tmp file appears in A's record.",
+        "reason_b": "B's patch adds tmp/opencode/artref/tsconfig.json.",
+        "rubric_source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "mapped_dimension": "3 · Codebase Conventions & Utility Reuse"
+      },
+      "verifier_index": 6,
+      "verifier_dependencies": [],
+      "created_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "updated_by": "user_ddc3b018c38242189822336ecd590732",
+      "created_at": "2026-09-06T17:21:49.523980Z",
+      "updated_at": "2026-09-20T10:50:34.418918Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_7795db7852154c748cfbaf72307a7216",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent avoid adding public methods whose bodies only delegate to another public method without adding behavior?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "NO",
+        "answer_b": "YES",
+        "reason_a": " The Agent A added 20 alias methods (register, registerPath, registerArtifactReference, sweep, removeArtifact, etc.) in artifactReferenceServiceProvider.ts that are single-line wrappers for existing methods, adding redundant surface area.",
+        "reason_b": "The Agent B also  implemented a focused API in artifactReference.service.ts with only registerReference, getReferences, removeReferenceFromStages, and $get.",
+        "rubric_source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "mapped_dimension": "3 · Codebase Conventions & Utility Reuse"
+      },
+      "verifier_index": 7,
+      "verifier_dependencies": [],
+      "created_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "updated_by": "user_a6ce89f7b2ee451d88ff7de56c44a850",
+      "created_at": "2026-09-06T17:23:19.508573Z",
+      "updated_at": "2026-09-18T23:04:15.032971Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_8ca1a239803d420ca72e434340515f69",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent add committed focused tests for artifact-reference cleanup?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "YES",
+        "answer_b": "NO",
+        "reason_a": "A includes a focused artifactReferenceServiceProvider.spec.ts in the visible patch.",
+        "reason_b": "B's trajectory records the focused spec write and reports 15 passed, 0 failed, including indexed-array and nested cleanup checks.",
+        "rubric_source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "mapped_dimension": "7 · Verification & Testing Discipline"
+      },
+      "verifier_index": 8,
+      "verifier_dependencies": [],
+      "created_by": "user_ddc3b018c38242189822336ecd590732",
+      "updated_by": "user_ddc3b018c38242189822336ecd590732",
+      "created_at": "2026-09-20T09:23:33.677561Z",
+      "updated_at": "2026-09-20T10:45:29.804668Z",
+      "archived_at": null,
+      "is_latest": true
+    },
+    {
+      "verifier_id": "ver_28f720b0611344cd9502c54eefbfdeba",
+      "verifier_version": 1,
+      "world_id": null,
+      "task_id": "task_08ccf272669347c3af63de71b2ecb5e5",
+      "eval_config_id": "evalcfg_prompt_specific_rubric",
+      "verifier_values": {
+        "criteria": "Did the agent record a successful execution of focused artifact-reference tests?"
+      },
+      "verifier_custom_field_values": {
+        "answer_a": "NO",
+        "answer_b": "YES",
+        "reason_a": "A's trajectory contains no recorded test command or passing output, so successful focused-test execution is not demonstrated.",
+        "reason_b": "B's trajectory explicitly reports 15 passed, 0 failed after its focused cleanup checks.",
+        "rubric_source": "COMMON_ENGINEERING_KNOWLEDGE",
+        "mapped_dimension": "9 · Final Summary & Presentation Quality"
+      },
+      "verifier_index": 9,
+      "verifier_dependencies": [],
+      "created_by": "user_ddc3b018c38242189822336ecd590732",
+      "updated_by": "user_ddc3b018c38242189822336ecd590732",
+      "created_at": "2026-09-20T10:29:18.995697Z",
+      "updated_at": "2026-09-20T10:51:49.754165Z",
+      "archived_at": null,
+      "is_latest": true
+    }
+  ]
+}

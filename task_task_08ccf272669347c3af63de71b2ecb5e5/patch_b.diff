@@ -1,0 +1,75 @@
+# Reconstructed from the agent's edit/write tool calls -- the harness did not
+# capture a diff for this rollout. Hunk offsets are RELATIVE to each edited
+# region, not absolute file line numbers, so this will not `git apply` cleanly.
+
+diff --git a/app/scripts/modules/core/src/artifact/artifact.module.ts b/app/scripts/modules/core/src/artifact/artifact.module.ts
+--- a/app/scripts/modules/core/src/artifact/artifact.module.ts
++++ b/app/scripts/modules/core/src/artifact/artifact.module.ts
+@@ -1 +1,2 @@
++import { ARTIFACT_REFERENCE_SERVICE_PROVIDER } from './artifactReference.service';
+ import { EXPECTED_ARTIFACT_SELECTOR_COMPONENT } from './expectedArtifactSelector.component';
+diff --git a/app/scripts/modules/core/src/artifact/artifact.module.ts b/app/scripts/modules/core/src/artifact/artifact.module.ts
+--- a/app/scripts/modules/core/src/artifact/artifact.module.ts
++++ b/app/scripts/modules/core/src/artifact/artifact.module.ts
+@@ -1,2 +1,3 @@
+ module(ARTIFACT_MODULE, [
++  ARTIFACT_REFERENCE_SERVICE_PROVIDER,
+   EXPECTED_ARTIFACT_MULTI_SELECTOR_COMPONENT,
+diff --git a/tmp/opencode/artref/tsconfig.json b/tmp/opencode/artref/tsconfig.json
+new file mode 100644
+--- /dev/null
++++ b/tmp/opencode/artref/tsconfig.json
+@@ -0,0 +1,13 @@
++{
++  "compilerOptions": {
++    "baseUrl": "/workspace/repo/app/scripts/modules",
++    "paths": { "core/*": ["core/src/*"] },
++    "module": "commonjs",
++    "target": "es6",
++    "moduleResolution": "node",
++    "skipLibCheck": true,
++    "outDir": "/tmp/opencode/artref/out",
++    "rootDir": "/workspace/repo/app/scripts/modules/core/src"
++  },
++  "files": ["/workspace/repo/app/scripts/modules/core/src/artifact/artifactReference.service.ts"]
++}
+diff --git a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+--- a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
++++ b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+@@ -1,8 +1,10 @@
++import { ARTIFACT_REFERENCE_SERVICE_PROVIDER } from 'core/artifact/artifactReference.service';
+ import { PIPELINE_CONFIG_PROVIDER } from 'core/pipeline/config/pipelineConfigProvider';
+ import { UUIDGenerator } from 'core/utils/uuid.service';
+ 
+ const angular = require('angular');
+ 
+ module.exports = angular.module('spinnaker.core.pipeline.config.trigger.triggersDirective', [
++  ARTIFACT_REFERENCE_SERVICE_PROVIDER,
+   PIPELINE_CONFIG_PROVIDER,
+ ])
+diff --git a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+--- a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
++++ b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+@@ -1 +1 @@
+-  .controller('triggersCtrl', function($scope, pipelineConfig) {
++  .controller('triggersCtrl', function($scope, pipelineConfig, artifactReferenceService) {
+diff --git a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+--- a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
++++ b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+@@ -1,11 +1,10 @@
+       pipeline.expectedArtifacts = pipeline.expectedArtifacts
+         .filter(a => a.id !== expectedArtifact.id);
+ 
+-      if (!pipeline.triggers) {
+-        return;
+-      }
++      (pipeline.triggers || [])
++        .forEach(t => t.expectedArtifactIds = (t.expectedArtifactIds || [])
++          .filter(eid => expectedArtifact.id !== eid));
+ 
+-      pipeline.triggers
+-        .forEach(t => t.expectedArtifactIds = t.expectedArtifactIds
+-          .filter(eid => expectedArtifact.id !== eid));
++      // Sweep up any references to the removed artifact left behind on the pipeline's stages.
++      artifactReferenceService.removeReferenceFromStages(expectedArtifact.id, pipeline.stages);
+     };

@@ -1,0 +1,91 @@
+{
+  "deleteLogs": [
+    {
+      "id": "ver_abda1f657c5348fa84850dff890e4ecf",
+      "status": 204
+    }
+  ],
+  "createLogs": [
+    {
+      "idx": 0,
+      "status": 201,
+      "ok": true,
+      "id": "ver_81cf796b00b7499d9094585a89a98330"
+    },
+    {
+      "idx": 1,
+      "status": 201,
+      "ok": true,
+      "id": "ver_7dda937c36f24292bc06be412fbbd729"
+    },
+    {
+      "idx": 2,
+      "status": 201,
+      "ok": true,
+      "id": "ver_820863c5a07d4ad18925de208f1c7bea"
+    },
+    {
+      "idx": 3,
+      "status": 201,
+      "ok": true,
+      "id": "ver_0cee99eca3c34c0abc432217b4e68cb7"
+    },
+    {
+      "idx": 4,
+      "status": 201,
+      "ok": true,
+      "id": "ver_818c1b416406417182b69fd160e570bb"
+    },
+    {
+      "idx": 5,
+      "status": 201,
+      "ok": true,
+      "id": "ver_a001845eb61f40a480d632767533805d"
+    },
+    {
+      "idx": 6,
+      "status": 201,
+      "ok": true,
+      "id": "ver_20f59b7003694f739f4287274dcb6299"
+    },
+    {
+      "idx": 7,
+      "status": 201,
+      "ok": true,
+      "id": "ver_409872ec9b674f5fbe60452bc077e3e3"
+    },
+    {
+      "idx": 8,
+      "status": 201,
+      "ok": true,
+      "id": "ver_2ed743084af8497192d38950d3c7e9bd"
+    },
+    {
+      "idx": 9,
+      "status": 201,
+      "ok": true,
+      "id": "ver_3505ba0870754e8a81b5b4152a42c76f"
+    },
+    {
+      "idx": 10,
+      "status": 201,
+      "ok": true,
+      "id": "ver_4af2b63c2c864e39888d96d5eee36984"
+    },
+    {
+      "idx": 11,
+      "status": 401,
+      "ok": false,
+      "id": null
+    },
+    {
+      "idx": 12,
+      "status": 401,
+      "ok": false,
+      "id": null
+    }
+  ],
+  "patchStatus": 401,
+  "patchOk": false,
+  "updatedAt": null
+}

@@ -1,0 +1,585 @@
+diff --git a/modules/tools/gen_vehicle_protocol/BUILD b/modules/tools/gen_vehicle_protocol/BUILD
+index 63555de..9b999e9 100644
+--- a/modules/tools/gen_vehicle_protocol/BUILD
++++ b/modules/tools/gen_vehicle_protocol/BUILD
+@@ -4,6 +4,11 @@ load("//tools:apollo_package.bzl", "apollo_package")
+ 
+ package(default_visibility = ["//visibility:public"])
+ 
++apollo_py_binary(
++    name = "frame_codec",
++    srcs = ["frame_codec.py"],
++)
++
+ apollo_py_binary(
+     name = "extract_dbc_meta",
+     srcs = ["extract_dbc_meta.py"],
+@@ -14,6 +19,7 @@ apollo_py_binary(
+     srcs = ["gen.py"],
+     deps = [
+         ":extract_dbc_meta",
++        ":frame_codec",
+         ":gen_canbus_conf",
+         ":gen_proto_file",
+         ":gen_protocols",
+@@ -29,16 +35,25 @@ apollo_py_binary(
+ apollo_py_binary(
+     name = "gen_proto_file",
+     srcs = ["gen_proto_file.py"],
++    deps = [
++        ":frame_codec",
++    ],
+ )
+ 
+ apollo_py_binary(
+     name = "gen_protocols",
+     srcs = ["gen_protocols.py"],
++    deps = [
++        ":frame_codec",
++    ],
+ )
+ 
+ apollo_py_binary(
+     name = "gen_vehicle_controller_and_manager",
+     srcs = ["gen_vehicle_controller_and_manager.py"],
++    deps = [
++        ":frame_codec",
++    ],
+ )
+ 
+ # install(
+diff --git a/modules/tools/gen_vehicle_protocol/extract_dbc_meta.py b/modules/tools/gen_vehicle_protocol/extract_dbc_meta.py
+index 8ef5e85..8ee026b 100644
+--- a/modules/tools/gen_vehicle_protocol/extract_dbc_meta.py
++++ b/modules/tools/gen_vehicle_protocol/extract_dbc_meta.py
+@@ -92,6 +92,7 @@ def extract_dbc_meta(dbc_file, out_file, car_type, black_list, sender_list,
+                 p_name = items[2][:-1].lower()
+                 # print ("p_name is ", p_name)
+                 protocol = {}
++                protocol["dlc"] = int(items[3])
+                 if int(items[1]) > MAX_CAN_ID:
+                     continue
+                 protocol["id"] = "%x" % int(items[1])
+@@ -118,9 +119,8 @@ def extract_dbc_meta(dbc_file, out_file, car_type, black_list, sender_list,
+                 if len(items) > 3 and items[0] == "SG_":
+                     if items[2] == ":":
+                         var_info = extract_var_info(items)
+-                        # current we can't process than 4 byte value
+-                        if var_info["len"] <= 32:
+-                            protocol["vars"].append(var_info)
++                        # signals the emitters can't handle are skipped there
++                        protocol["vars"].append(var_info)
+                 else:
+                     in_protocol = False
+                     if len(protocol) != 0 and len(protocol["vars"]) != 0 and len(
+diff --git a/modules/tools/gen_vehicle_protocol/frame_codec.py b/modules/tools/gen_vehicle_protocol/frame_codec.py
+new file mode 100644
+index 0000000..33ae1c0
+--- /dev/null
++++ b/modules/tools/gen_vehicle_protocol/frame_codec.py
+@@ -0,0 +1,244 @@
++#!/usr/bin/env python3
++
++################################################################---------------
++# Copyright 2026 The Apollo Authors. All Rights Reserved.
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++# http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++################################################################---------------
++
++from dataclasses import dataclass
++from typing import Tuple, Dict, Any, Union, Optional
++
++
++class UnsupportedSignalError(Exception):
++    def __init__(self, signal_name: str):
++        super().__init__(f"Unsupported signal: {signal_name}")
++        self.signal_name = signal_name
++
++
++@dataclass(frozen=True)
++class SignalLayout:
++    slices: Tuple[Tuple[int, int, int], ...]
++    bit_width: int
++
++
++def signal_layout(signal: dict, dlc: int) -> SignalLayout:
++    sig_name = signal.get("name", "unknown")
++    bit_width = signal.get("len", 0)
++    if bit_width > 32:
++        raise UnsupportedSignalError(sig_name)
++
++    bit = signal.get("bit", 0)
++    order = signal.get("order", "intel")
++
++    left_len = bit_width
++    byte_idx = bit // 8
++    bit_start = bit % 8
++    slices = []
++
++    if order == "motorola":
++        while left_len > 0:
++            if byte_idx < 0 or byte_idx >= dlc:
++                raise UnsupportedSignalError(sig_name)
++            slice_len = min(bit_start + 1, left_len)
++            start_pos = bit_start - slice_len + 1
++            slices.append((byte_idx, start_pos, slice_len))
++            left_len -= slice_len
++            byte_idx += 1
++            bit_start = 7
++    else:
++        while left_len > 0:
++            if byte_idx < 0 or byte_idx >= dlc:
++                raise UnsupportedSignalError(sig_name)
++            slice_len = min(8 - bit_start, left_len)
++            slices.append((byte_idx, bit_start, slice_len))
++            left_len -= slice_len
++            byte_idx += 1
++            bit_start = 0
++        slices.reverse()
++
++    return SignalLayout(tuple(slices), bit_width)
++
++
++RANG_MASK_1_L = [0x01, 0x03, 0x07, 0x0F, 0x1F, 0x3F, 0x7F, 0xFF]
++RANG_MASK_0_L = [0xFE, 0xFC, 0xF8, 0xF0, 0xE0, 0xC0, 0x80, 0x00]
++
++
++def byte_set_value(buffer: bytearray, byte_idx: int, value: int, start_pos: int, length: int):
++    if start_pos > 7 or start_pos < 0 or length < 1:
++        return
++    end_pos = min(start_pos + length - 1, 7)
++    real_len = end_pos + 1 - start_pos
++    current_val = buffer[byte_idx]
++    low = current_val & RANG_MASK_1_L[start_pos - 1] if start_pos > 0 else 0x00
++    high = current_val & RANG_MASK_0_L[end_pos]
++    middle = (value & RANG_MASK_1_L[real_len - 1]) << start_pos
++    buffer[byte_idx] = (high + middle + low) & 0xFF
++
++
++def get_range_info(var: dict) -> Optional[Dict[str, float]]:
++    if "physical_range" not in var:
++        return None
++    pr = var["physical_range"]
++    if '|' not in pr or '[' not in pr or ']' not in pr:
++        return None
++    try:
++        items = pr.split('|')
++        low_str = items[0].split('[')[1]
++        high_str = items[1].split(']')[0]
++        return {"low": float(low_str), "high": float(high_str)}
++    except Exception:
++        return None
++
++
++class FrameCodec:
++    def __init__(self, protocol: dict):
++        self.dlc = protocol.get("dlc", 8)
++        self.name = protocol.get("name", "")
++        self.protocol_type = protocol.get("protocol_type", "")
++        self.vars = protocol.get("vars", [])
++        self._vars_by_name = {v["name"]: v for v in self.vars}
++        self._layouts = {}
++
++        for v in self.vars:
++            layout = signal_layout(v, self.dlc)
++            self._layouts[v["name"]] = layout
++
++    def layout(self, name: str) -> SignalLayout:
++        if name not in self._layouts:
++            raise KeyError(name)
++        return self._layouts[name]
++
++    def decode(self, data: bytes) -> Dict[str, Union[bool, int, float]]:
++        if len(data) < self.dlc:
++            raise ValueError(f"Data length {len(data)} is less than DLC {self.dlc}")
++
++        result = {}
++        for var in self.vars:
++            name = var["name"]
++            slayout = self._layouts[name]
++            x = 0
++            for byte_idx, start_pos, slice_len in slayout.slices:
++                t = (data[byte_idx] >> start_pos) & ((1 << slice_len) - 1)
++                x = ((x << slice_len) | t) & 0xFFFFFFFF
++
++            shift_bit = 32 - var["len"]
++            if var.get("is_signed_var", False):
++                x = (x << shift_bit) & 0xFFFFFFFF
++                if x & 0x80000000:
++                    x = x - 0x100000000
++                x >>= shift_bit
++
++            returntype = var.get("type", "int")
++            if returntype == "bool":
++                result[name] = bool(x != 0)
++            elif returntype == "enum":
++                result[name] = int(x)
++            else:
++                prec = var.get("precision", 1.0)
++                offset = var.get("offset", 0.0)
++                val = x * prec + offset
++                if returntype == "double" or prec != 1.0 or offset != 0.0 or isinstance(val, float):
++                    if returntype == "int":
++                        result[name] = int(val)
++                    else:
++                        result[name] = float(val)
++                else:
++                    result[name] = int(val)
++
++        return result
++
++    def encode(self, values: Optional[dict] = None, data: Optional[bytes] = None) -> bytes:
++        if data is not None:
++            if len(data) < self.dlc:
++                raise ValueError(f"Initial data length {len(data)} is less than DLC {self.dlc}")
++            buffer = bytearray(data[: self.dlc])
++        else:
++            buffer = bytearray(self.dlc)
++
++        if values is None:
++            values = {}
++
++        for k in values:
++            if k not in self._vars_by_name:
++                raise KeyError(k)
++
++        for var in self.vars:
++            self._encode_signal(buffer, var, values)
++
++        return bytes(buffer)
++
++    def _encode_signal(self, buffer: bytearray, var: dict, values: dict):
++        name = var["name"]
++        if name in values:
++            val = values[name]
++        else:
++            vtype = var.get("type", "int")
++            if vtype == "bool":
++                val = False
++            elif vtype == "enum":
++                enum_map = var.get("enum", {})
++                if 0 in enum_map or "0" in enum_map:
++                    val = 0
++                elif enum_map:
++                    first_key = next(iter(enum_map.keys()))
++                    try:
++                        val = int(first_key)
++                    except (ValueError, TypeError):
++                        val = 0
++                else:
++                    val = 0
++            else:
++                val = 0
++
++        range_info = get_range_info(var)
++        if range_info:
++            low = range_info["low"]
++            high = range_info["high"]
++            if low <= high:
++                if val < low:
++                    val = low
++                elif val > high:
++                    val = high
++
++        prec = var.get("precision", 1.0)
++        offset = var.get("offset", 0.0)
++        raw_val = (val - offset) / prec
++        x = int(raw_val)
++
++        lsb_first_slices = list(reversed(self._layouts[name].slices))
++        if len(lsb_first_slices) == 1:
++            byte_idx, start_pos, slice_len = lsb_first_slices[0]
++            byte_set_value(buffer, byte_idx, x & 0xFF, start_pos, slice_len)
++        else:
++            prev_len = 0
++            for i, (byte_idx, start_pos, slice_len) in enumerate(lsb_first_slices):
++                if i != 0:
++                    x >>= prev_len
++                slice_mask = (1 << slice_len) - 1
++                t = x & slice_mask
++                byte_set_value(buffer, byte_idx, t, start_pos, slice_len)
++                prev_len = slice_len
++
++    def quantize(self, values: Optional[dict] = None) -> Dict[str, Union[bool, int, float]]:
++        if values is None:
++            values = {}
++
++        res = {}
++        for var in self.vars:
++            # each signal goes onto a zeroed frame of its own
++            buffer = bytearray(self.dlc)
++            self._encode_signal(buffer, var, values)
++            res[var["name"]] = self.decode(bytes(buffer))[var["name"]]
++
++        return res
+diff --git a/modules/tools/gen_vehicle_protocol/gen.py b/modules/tools/gen_vehicle_protocol/gen.py
+index 109ab77..507ee11 100644
+--- a/modules/tools/gen_vehicle_protocol/gen.py
++++ b/modules/tools/gen_vehicle_protocol/gen.py
+@@ -30,6 +30,7 @@ from modules.tools.gen_vehicle_protocol.gen_proto_file import gen_proto_file
+ from modules.tools.gen_vehicle_protocol.gen_protocols import gen_protocols
+ from modules.tools.gen_vehicle_protocol.gen_vehicle_controller_and_manager import gen_vehicle_controller_and_manager
+ from modules.tools.gen_vehicle_protocol.extract_dbc_meta import extract_dbc_meta
++from modules.tools.gen_vehicle_protocol.frame_codec import FrameCodec
+ 
+ 
+ def gen(conf):
+diff --git a/modules/tools/gen_vehicle_protocol/gen_proto_file.py b/modules/tools/gen_vehicle_protocol/gen_proto_file.py
+index 6a90fc8..bbff4b1 100644
+--- a/modules/tools/gen_vehicle_protocol/gen_proto_file.py
++++ b/modules/tools/gen_vehicle_protocol/gen_proto_file.py
+@@ -24,6 +24,23 @@ import sys
+ 
+ import yaml
+ 
++from modules.tools.gen_vehicle_protocol.frame_codec import (
++    signal_layout,
++    UnsupportedSignalError,
++)
++
++
++def filter_supported_vars(p):
++    dlc = p.get("dlc", 8)
++    valid_vars = []
++    for var in p.get("vars", []):
++        try:
++            signal_layout(var, dlc)
++            valid_vars.append(var)
++        except UnsupportedSignalError as e:
++            print(f"Skipping unsupported signal: {e.signal_name}")
++    return valid_vars
++
+ 
+ def write_single_protocol_vars(pb_fp, p):
+     pb_fp.write("\nmessage %s {\n" % p["name"].capitalize())
+@@ -32,7 +49,9 @@ def write_single_protocol_vars(pb_fp, p):
+     elif p["protocol_type"] == "report":
+         pb_fp.write("// Report Message\n")
+ 
+-    for var in p["vars"]:
++    p_vars = filter_supported_vars(p)
++
++    for var in p_vars:
+         fmt = "    %s = %d;\n"
+         if var["type"] == "enum":
+             pb_fp.write("  enum %s {\n" % (var["name"].capitalize() + "Type"))
+@@ -41,7 +60,7 @@ def write_single_protocol_vars(pb_fp, p):
+             pb_fp.write("  }\n")
+ 
+     var_seq = 1
+-    for var in p["vars"]:
++    for var in p_vars:
+         fmt = "  optional %s %s = %d;\n"
+         t = var["type"]
+         if t == "int":
+diff --git a/modules/tools/gen_vehicle_protocol/gen_protocols.py b/modules/tools/gen_vehicle_protocol/gen_protocols.py
+index 172c722..0c526b0 100644
+--- a/modules/tools/gen_vehicle_protocol/gen_protocols.py
++++ b/modules/tools/gen_vehicle_protocol/gen_protocols.py
+@@ -25,11 +25,33 @@ import sys
+ 
+ import yaml
+ 
++from modules.tools.gen_vehicle_protocol.frame_codec import (
++    signal_layout,
++    UnsupportedSignalError,
++)
++
++
++def filter_supported_vars(protocol):
++    if protocol.get("_vars_filtered"):
++        return protocol.get("vars", [])
++    dlc = protocol.get("dlc", 8)
++    valid_vars = []
++    for var in protocol.get("vars", []):
++        try:
++            signal_layout(var, dlc)
++            valid_vars.append(var)
++        except UnsupportedSignalError as e:
++            print(f"Skipping unsupported signal: {e.signal_name}")
++    protocol["vars"] = valid_vars
++    protocol["_vars_filtered"] = True
++    return valid_vars
++
+ 
+ def gen_report_header(car_type, protocol, output_dir, protocol_template_dir):
+     """
+         doc string:
+     """
++    filter_supported_vars(protocol)
+     report_header_tpl_file = protocol_template_dir + "report_protocol.h.tpl"
+     FMT = get_tpl_fmt(report_header_tpl_file)
+     report_header_file = output_dir + "%s.h" % protocol["name"]
+@@ -59,6 +81,7 @@ def gen_report_cpp(car_type, protocol, output_dir, protocol_template_dir):
+     """
+         doc string:
+     """
++    filter_supported_vars(protocol)
+     report_cpp_tpl_file = protocol_template_dir + "report_protocol.cc.tpl"
+     FMT = get_tpl_fmt(report_cpp_tpl_file)
+     report_cpp_file = output_dir + "%s.cc" % protocol["name"]
+@@ -90,7 +113,7 @@ def gen_report_cpp(car_type, protocol, output_dir, protocol_template_dir):
+ %s %s::%s(const std::uint8_t* bytes, int32_t length) const {"""
+             impl = fmt % (str(var), returntype, classname, var["name"])
+ 
+-            byte_info = get_byte_info(var)
++            byte_info = get_byte_info(var, protocol.get("dlc", 8))
+             impl = impl + gen_parse_value_impl(var, byte_info)
+ 
+             impl = impl + gen_report_value_offset_precision(var, protocol)
+@@ -164,6 +187,7 @@ def gen_control_header(car_type, protocol, output_dir, protocol_template_dir):
+     """
+         doc string:
+     """
++    filter_supported_vars(protocol)
+     control_header_tpl_file = protocol_template_dir + "control_protocol.h.tpl"
+     FMT = get_tpl_fmt(control_header_tpl_file)
+     control_header_file = output_dir + "%s.h" % protocol["name"]
+@@ -216,7 +240,7 @@ def gen_control_header(car_type, protocol, output_dir, protocol_template_dir):
+         h_fp.write(FMT % fmt_val)
+ 
+ 
+-def get_byte_info(var):
++def get_byte_info(var, dlc=8):
+     """
+         doc string: https://wenku.baidu.com/view/3fe9a7a4dd3383c4bb4cd293.html
+         u can reference this link to known the difference between motorola and intel encoding
+@@ -225,35 +249,18 @@ def get_byte_info(var):
+                  for the purpose of easily parsing value from CAN frame, the byte_info is arranged
+                  from msb byte to lsb byte order
+     """
+-    bit = var["bit"]
+-    byte_info = []
+-    left_len = var["len"]
+-    byte_idx = bit // 8
+-    bit_start = bit % 8
+-    if var["order"] == "motorola":
+-        while left_len > 0:
+-            info = {}
+-            info["byte"] = byte_idx
+-            info["len"] = min(bit_start + 1, left_len)
+-            # start_bit is always the lowest bit
+-            info["start_bit"] = bit_start - info["len"] + 1
+-            byte_info.append(info)
+-            left_len = left_len - info["len"]
+-            byte_idx = byte_idx + 1
+-            bit_start = 7
+-    else:
+-        while left_len > 0:
+-            info = {}
+-            info["byte"] = byte_idx
+-            info["len"] = min(8 - bit_start, left_len)
+-            info["start_bit"] = bit_start
+-            byte_info.append(info)
+-            left_len = left_len - info["len"]
+-            byte_idx = byte_idx + 1
+-            bit_start = 0
+-        # byte_info is always construct with msb(most significant bit) byte to lsb byte
+-        byte_info.reverse()
+-    return byte_info
++    try:
++        layout = signal_layout(var, dlc)
++        byte_info = []
++        for b_idx, start_bit, s_len in layout.slices:
++            byte_info.append({
++                "byte": b_idx,
++                "start_bit": start_bit,
++                "len": s_len
++            })
++        return byte_info
++    except UnsupportedSignalError:
++        return []
+ 
+ 
+ def gen_control_decode_offset_precision(var):
+@@ -334,12 +341,6 @@ def gen_control_value_func_impl(classname, var, protocol):
+         doc string:
+     """
+     impl = ""
+-    if var["len"] > 32:
+-        print("This generator not support big than four bytes var." +
+-              "protocol classname: %s, var_name:%s " % (
+-                  class_name, var["name"]))
+-        return impl
+-
+     fmt = """
+ %(classname)s* %(classname)s::set_%(var_name)s(
+     %(var_type)s %(var_name)s) {
+@@ -363,7 +364,7 @@ void %(classname)s::set_p_%(var_name)s(uint8_t* data,
+     impl = impl + gen_control_decode_offset_precision(var)
+ 
+     # get lsb to msb order
+-    byte_info = get_byte_info(var)
++    byte_info = get_byte_info(var, protocol.get("dlc", 8))
+     byte_info.reverse()
+     if len(byte_info) == 1:
+         impl = impl + gen_control_encode_one_byte_value_impl(var, byte_info[0])
+@@ -377,6 +378,7 @@ def gen_control_cpp(car_type, protocol, output_dir, protocol_template_dir):
+     """
+         doc string:
+     """
++    filter_supported_vars(protocol)
+     control_cpp_tpl_file = protocol_template_dir + "control_protocol.cc.tpl"
+     FMT = get_tpl_fmt(control_cpp_tpl_file)
+     control_cpp_file = output_dir + "%s.cc" % protocol["name"]
+@@ -435,7 +437,7 @@ def gen_control_cpp(car_type, protocol, output_dir, protocol_template_dir):
+ %s %s::%s(const std::uint8_t* bytes, int32_t length) const {"""
+             impl = fmt % (returntype, classname, var["name"])
+ 
+-            byte_info = get_byte_info(var)
++            byte_info = get_byte_info(var, protocol.get("dlc", 8))
+             impl = impl + gen_parse_value_impl(var, byte_info)
+ 
+             impl = impl + gen_report_value_offset_precision(var, protocol)
+diff --git a/modules/tools/gen_vehicle_protocol/gen_vehicle_controller_and_manager.py b/modules/tools/gen_vehicle_protocol/gen_vehicle_controller_and_manager.py
+index a80faab..126c8c2 100644
+--- a/modules/tools/gen_vehicle_protocol/gen_vehicle_controller_and_manager.py
++++ b/modules/tools/gen_vehicle_protocol/gen_vehicle_controller_and_manager.py
+@@ -25,6 +25,27 @@ import sys
+ 
+ import yaml
+ 
++from modules.tools.gen_vehicle_protocol.frame_codec import (
++    signal_layout,
++    UnsupportedSignalError,
++)
++
++
++def filter_supported_vars(p):
++    if p.get("_vars_filtered"):
++        return p.get("vars", [])
++    dlc = p.get("dlc", 8)
++    valid_vars = []
++    for var in p.get("vars", []):
++        try:
++            signal_layout(var, dlc)
++            valid_vars.append(var)
++        except UnsupportedSignalError as e:
++            print(f"Skipping unsupported signal: {e.signal_name}")
++    p["vars"] = valid_vars
++    p["_vars_filtered"] = True
++    return valid_vars
++
+ 
+ def gen_vehicle_controller_header(content, output_dir, protocol_template_dir):
+     controller_header_tpl_file = protocol_template_dir + "controller.h.tpl"
+@@ -586,6 +607,9 @@ def gen_vehicle_controller_and_manager(config_file, output_dir, protocol_templat
+     print("Generating controller and manager")
+     with open(config_file, 'r') as fp:
+         content = yaml.safe_load(fp)
++        for pid in content.get("protocols", {}):
++            p = content["protocols"][pid]
++            filter_supported_vars(p)
+         gen_vehicle_controller_header(content, output_dir, protocol_template_dir)
+         gen_vehicle_controller_cpp(content, output_dir, protocol_template_dir, use_demo_dbc)
+         gen_message_manager_header(content, output_dir, protocol_template_dir)

@@ -1,0 +1,14 @@
+{
+  "compaction_trigger": "harness_default",
+  "context_window_tokens": 128000,
+  "messages_exported": 23,
+  "opencode_limit": "stock",
+  "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/a65ce95d-6ea9-4ff0-b7c5-9c27f165d515/output-artifacts.tar.gz",
+  "reasoning_effort": "default",
+  "round": 1,
+  "summary_message_id": "msg_1edf0b596001G2ixIkCzJmXY8M",
+  "tail_start_id": "msg_1edef3ec10010z9iF0uWEWP14h",
+  "tail_start_line": 21,
+  "trigger_tokens": 104310,
+  "window_tokens": 128000
+}

@@ -1,0 +1,218 @@
+[
+  {
+    "idx": 0,
+    "label": "Adjudication rationale",
+    "valLen": 159,
+    "valPreview": "Hi, task is Full of LLM slops. Found lot of artifacts. Pleas",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 1,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 2,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 3,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 4,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 5,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 6,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 7,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 8,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 9,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 10,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 11,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 12,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 13,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 14,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 15,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 16,
+    "label": "0 / ≥ 15 words",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 17,
+    "label": "Rubric 1 · reason (B)*Cite the observable evidence in this trajectory.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 18,
+    "label": "Rubric 2 · reason (B)*Cite the observable evidence in this trajectory.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 19,
+    "label": "Rubric 3 · reason (B)*Cite the observable evidence in this trajectory.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 20,
+    "label": "Rubric 4 · reason (B)*Cite the observable evidence in this trajectory.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 21,
+    "label": "Rubric 5 · reason (B)*Cite the observable evidence in this trajectory.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 22,
+    "label": "Rubric 6 · reason (B)*Cite the observable evidence in this trajectory.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 23,
+    "label": "Rubric 7 · reason (B)*Cite the observable evidence in this trajectory.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 24,
+    "label": "Rubric 8 · reason (B)*Cite the observable evidence in this trajectory.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 25,
+    "label": "Comparative Rationale*Explain your answer above.",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  },
+  {
+    "idx": 26,
+    "label": "Add CommentPromptAdd Comment",
+    "valLen": 0,
+    "valPreview": "",
+    "id": "",
+    "name": ""
+  }
+]

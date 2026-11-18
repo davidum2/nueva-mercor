@@ -1,0 +1,13 @@
+{
+  "pair_kind": "model_ab",
+  "A": {
+    "agent": "Lighthouse Harbor (OpenCode) - terminal bench",
+    "model": "gemini-3.7-flash",
+    "trajectory_id": "traj_87a5cc11da9c4f218af4c4250031ae32"
+  },
+  "B": {
+    "agent": "Lighthouse Harbor (OpenCode) - terminal bench",
+    "model": "gpt-5.6-sol",
+    "trajectory_id": "traj_eb51c5e5e6fe40c787864900d72b3657"
+  }
+}

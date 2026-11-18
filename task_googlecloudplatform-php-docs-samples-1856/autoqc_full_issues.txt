@@ -1,0 +1,22 @@
+A · HOW THIS TASK WORKS:
+
+Read this first. It describes the annotation workflow end to end.
+
+HOW THIS TASK WORKS
+
+Read the instructions below carefully.
+
+What you do
+
+You are not authoring the task. The task, both agent rollouts, and the goal-completeness call arrive already seeded. Your job is to judge the two rollouts against each other.
+
+Work through the tabs in order. Everything below is required unless it says otherwise.
+
+Read the task (tab B). Browse the bundle: environment/, solution/, tests/, instruction.md and task.toml. Set Task type, classifying it from the metadata in task.toml.
+Score rollout A (tab C). Read the agent solution, then the trajectory. Score dimensions 2 to 9 on 1 to 5, each with a written reason, and give a final quality score for the side. Dimension 0 is already filled from the recorded run and is read-only for you.
+Score rollout B (tab D). The same, for the other rollout. Score it on its own merits before you compare the two.
+Rubrics (tab E). Write 8 to 15 binary questions where YES is always the good answer. Each one maps to a single dimension and must come from the prompt, from the environment, or from common engineering knowledge. Do not invent them. Record how many you wrote in Rubric count, then answer every one for both sides with a reason citing evidence in that trajectory. Rubrics 1 to 8 are required; 9 to 15 are optional and only apply if you wrote that many.
+Pairwise comparison (tab F). Give an overall preference of A against B and write a comparative rationale. The preference has to agree with your two final quality scores.
+AutoQC and submit (tab G). Run AutoQC, fix whatever it flags, then submit. Passing sends the task to review. Failing returns it to you with the issues.
+
+Tab H is the independent reviewer's, not yours.

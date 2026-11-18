@@ -1,0 +1,167 @@
+[
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does a declared symlink output that is an actual symlink on disk get its target path recorded in the log?",
+    "col_2": "5 · Instruction Following & Scope Discipline",
+    "col_3": "EXPLICIT_PROMPT",
+    "col_4": "YES",
+    "col_5": "A adds symlink_target_path to the File message and logs it when a declared symlink output is found to be a symlink on disk, via its logSymlink helper in the compact context and a matching branch in the expanded one.",
+    "col_6": "YES",
+    "col_7": "Yes. I found the code in B's transcript rather than its patch - the harness reconstruction only kept the proto and two imports, but B reads its own files back and the lines are there. In the UNRESOLVED_SYMLINK branch it calls addActualOutputsBuilder().setPath(output.getExecPathString()).setSymlinkTargetPath(path.readSymbolicLink().getPathString()), so the target is written, and File.symlink_target_path is in the proto it extended.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Are declared outputs that exist on disk with the wrong filesystem type recorded in a distinct category rather than being lumped together with absent outputs?",
+    "col_2": "5 · Instruction Following & Scope Discipline",
+    "col_3": "EXPLICIT_PROMPT",
+    "col_4": "NO",
+    "col_5": "No. Model A adds invalid_path to ExecLogEntry.Output but retains missing_path concurrently. Because the updated test reconstruction in CompactSpawnLogContextTest drops case MISSING_PATH in favor of INVALID_OUTPUT_PATH, leaving missing_path active creates an underhanded branch that triggers an assertion error.",
+    "col_6": "NO",
+    "col_7": "No. While Model B introduces invalid_output_path in ExceLogEntry.Output it also preserves missing_path as a sibling field. The update test suite reconstruction in CompactSpawnLogContestTest.java expects wrong-type output to fully supersede missing_path rather than coexist, leaving an unhanded reconstruction case.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Are declared file or directory outputs reached through an intermediate symlink followed so the real content is captured?",
+    "col_2": "5 · Instruction Following & Scope Discipline",
+    "col_3": "EXPLICIT_PROMPT",
+    "col_4": "YES",
+    "col_5": "A tests path.isFile() and path.isDirectory(), which follow symlinks, after ruling out the missing case with exists(Symlinks.NOFOLLOW), so a file or directory reached through an intervening link has its digest or listing captured.",
+    "col_6": "YES",
+    "col_7": "Yes. getOutputType reaches path.isFile() and path.isDirectory() for file and directory outputs, and both follow symlinks in Bazel's VFS, so an output reached through an intermediate link still classifies as FILE or DIRECTORY. The non-following isSymbolicLink() is reserved for declared symlinks. I read the body at lines 137-151 of SpawnLogContext.java in B's transcript.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the compact log give unresolved symlink outputs their own output type rather than reusing the output-file case?",
+    "col_2": "3 · Codebase Conventions & Utility Reuse",
+    "col_3": "INFERRABLE_FROM_ENVIRONMENT",
+    "col_4": "NO",
+    "col_5": "A leaves the Output oneof with only file_id, directory_id, missing_path and invalid_path, and recomments file_id as \"An output file or unresolved symlink\". No unresolved_symlink_id is added, so symlinks share the file case.",
+    "col_6": "YES",
+    "col_7": "B adds int32 unresolved_symlink_id to the Output oneof as a sibling of file_id and directory_id, backed by a dedicated UnresolvedSymlink message, so a symlink output is its own case rather than a variant of the file case.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the new wrong-type field use the name the repository's own test suite expects?",
+    "col_2": "3 · Codebase Conventions & Utility Reuse",
+    "col_3": "INFERRABLE_FROM_ENVIRONMENT",
+    "col_4": "NO",
+    "col_5": "A names the new field invalid_path where the sibling it sits next to in the same oneof is missing_path. The name that matches the surrounding convention, and the one the repository's own test suite calls through getInvalidOutputPath, is invalid_output_path.",
+    "col_6": "YES",
+    "col_7": "B names the field invalid_output_path, matching the missing_path sibling beside it in the same oneof and matching the getInvalidOutputPath accessor the repository's own test suite calls.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "When the run deleted an existing test, did it cover that case again somewhere else?",
+    "col_2": "7 · Verification & Testing Discipline",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "YES",
+    "col_5": "Yes. A drops testDirectoryOutput as well, since a plain artifact backed by a directory is now the wrong-type case, but it puts six tests in its place - testFileWithDirectoryOutput and testDirectoryWithFileOutput cover exactly the case that left, and testSymlinkOutput, testSymlinkWithFileOutput, testFileWithSymlinkOutput and testDirectoryWithSymlinkOutput cover the rest. 143 lines added against 12 removed in SpawnLogContextTestBase.",
+    "col_6": "YES",
+    "col_7": "In step 39, Model B added replacement test cases in SpawnLogContextTestBae.java, specifically introducing testFileOutput_wrongType to cover the directory-as-file mismatch scenario previously handled by testDirectoryOutput. The execution logs in step 61 (test.xml) confirm that testFileOutput_wrongType[WITHOUT_BYTES] and testFileOutput_wrongType[WITH_BYTES] were compiled executed, and passed",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Is the output type classification shared between the two log context classes rather than duplicated in each?",
+    "col_2": "2 · Architecture, Modularity & Trade-off Soundness",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "NO",
+    "col_5": "A writes the same nested if/else chain into CompactSpawnLogContext and ExpandedSpawnLogContext separately. There is no shared classifier, so the type-matching rules exist in two places that must now be kept in step.",
+    "col_6": "YES",
+    "col_7": "B puts the classification in one place, getOutputType(output, path) on SpawnLogContext, and both CompactSpawnLogContext and ExpandedSpawnLogContext static-import it, so the type-matching rules are stated once.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the test suite include a test verifying behavior when an output points through a symlink to a mismatched filesystem type (such as a declared file output pointing to a directory)?",
+    "col_2": "7 · Verification & Testing Discipline",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "NO",
+    "col_5": "Besides adding symlink_target_path to File, which the task needs, A adds a second symlink_target_path to ExecLogEntry.File. The reference solution adds only the File field; A needs the duplicate because it routes symlinks through file_id rather than giving them their own entry type.",
+    "col_6": "YES",
+    "col_7": "B's proto work is confined to the two additions the requirements need plus the UnresolvedSymlink message they depend on. It leaves ExecLogEntry.File untouched, where trajectory A adds a second symlink_target_path nothing reads.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the rollout add a test covering a dangling symlink output?",
+    "col_2": "7 · Verification & Testing Discipline",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "YES",
+    "col_5": "A adds testDanglingSymlinkOutput and testFileWithDanglingSymlinkOutput, so a declared output pointing at a broken link is exercised directly. Neither the reference test suite nor trajectory B covers that case.",
+    "col_6": "NO",
+    "col_7": "B's six new tests cover wrong-type and indirect-through-symlink cases for files, trees and symlinks, but none of them exercises a symlink whose target does not exist. Its summary lists the full set and no dangling case appears.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the trajectory record a completed test run together with its result?",
+    "col_2": "7 · Verification & Testing Discipline",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "NO",
+    "col_5": "A invoked bazel against the ExecTests target at least six times, but no completed verdict appears in its 323 entries: no PASSED line, no failure or error counts, no summary. The same payload truncation applies to trajectory B, whose result is visible, so this is not simply a logging limit.",
+    "col_6": "YES",
+    "col_7": "Entry 194 of B's log records //src/test/java/com/google/devtools/build/lib/exec:ExecTests PASSED in 8.7s and entry 214 records 37 errors='0', which corroborates the counts its summary states.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the final summary disclose that an existing test was removed?",
+    "col_2": "9 · Final Summary & Presentation Quality",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "NO",
+    "col_5": "A deleted testDirectoryOutput from SpawnLogContextTestBase, which its diff shows plainly, but the final summary makes no mention of it. A reader of the summary alone would not know an existing assertion had been dropped.",
+    "col_6": "YES",
+    "col_7": "B's summary raises the removal under \"One removal worth flagging\", names testDirectoryOutput, explains why the old expectation conflicts with the new strict typing, says which new test covers the scenario instead, and offers to relax getOutputType if the maintainer disagrees.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the final summary report the result of an actual verification run?",
+    "col_2": "9 · Final Summary & Presentation Quality",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "NO",
+    "col_5": "The summary describes what was changed across the three requirements but quotes no test outcome, no build result and no counts, despite bazel having been run repeatedly during the trajectory.",
+    "col_6": "YES",
+    "col_7": "B reports that ExecTests passes with 37 classes and zero failures or errors, that all 16 new parameterized cases ran, and that //src/tools/execlog also passes. Its own log confirms the PASSED line and the error count.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the trajectory contain intermediate messages explaining decisions as the work proceeds?",
+    "col_2": "8 · Intermediate Communication & Risk Explanation",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "NO",
+    "col_5": "A's log holds 108 step markers, 107 tool calls, 107 tool results and a single final answer, with no assistant message anywhere in the run.",
+    "col_6": "YES",
+    "col_7": "B's log carries 28 assistant messages across 65 tool calls, so its exploration of the exec package and its decisions about output classification are narrated as the run proceeds.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the delivered patch contain the implementation logic rather than only imports, deletions and proto edits?",
+    "col_2": "2 · Architecture, Modularity & Trade-off Soundness",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "YES",
+    "col_5": "A's patch carries the full body of both output loops, the logSymlink helper, both proto edits and eight test-file hunks, 37001 characters in all, and its banner records no unrepresented shell edits.",
+    "col_6": "NO",
+    "col_7": "B's recorded patch is 4758 characters: the proto edits, three static imports, a Symlinks import and the deletion of listExistingOutputs. The getOutputType body and both rewritten output loops are not in it - the banner says a shell command wrote files that leave no structured record, so this is the harness losing the edit rather than B choosing to ship imports. I could still read the code, because B pages its own files back and the lines show up in the transcript, but a reviewer handed only this patch could not.",
+    "col_8": ""
+  },
+  {
+    "col_0": "Prompt-specific rubric (binary YES/NO)",
+    "col_1": "Does the test suite include a test verifying that an intermediate symlink pointing to a non-existent target (a dangling intermediate symlink) is handled?",
+    "col_2": "7 · Verification & Testing Discipline",
+    "col_3": "COMMON_ENGINEERING_KNOWLEDGE",
+    "col_4": "NO",
+    "col_5": "No. A works only on the output side. I searched its patch for the input branch and for UnresolvedSymlinkArtifactValue and neither appears, so a symlink arriving as an input to the next spawn still gets logged with no target.",
+    "col_6": "NO",
+    "col_7": "No, same gap. B rewrote the output classification and left the input loop alone - the only addInputsBuilder in its files is the pre-existing EmptyActionInput branch. The reference does both: it adds an input.isSymlink() branch that pulls the target from UnresolvedSymlinkArtifactValue metadata instead of touching the filesystem.",
+    "col_8": ""
+  }
+]

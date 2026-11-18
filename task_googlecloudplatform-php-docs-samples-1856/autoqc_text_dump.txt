@@ -1,0 +1,7 @@
+Studio
+Annotator
+Tasks
+Dashboards
+Project
+Project Anton | SWE Trajectory QC Annotation
+Toggle theme

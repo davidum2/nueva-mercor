@@ -1,0 +1,284 @@
+{
+  "criteria": [
+    {
+      "criteria_id": "criteria_0",
+      "description": "States the objective of adding an executable bit-exact CAN codec model in `modules.tools.gen_vehicle_protocol.frame_codec`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_1",
+      "description": "States that `signal_layout` must slice signals identically to the existing emitter for `motorola` byte order.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_2",
+      "description": "States that generated output for accepted signals must remain unchanged.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_3",
+      "description": "Names `modules/tools/gen_vehicle_protocol/extract_dbc_meta.py` as setting `protocol[\"dlc\"] = int(items[3])` on `BO_` lines.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_4",
+      "description": "States that `extract_dbc_meta.py` removes the `if var_info[\"len\"] <= 32` filter.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_5",
+      "description": "Names `modules/tools/gen_vehicle_protocol/BUILD` as adding an `apollo_py_binary` target named `frame_codec`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_6",
+      "description": "Records that the agent inferred `Byte::get_byte` semantics from `modules/drivers/canbus/common/byte.cc` without full un-truncated verification.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_7",
+      "description": "Records that the agent inferred `Byte::set_value` semantics from `modules/drivers/canbus/common/byte.cc` without full un-truncated verification.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_8",
+      "description": "Names `modules/drivers/canbus/can_comm/protocol_data.h` as defining the `ProtocolData::BoundedValue` clamping semantics.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_9",
+      "description": "Names `modules/tools/gen_vehicle_protocol/apollo_demo.dbc` as having all signals in motorola `@0+` order.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_10",
+      "description": "Names `modules/canbus_vehicle/demo/proto/demo.proto` as containing `optional int32 vin15 = 1;`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_11",
+      "description": "Specifies `filter_protocol_vars(protocol)` in `frame_codec.py` as returning `(supported_vars, skipped_names)`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_12",
+      "description": "Records that `VIN15 : 63|16` in `vin_resp2` yields byte 8.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_13",
+      "description": "Records that `modules/canbus_vehicle/demo/protocol/throttle_command_100.cc` slices `Speed_Target : 47|12@0+` as `[(5,0,8),(6,4,4)]`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_14",
+      "description": "Names `gen_proto_file.py` as an emission stage to re-plumb with `filter_protocol_vars`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_15",
+      "description": "Specifies that `signal_layout` raises `UnsupportedSignalError` when `signal[\"len\"] > 32`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_16",
+      "description": "Records that `FrameCodec.quantize` writes only one signal onto an all-zero `dlc` frame rather than using full `encode`, because other signals' defaults can have nonzero raw values.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_17",
+      "description": "Records that non-`motorola` byte order falls through to the `intel` path, mirroring the emitter's `else` branch.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_18",
+      "description": "Records that `SignalLayout` uses `__slots__` with read-only `slices` and `bit_width` properties so rebinding raises `AttributeError`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_19",
+      "description": "Records that clamping in `FrameCodec.encode` applies only to non-enum and non-bool types, mirroring C++ `BoundedValue`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_20",
+      "description": "Records that `gen_canbus_conf.py` is left untouched because it does not iterate `vars`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_21",
+      "description": "Records that the `if var[\"len\"] > 32` block in `gen_protocols.py` is planned to be removed, with the agent noting an unverified finding that it references an undefined `class_name`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_22",
+      "description": "Records that `int32_t` overflow of the C++ accumulator is out of scope for `FrameCodec` agreement.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_23",
+      "description": "Records that `gen_protocols.py` plans to import `filter_protocol_vars` using `from modules.tools.gen_vehicle_protocol.frame_codec import filter_protocol_vars`, matching `gen.py`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_24",
+      "description": "Records that the agent noted an unverified hypothesis of a `black_list` `KeyError` on `protocol[\"vars\"]` in `extract_dbc_meta.py`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_25",
+      "description": "Records that `UnsupportedSignalError.__init__(signal_name, message=None)` provides a default error message when `message` is `None`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_26",
+      "description": "Records that no files have been modified yet.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_27",
+      "description": "Specifies creating `modules/tools/gen_vehicle_protocol/frame_codec.py` as the next implementation step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_28",
+      "description": "Specifies wiring `filter_protocol_vars` into `gen_vehicle_controller_and_manager.py` as a pending step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_29",
+      "description": "Specifies running `extract_dbc_meta.py` on `apollo_demo.dbc` as a pending verification step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_30",
+      "description": "States that `SignalLayout.__init__(slices=(), bit_width=0)` defaults `slices` to `()` and `bit_width` to `0`.",
+      "metadata": {
+        "category": "Structural clarity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_31",
+      "description": "Contains at most 15800 characters.",
+      "metadata": {
+        "category": "Compression efficiency",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_32",
+      "description": "States that `gen_canbus_conf.py` must be modified to skip unsupported signals.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_33",
+      "description": "States that `FrameCodec.quantize` is implemented by running full `encode` and then decoding the result.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_34",
+      "description": "States that `modules/tools/gen_vehicle_protocol/frame_codec.py` has already been written.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "negative"
+      }
+    }
+  ]
+}

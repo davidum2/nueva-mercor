@@ -1,0 +1,256 @@
+diff --git a/app/scripts/modules/core/src/artifact/ArtifactReferenceService.ts b/app/scripts/modules/core/src/artifact/ArtifactReferenceService.ts
+new file mode 100644
+index 000000000..46cf23cb5
+--- /dev/null
++++ b/app/scripts/modules/core/src/artifact/ArtifactReferenceService.ts
+@@ -0,0 +1,57 @@
++import { module } from 'angular';
++import { IStage } from 'core/domain'
++import { isEmpty, get } from 'lodash';
++
++type SupportedStage = 'stage';
++
++interface IWalker {
++  (refContainer: any): (string|number)[][];
++}
++
++interface IReference {
++  category: SupportedStage;
++  walker: IWalker;
++}
++
++export class ArtifactReferenceServiceProvider {
++  private references: IReference[] = [];
++
++  public $get() {
++    return this;
++  }
++
++  public registerReference(category: SupportedStage, walker: any) {
++    this.references.push({ category, walker });
++  }
++
++  public removeReferenceFromStages(reference: string, stages: IStage[]) {
++    (stages || []).forEach(stage => {
++      this.references.forEach(ref => {
++        const paths: (string|number)[][] = ref.walker(stage).filter(path => !isEmpty(path));
++        paths.map(p => p.slice(0)).forEach(path => {
++          let tail = path.pop();
++          let obj = stage;
++          if (path.length > 0) {
++            obj = get(stage, path);
++          }
++          if (Array.isArray(obj[tail])) {
++            obj = obj[tail];
++            tail = obj.indexOf(reference);
++          }
++          if (obj[tail] !== reference) {
++            return;
++          }
++          if (Array.isArray(obj)) {
++            obj.splice(tail as number, 1);
++          } else {
++            delete obj[tail];
++          }
++        });
++      });
++    });
++  }
++}
++
++export const ARTIFACT_REFERENCE_SERVICE_PROVIDER = 'spinnaker.core.artifacts.referenceServiceProvider';
++module(ARTIFACT_REFERENCE_SERVICE_PROVIDER, [])
++  .provider('artifactReferenceService', ArtifactReferenceServiceProvider);
+diff --git a/app/scripts/modules/core/src/artifact/index.ts b/app/scripts/modules/core/src/artifact/index.ts
+index be998093f..790276021 100644
+--- a/app/scripts/modules/core/src/artifact/index.ts
++++ b/app/scripts/modules/core/src/artifact/index.ts
+@@ -1,3 +1,4 @@
+ export * from './expectedArtifactSelector.component';
+ export * from './expectedArtifact.service';
+ export * from './imageSourceSelector.component';
++export * from './ArtifactReferenceService';
+diff --git a/app/scripts/modules/core/src/pipeline/config/stages/producesArtifacts/producesArtifacts.component.ts b/app/scripts/modules/core/src/pipeline/config/stages/producesArtifacts/producesArtifacts.component.ts
+index 62432a120..68a4b69d0 100644
+--- a/app/scripts/modules/core/src/pipeline/config/stages/producesArtifacts/producesArtifacts.component.ts
++++ b/app/scripts/modules/core/src/pipeline/config/stages/producesArtifacts/producesArtifacts.component.ts
+@@ -2,13 +2,15 @@ import { IComponentOptions, IController, module } from 'angular';
+ import { BindAll } from 'lodash-decorators';
+ 
+ import { UUIDGenerator } from 'core/utils/uuid.service';
+-import { IStage, IExpectedArtifact } from 'core';
++import { IStage, IExpectedArtifact, IPipeline } from 'core';
++import { ArtifactReferenceServiceProvider, ARTIFACT_REFERENCE_SERVICE_PROVIDER } from 'core/artifact/ArtifactReferenceService';
+ 
+ @BindAll()
+ class ProducesArtifactsCtrl implements IController {
+   public stage: IStage;
++  public pipeline: IPipeline;
+ 
+-  constructor() {
++  constructor(private artifactReferenceService: ArtifactReferenceServiceProvider) {
+     'nginject';
+   }
+ 
+@@ -25,6 +27,8 @@ class ProducesArtifactsCtrl implements IController {
+ 
+     stage.expectedArtifacts = stage.expectedArtifacts
+       .filter((a: IExpectedArtifact) => a.id !== expectedArtifact.id);
++
++    this.artifactReferenceService.removeReferenceFromStages(expectedArtifact.id, this.pipeline.stages);
+   }
+ 
+   private defaultArtifact() {
+@@ -49,9 +53,12 @@ class ProducesArtifactsCtrl implements IController {
+ }
+ 
+ class ProducesArtifactsComponent implements IComponentOptions {
+-  public bindings: any = { stage: '=' };
++  public bindings: any = {
++    stage: '=',
++    pipeline: '=',
++  };
+   public controllerAs = 'ctrl';
+-  public controller = ProducesArtifactsCtrl;
++  public controller = ['artifactReferenceService', ProducesArtifactsCtrl];
+   public template = `
+     <div class="container-fluid form-horizontal">
+       <expected-artifact
+@@ -78,5 +85,5 @@ class ProducesArtifactsComponent implements IComponentOptions {
+ }
+ 
+ export const PRODUCES_ARTIFACTS = 'spinnaker.core.pipeline.stage.producesArtifacts';
+-module(PRODUCES_ARTIFACTS, [])
++module(PRODUCES_ARTIFACTS, [ARTIFACT_REFERENCE_SERVICE_PROVIDER])
+   .component('producesArtifacts', new ProducesArtifactsComponent());
+diff --git a/app/scripts/modules/core/src/pipeline/config/stages/stage.html b/app/scripts/modules/core/src/pipeline/config/stages/stage.html
+index 14b0ff36c..5fd30c271 100644
+--- a/app/scripts/modules/core/src/pipeline/config/stages/stage.html
++++ b/app/scripts/modules/core/src/pipeline/config/stages/stage.html
+@@ -69,7 +69,7 @@
+     </page-section>
+     <render-if-feature feature="artifacts">
+       <page-section key="producesArtifacts" label="Produces Artifacts" visible="stageProducesArtifacts()">
+-        <produces-artifacts stage="stage"></produces-artifacts>
++        <produces-artifacts stage="stage" pipeline="pipeline"></produces-artifacts>
+       </page-section>
+     </render-if-feature>
+     <page-section key="comments" label="Comments" no-wrapper="true">
+diff --git a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+index d3e6c25c5..317ac71db 100644
+--- a/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
++++ b/app/scripts/modules/core/src/pipeline/config/triggers/triggers.directive.js
+@@ -2,11 +2,13 @@
+ 
+ import { PIPELINE_CONFIG_PROVIDER } from 'core/pipeline/config/pipelineConfigProvider';
+ import { UUIDGenerator } from 'core/utils/uuid.service';
++import { ARTIFACT_REFERENCE_SERVICE_PROVIDER } from 'core/artifact/ArtifactReferenceService';
+ 
+ const angular = require('angular');
+ 
+ module.exports = angular.module('spinnaker.core.pipeline.config.trigger.triggersDirective', [
+   PIPELINE_CONFIG_PROVIDER,
++  ARTIFACT_REFERENCE_SERVICE_PROVIDER,
+ ])
+   .directive('triggers', function() {
+     return {
+@@ -20,7 +22,7 @@ module.exports = angular.module('spinnaker.core.pipeline.config.trigger.triggers
+       templateUrl: require('./triggers.html')
+     };
+   })
+-  .controller('triggersCtrl', function($scope, pipelineConfig) {
++  .controller('triggersCtrl', function($scope, pipelineConfig, artifactReferenceService) {
+     this.addTrigger = function() {
+       var triggerTypes = pipelineConfig.getTriggerTypes(),
+           newTrigger = {enabled: true};
+@@ -51,8 +53,13 @@ module.exports = angular.module('spinnaker.core.pipeline.config.trigger.triggers
+       }
+ 
+       pipeline.triggers
+-        .forEach(t => t.expectedArtifactIds = t.expectedArtifactIds
+-          .filter(eid => expectedArtifact.id !== eid));
++        .forEach(t => {
++          if (t.expectedArtifactIds) {
++            t.expectedArtifactIds = t.expectedArtifactIds.filter(eid => expectedArtifact.id !== eid);
++          }
++        });
++
++      artifactReferenceService.removeReferenceFromStages(expectedArtifact.id, pipeline.stages);
+     };
+ 
+     this.addArtifact = () => {
+diff --git a/app/scripts/modules/google/src/pipeline/stages/cloneServerGroup/gceCloneServerGroupStage.js b/app/scripts/modules/google/src/pipeline/stages/cloneServerGroup/gceCloneServerGroupStage.js
+index 73d83829d..d777b4846 100644
+--- a/app/scripts/modules/google/src/pipeline/stages/cloneServerGroup/gceCloneServerGroupStage.js
++++ b/app/scripts/modules/google/src/pipeline/stages/cloneServerGroup/gceCloneServerGroupStage.js
+@@ -3,13 +3,14 @@
+ const angular = require('angular');
+ import _ from 'lodash';
+ 
+-import { ACCOUNT_SERVICE, NAMING_SERVICE, StageConstants } from '@spinnaker/core';
++import { ACCOUNT_SERVICE, NAMING_SERVICE, ARTIFACT_REFERENCE_SERVICE_PROVIDER, StageConstants } from '@spinnaker/core';
+ 
+ module.exports = angular.module('spinnaker.gce.pipeline.stage..cloneServerGroupStage', [
+   ACCOUNT_SERVICE,
+   NAMING_SERVICE,
++  ARTIFACT_REFERENCE_SERVICE_PROVIDER,
+ ])
+-  .config(function(pipelineConfigProvider) {
++  .config(function(pipelineConfigProvider, artifactReferenceServiceProvider) {
+     pipelineConfigProvider.registerStage({
+       provides: 'cloneServerGroup',
+       cloudProvider: 'gce',
+@@ -22,8 +23,20 @@ module.exports = angular.module('spinnaker.gce.pipeline.stage..cloneServerGroupS
+         { type: 'requiredField', fieldName: 'credentials', fieldLabel: 'account'}
+       ],
+     });
+-  }).controller('gceCloneServerGroupStageCtrl', function($scope, accountService, namingService) {
+ 
++    artifactReferenceServiceProvider.registerReference('stage', obj => {
++      const paths = [];
++      if (obj.type === 'deploy' && Array.isArray(obj.clusters)) {
++        obj.clusters.forEach((cluster, i) => {
++          if (cluster.cloudProvider === 'gce') {
++            paths.push(['clusters', i, 'imageArtifactId']);
++          }
++        });
++      }
++      return paths;
++    });
++
++  }).controller('gceCloneServerGroupStageCtrl', function($scope, accountService, namingService) {
+     let stage = $scope.stage;
+ 
+     $scope.viewState = {
+diff --git a/app/scripts/modules/kubernetes/src/v2/pipelines/stages/deployManifest/deployManifestStage.ts b/app/scripts/modules/kubernetes/src/v2/pipelines/stages/deployManifest/deployManifestStage.ts
+index 14698e3b8..58bbd1c24 100644
+--- a/app/scripts/modules/kubernetes/src/v2/pipelines/stages/deployManifest/deployManifestStage.ts
++++ b/app/scripts/modules/kubernetes/src/v2/pipelines/stages/deployManifest/deployManifestStage.ts
+@@ -3,6 +3,7 @@ import { module } from 'angular';
+ import {
+   PIPELINE_CONFIG_PROVIDER,
+   PipelineConfigProvider,
++  ArtifactReferenceServiceProvider,
+   SETTINGS
+ } from '@spinnaker/core';
+ 
+@@ -16,7 +17,7 @@ export const KUBERNETES_DEPLOY_MANIFEST_STAGE = 'spinnaker.kubernetes.v2.pipelin
+ module(KUBERNETES_DEPLOY_MANIFEST_STAGE, [
+   PIPELINE_CONFIG_PROVIDER,
+   KUBERNETES_MANIFEST_COMMAND_BUILDER,
+-]).config((pipelineConfigProvider: PipelineConfigProvider) => {
++]).config((pipelineConfigProvider: PipelineConfigProvider, artifactReferenceServiceProvider: ArtifactReferenceServiceProvider) => {
+   // Todo: replace feature flag with proper versioned provider mechanism once available.
+   if (SETTINGS.feature.versionedProviders) {
+     pipelineConfigProvider.registerStage({
+@@ -35,5 +36,10 @@ module(KUBERNETES_DEPLOY_MANIFEST_STAGE, [
+         { type: 'requiredField', fieldName: 'moniker.cluster', fieldLabel: 'Cluster' }
+       ],
+     });
++
++    artifactReferenceServiceProvider.registerReference('stage', () => [
++      ['manifestArtifactId'],
++      ['requiredArtifactIds'],
++    ]);
+   }
+ }).controller('KubernetesV2DeployManifestConfigCtrl', KubernetesV2DeployManifestConfigCtrl);

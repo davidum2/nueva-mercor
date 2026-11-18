@@ -1,0 +1,6 @@
+FINAL ANSWER
+Done. All three gaps are fixed and tests pass.
+Changes
+src/main/protobuf/spawn.proto
+File.symlink_target_path = 4 — target of an unresolved symlink output (expanded format).
+Show more

@@ -1,0 +1,6 @@
+Updated `build/vite/conf.js` to:
+
+- Replace the `zmodem-ts` manual chunk with `zmodem-wasm`
+- Exclude `zmodem-wasm` from Vite dependency pre-bundling
+
+Syntax validation passed. Full Git diff validation was blocked by an existing incomplete Git object database.

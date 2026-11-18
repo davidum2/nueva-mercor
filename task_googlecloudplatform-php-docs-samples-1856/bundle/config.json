@@ -1,0 +1,8 @@
+{
+  "FAIL_TO_PASS": [
+    "Google.Cloud.Samples.Dlp.dlpTest::testDeidentifyCloudStorage"
+  ],
+  "PASS_TO_PASS": [],
+  "framework": "php",
+  "f2p_synthetic": false
+}

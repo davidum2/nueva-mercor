@@ -1,0 +1,4 @@
+The build configuration in `build/vite/conf.js` has been updated to support the new WebAssembly-based file transfer library (`trzsz`) instead of the old TypeScript-based library (`zmodem-ts`):
+
+1. Excluded `trzsz` from Vite's dependency pre-bundling in `optimizeDeps.exclude` (`['ironrdp-wasm', 'trzsz']`).
+2. Removed the obsolete `zmodem-ts` reference from `manualChunks`.
