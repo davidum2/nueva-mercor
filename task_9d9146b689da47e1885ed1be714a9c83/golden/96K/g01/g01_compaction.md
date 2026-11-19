@@ -2,10 +2,16 @@
 - Implement per-request conditional branch execution (dynamic routing) in the Paddle Serving Python Pipeline DAG engine.
 
 ## Important Details
-- Extend `pipeline.operator.Op` (inherited by user operators and `RequestOp`) with `route(self, output_data, data_id=0, log_id=0)`.
-- `route` is a user-overridable hook invoked at most once per request, receiving that request's `data_id`.
-- For standard `Op`s, `route` runs immediately after successful `postprocess` with the emitted dict in `output_data`.
-- For `RequestOp`, `route` runs on the DAG entry path with `unpack_request_package`'s output dict in `output_data`.
+- User operators inherit new methods added to `pipeline.operator.Op`.
+- `RequestOp` inherits new methods added to `pipeline.operator.Op`.
+- Extend `pipeline.operator.Op` with `route(self, output_data, data_id=0, log_id=0)`.
+- `route` is a user-overridable hook.
+- `route` is invoked at most once per request.
+- `route` receives that request's `data_id`.
+- For standard `Op`s, `route` runs immediately after successful `postprocess`.
+- For standard `Op`s, `route` receives the emitted dict in `output_data`.
+- For `RequestOp`, `route` runs on the DAG entry path.
+- For `RequestOp`, `route` receives `unpack_request_package`'s output dict in `output_data`.
 - Default `route` returns `None` to activate all successors.
 - Returning an iterable of successor names from `route` activates only those named successors.
 - `route` return handling must tolerate single-use iterables such as generators.
@@ -13,19 +19,29 @@
 - If any name returned by `route` is not in `self.get_succ_op_names()` (even alongside valid names), that request must fail with `err_no` set to `ChannelDataErrcode.INPUT_PARAMS_ERROR.value`.
 - A request failing due to an invalid successor name returned by `route` must still deliver a response promptly.
 - An invalid successor name returned by `route` must leave later requests unaffected.
-- Extend `pipeline.operator.Op` with `on_skipped(self, data_id=0, log_id=0)`, whose default implementation is a no-op returning `None`.
-- `on_skipped` must be invoked exactly once with that request's `data_id` for each request where the `Op` is skipped.
+- Extend `pipeline.operator.Op` with `on_skipped(self, data_id=0, log_id=0)`.
+- The default implementation of `on_skipped` is a no-op returning `None`.
+- `on_skipped` must be invoked exactly once for each request where the `Op` is skipped.
+- `on_skipped` receives the skipped request's `data_id`.
 - Any exception raised inside `on_skipped` must not stall the DAG.
 - Any exception raised inside `on_skipped` must not alter the request's response.
-- Extend `pipeline.operator.Op` with `get_succ_op_names(self)` returning a `set` of `str` naming the `Op`'s immediate successors in the established DAG topology (including the `@DAGExecutor` sink for the final output `Op`).
+- Extend `pipeline.operator.Op` with `get_succ_op_names(self)`.
+- `get_succ_op_names(self)` returns a `set` of `str` naming the `Op`'s immediate successors in the established DAG topology.
+- For the final output `Op`, `get_succ_op_names(self)` includes the `@DAGExecutor` sink.
 - `get_succ_op_names(self)` must return an empty `set` before the DAG topology is established.
-- Extend `pipeline.operator.Op` with `get_pred_op_names(self)` returning a `set` of `str` naming the upstream producer `Op`s in the established DAG topology.
+- Extend `pipeline.operator.Op` with `get_pred_op_names(self)`.
+- `get_pred_op_names(self)` returns a `set` of `str` naming the upstream producer `Op`s in the established DAG topology.
 - `get_pred_op_names(self)` must return an empty `set` before the DAG topology is known.
-- `RequestOp` is never reported as a predecessor by `get_pred_op_names(self)`, so an `Op` fed only by `RequestOp` returns an empty `set`.
-- Add net-new member `SKIPPED = 3004` to `pipeline.error_catch.CustomExceptionCode` (re-exported as `pipeline.channel.ChannelDataErrcode`).
+- `RequestOp` is never reported as a predecessor by `get_pred_op_names(self)`.
+- An `Op` fed only by `RequestOp` returns an empty `set` from `get_pred_op_names(self)`.
+- Add net-new member `SKIPPED = 3004` to `pipeline.error_catch.CustomExceptionCode`.
+- `pipeline.error_catch.CustomExceptionCode` is re-exported as `pipeline.channel.ChannelDataErrcode`.
 - An `Op` executes for a request iff at least one incoming edge is active.
 - An `Op` is skipped for a request when no incoming edge is active.
-- A skipped `Op` skips `preprocess`, `process`, `postprocess`, and `route` for that request.
+- A skipped `Op` does not run `preprocess` for that request.
+- A skipped `Op` does not run `process` for that request.
+- A skipped `Op` does not run `postprocess` for that request.
+- A skipped `Op` does not run `route` for that request.
 - A skipped `Op` fires `on_skipped` exactly once for that request.
 - A skipped `Op` propagates the skip downstream by deactivating all outgoing edges.
 - An executing join `Op` receives in the `input_dicts` argument to `preprocess` only entries from predecessors whose edge to it is active for that request.
@@ -43,10 +59,14 @@
 - Terminal skip handling applies when the final output `Op` returns an iterable omitting `@DAGExecutor`.
 - Operator execution errors take precedence over routing.
 - Operator execution errors propagate along all outgoing edges of the failing `Op`.
-- Downstream `Op`s pass execution errors along all of their own outgoing edges without running.
-- `route` must not be consulted for requests that already failed, including requests rejected by `unpack_request_package` with a product error code.
-- `get_succ_op_names()` must be populated as soon as `PipelineServer.set_response_op()` returns, without constructing or starting a `DAGExecutor`.
-- `get_pred_op_names()` must be populated as soon as `PipelineServer.set_response_op()` returns, without constructing or starting a `DAGExecutor`.
+- Downstream `Op`s do not execute for requests carrying an upstream execution error.
+- Downstream `Op`s forward upstream execution errors along all of their own outgoing edges.
+- `route` must not be consulted for requests that already failed.
+- `route` must not be consulted for requests rejected by `unpack_request_package` with a product error code.
+- `get_succ_op_names()` must be populated as soon as `PipelineServer.set_response_op()` returns.
+- `get_pred_op_names()` must be populated as soon as `PipelineServer.set_response_op()` returns.
+- Populating `get_succ_op_names()` must not require constructing or starting a `DAGExecutor`.
+- Populating `get_pred_op_names()` must not require constructing or starting a `DAGExecutor`.
 - When all `Op`s use the default `route` returning `None`, the DAG must behave identically to before.
 - `Op`s constructed with `jump_to_ops` retain their existing behavior because `route` does not need to be supported for them.
 - The once-per-request guarantees for `route` apply to a single DAG pass.
@@ -54,10 +74,12 @@
 - When the executor replays a request (`dag.retry` greater than 1), the routing hooks may run again for the replay.
 - The working directory `/app` is a symlink pointing to `/workspace/repo`.
 - `/app/pipeline` does not exist.
-- The `pipeline` package resides at `/workspace/repo/python/pipeline` (accessible via `/app/python/pipeline`).
+- The `pipeline` package resides at `/workspace/repo/python/pipeline`.
+- The `pipeline` package is accessible at `/app/python/pipeline` through the `/app` symlink.
 - `/workspace/repo/sitecustomize.py` does not exist.
 - `sitecustomize.py` resides at `/workspace/repo/python/sitecustomize.py`.
-- Running Python from `/app` with `PYTHONPATH=python` resolves to `/workspace/repo/python` via the `/app` symlink, allowing Python to auto-import `sitecustomize` at startup.
+- The agent reasoned (not yet verified by running Python) that running from `/app` with `PYTHONPATH=python` resolves to `/workspace/repo/python` via the `/app` symlink.
+- The agent reasoned (not yet verified by running Python) that placing `/workspace/repo/python` on `sys.path` allows Python to auto-import `sitecustomize` at startup.
 - `/workspace/repo/python/sitecustomize.py` aliases `collections.Iterable` to `collections.abc.Iterable`.
 - `/workspace/repo/python/sitecustomize.py` aliases `collections.Mapping` to `collections.abc.Mapping`.
 - `/workspace/repo/python/sitecustomize.py` aliases `collections.MutableMapping` to `collections.abc.MutableMapping`.
@@ -84,7 +106,7 @@
 - `/workspace/repo/python/pipeline/` also contains `analyse.py`.
 - `/workspace/repo/python/pipeline/` also contains `prometheus_metrics.py`.
 - `/workspace/repo/python/pipeline/` also contains the `gateway/` subdirectory.
-- Git HEAD is `b0af55d0` (`Update README.md`).
+- Git HEAD is `b0af55d0`.
 - The repository working tree is clean with no uncommitted modifications.
 - `/workspace/repo/python/pipeline/operator.py` imports `ErrorCatch` from `.error_catch`.
 - `/workspace/repo/python/pipeline/operator.py` imports `CustomException` from `.error_catch`.
@@ -122,10 +144,11 @@
 - `/workspace/repo/python/pipeline/channel.py` imports `CustomException` from `.error_catch`.
 - `/workspace/repo/python/pipeline/channel.py` imports `ProductErrCode` from `.error_catch`.
 - `/workspace/repo/python/pipeline/channel.py` imports `CustomExceptionCode` as `ChannelDataErrcode` from `.error_catch`.
-- `/workspace/repo/python/pipeline/channel.py` defines `ChannelDataType` as an `enum.Enum` with `DICT = 0`.
+- `/workspace/repo/python/pipeline/channel.py` defines `ChannelDataType` as an `enum.Enum`.
+- `/workspace/repo/python/pipeline/channel.py` defines `ChannelDataType.DICT = 0`.
 - `/workspace/repo/python/pipeline/channel.py` defines `ChannelDataType.CHANNEL_NPDATA = 1`.
 - `/workspace/repo/python/pipeline/channel.py` defines `ChannelDataType.ERROR = 2`.
-- `/workspace/repo/python/pipeline/channel.py` defines `ChannelData` with `def __init__(self, datatype=None, npdata=None, dictdata=None, data_id=None, log_id=None, error_code=None, error_info=None, prod_error_code=None, prod_error_info=None, client_need_profile=...)` (read truncated on the default value of `client_need_profile`).
+- `/workspace/repo/python/pipeline/channel.py` defines `ChannelData` with `def __init__(self, datatype=None, npdata=None, dictdata=None, data_id=None, log_id=None, error_code=None, error_info=None, prod_error_code=None, prod_error_info=None, client_need_profile=...)`.
 
 ## Work State
 ### Completed
@@ -137,9 +160,9 @@
 - Read `/workspace/repo/python/sitecustomize.py` in full.
 - Checked `git log` showing HEAD commit `b0af55d0`.
 - Checked `git status` showing a clean working tree.
-- Read the top imports of `/workspace/repo/python/pipeline/operator.py` (truncated early in imports).
-- Offset-read `/workspace/repo/python/pipeline/operator.py` covering the postprocess packaging tail up to the start of `_auto_batching_generator` (truncated inside the batch loop).
-- Partially read the top of `/workspace/repo/python/pipeline/channel.py` through the `ChannelData` `__init__` parameter list (truncated on `client_need_profile`).
+- Read the top imports of `/workspace/repo/python/pipeline/operator.py`.
+- Offset-read `/workspace/repo/python/pipeline/operator.py` from the postprocess packaging tail through the start of `_auto_batching_generator`.
+- Partially read `/workspace/repo/python/pipeline/channel.py` through the `ChannelData` `__init__` parameter list.
 
 ### Active
 - Continuing source inspection of the core `pipeline` modules before designing the per-request routing implementation.

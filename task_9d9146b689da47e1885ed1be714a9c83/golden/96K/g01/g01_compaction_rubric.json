@@ -74,9 +74,9 @@
     },
     {
       "criteria_id": "criteria_9",
-      "description": "Records that `/workspace/repo/python/sitecustomize.py` has already been read in full.",
+      "description": "Records the required method signature `route(self, output_data, data_id=0, log_id=0)` to be added to `pipeline.operator.Op`.",
       "metadata": {
-        "category": "Temporal coherence",
+        "category": "Artifact preservation",
         "weight": "minor"
       }
     },
@@ -130,7 +130,7 @@
     },
     {
       "criteria_id": "criteria_16",
-      "description": "Contains at most 17600 characters.",
+      "description": "Contains at most 18400 characters.",
       "metadata": {
         "category": "Compression efficiency",
         "weight": "minor"

@@ -1,5 +1,5 @@
 """
-Pre-validacion integral v2.8 para CompactBench v2 (Golden + Rubric + State + View + Tail + Slack Rules).
+Pre-validacion integral v3.0 para CompactBench v2 (Golden + Rubric + State + View + Tail + Slack Rules).
 Actua como Zero-Blocker Gate ANTES de cualquier Commit en Mercor Studio.
 
 Uso:
@@ -43,7 +43,10 @@ GOLDEN_COMPOUND_PATTERNS = [
     (r"\band\s+(?:print|omit|report|skip|drop|add|remove|update|wire|check|verify|diff|test|run|raise|return)\b", "C3.3: une dos acciones imperativas con 'and <verbo>'"),
     (r"\band\s+(?:sets|calls|disables|enables|accepts|forwards|clears|forces|restores|delegates|reads)\b", "C3.3: une dos acciones en tercera persona con 'and <verbo>s' (separar en 2 bullets)"),
     (r"\bfollowed by\b|,\s+then\s+(?:calls|sets|clears|runs|restores|resets|updates|returns)\b", "C3.3: une dos pasos secuenciales con 'followed by' o ', then <verbo>' (separar en 2 bullets)"),
-    (r",\s+(?:leaving|returning|raising|skipping|printing|reporting|keeping|writing|truncating|preserving)\b", "C3.3: clausula participial tras coma (', leaving/returning/raising...') agrega un segundo comportamiento"),
+    (r",\s+(?:leaving|returning|raising|skipping|printing|reporting|keeping|writing|truncating|preserving|receiving|allowing|requiring|covering)\b", "C3.3: clausula participial tras coma agrega un segundo hecho/comportamiento (separar en 2 bullets)"),
+    (r",\s+whose\b|,\s+without\s+(?:constructing|starting|requiring|modifying|changing)\b", "C3.3: clausula relativa/negativa tras coma (', whose' / ', without ...') agrega un segundo requisito (separar)"),
+    (r"\((?:inherited by|including\s+the|accessible via|re-exported as)\b", "C3.3: parentesis agrega un segundo hecho independiente (separar en 2 bullets)"),
+    (r"\bmust not\b[^.;\n]+\bor\s+(?:alter|change|stall|block|leave|affect|modify|drop|fail)\b", "C3.3: 'must not A or B' une dos restricciones independientes (separar en 2 bullets)"),
     (r"\byields\b.*\band will be\b|\breturns\b.*\band raises\b|\bcalls\b.*\band raises\b", "C3.3: une dos resultados o retorno + excepcion en un solo bullet"),
     (r"\bdefault(?:s)? to\b.*,.*,.*and\b", "C3.3: lista multiples valores por defecto por tipo en un solo bullet (separar 1 por tipo)"),
     (r"\bwhen not in contact and otherwise\b|\bfor positive .* and .* for negative\b|\bpositive on .* and negative on\b", "C3.3: une dos casos opuestos (positivo/negativo, contacto/sin contacto) en un bullet"),
@@ -66,6 +69,7 @@ FORBIDDEN_RUBRIC_PHRASES = [
     (r"\bcommand not found\b|\bdid not execute\b|\bfailed patch\b|\bone-off\b|\btruncated early\b|\btruncation\b", "D1.7: prohibido incluir errores/truncados transitorios de herramientas"),
     (r"\bsuch as\b", "D2.2: evitar 'such as' en criterios (especificar el simbolo/conjunto exacto verificable)"),
     (r"\bat commit `?[\da-f]{7,40}`?\b|\bgit log\b|\bhead commit\b", "D2.4: trivia de historial git (branch/commit hash) no necesaria para continuacion"),
+    (r"\bhas (?:already )?been read in full\b|\bwas read in full\b", "D2.4: criterio de historial ('has been read in full') sin valor para continuacion"),
 ]
 
 # Referentes vagos sin nombre en criterios de rubrica (D2.3)
@@ -145,6 +149,16 @@ def check_golden(md_path: str, view_path: str, patch_empty: bool):
     blockers = []
     warnings = []
     in_relevant_files = False
+
+    # 0. C3.4: Verificar que no se agreguen encabezados extra respecto a gNN_baseline_summary.md
+    baseline_path = md_path.replace("_compaction.md", "_baseline_summary.md")
+    if os.path.exists(baseline_path):
+        with open(baseline_path, encoding="utf-8", errors="ignore") as bf:
+            base_heads = {ln.strip() for ln in bf.read().splitlines() if re.match(r"^#{1,4}\s+", ln.strip())}
+        cur_heads = [ln.strip() for ln in lines if re.match(r"^#{1,4}\s+", ln.strip())]
+        extra_heads = [h for h in cur_heads if base_heads and h not in base_heads]
+        if extra_heads:
+            blockers.append(f"[Golden | C3.4] Encabezados extra no presentes en baseline ({baseline_path}): {extra_heads}")
 
     for idx, line in enumerate(lines, 1):
         s = line.strip()

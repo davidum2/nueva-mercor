@@ -7,7 +7,7 @@ description: >-
   Compaction Summary QC y Compaction Rubric QC desde el primer intento.
 ---
 
-# CompactBench v2 — Suite de Auditoría y Pre-Validación (`v2.8`)
+# CompactBench v2 — Suite de Auditoría y Pre-Validación (`v3.0`)
 
 **Objetivo:** Pasar `COMPACTION SUMMARY QC` (4/4) y `COMPACTION RUBRIC QC` (10/10) en **`No issues found` desde el primer `Commit`**, protegiendo el **Quality Score (80%)** y cumpliendo las reglas de Slack sin regresiones.
 
@@ -23,7 +23,11 @@ python .agents/skills/compactbench-qc/scripts/extract_task.py <task_id> <window>
 # Genera <task_dir>/_audit_decisions.txt con TODAS las decisiones G24/C2.6 completas (sin corte a 20 lineas ni a 180 chars)
 python .agents/skills/compactbench-qc/scripts/audit_view.py <task_id> <window> <point>
 
-# Paso 3: Pre-validacion integral (Zero-Blocker Gate v2.3) tras editar golden y rubric
+# Paso 2.5 (OBLIGATORIO ANTES DEL PRIMER COMMIT): Revision manual linea por linea del golden y la rubrica
+# - Golden: revisar CADA bullet (incluidos los copiados de instruction.md) buscando 2 hechos unidos por ',', 'with', 'without', 'or', 'and' o parentesis; verificar encabezados identicos a gNN_baseline_summary.md; atribuir todo razonamiento no verificado por tool output ('C1.3').
+# - Rubric: empezar directo con 18-24 criterios ultra-limpios (max 2 criterios por archivo en Artifact preservation, 0 criterios de historial 'already read in full', 0 clústeres de 3-5 criterios por archivo).
+
+# Paso 3: Pre-validacion integral (Zero-Blocker Gate v3.0) tras editar golden y rubric
 python .agents/skills/compactbench-qc/scripts/precheck.py <task_id> <window> <point>
 
 # Paso 4: Commit seguro en Mercor Studio (soporta --only rubric o --only golden para no re-commitear archivos ya en verde)
