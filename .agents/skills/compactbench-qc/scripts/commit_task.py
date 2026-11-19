@@ -5,7 +5,7 @@ Inyector seguro con Gate de pre-validacion para Mercor Studio via CDP (puerto 92
 3. Hace Commit individual por archivo y verifica 'No unsaved changes'.
 
 Uso:
-  python .agents/skills/compactbench-qc/scripts/commit_task.py <task_id> <window> <point> [port] [--force]
+  python .agents/skills/compactbench-qc/scripts/commit_task.py <task_id> <window> <point> [port] [--only golden|rubric] [--force]
 """
 import asyncio
 import os
@@ -14,24 +14,25 @@ import sys
 from playwright.async_api import async_playwright
 
 
-async def update_and_commit_file(page, rel_path: str, new_text: str):
+async def update_and_commit_file(page, task_id: str, rel_path: str, new_text: str):
     btn = page.locator(f'button[title="{rel_path}"]').first
     await btn.click()
     await asyncio.sleep(1.2)
 
     updated_uris = await page.evaluate(
-        """([targetPath, val]) => {
+        """([tid, targetPath, val]) => {
             if (!window.monaco) return [];
             const matched = [];
             for (const m of window.monaco.editor.getModels()) {
-                if (m.uri.toString().endsWith(targetPath)) {
+                const u = m.uri.toString();
+                if (u.includes(tid) && u.endsWith(targetPath)) {
                     m.setValue(val);
-                    matched.push(m.uri.toString());
+                    matched.push(u);
                 }
             }
             return matched;
         }""",
-        [rel_path, new_text],
+        [task_id, rel_path, new_text],
     )
     print(f"  Updated {rel_path}: {updated_uris} (len={len(new_text)})")
     await asyncio.sleep(0.8)
@@ -45,7 +46,7 @@ async def update_and_commit_file(page, rel_path: str, new_text: str):
         print(f"  Commit sin cambios pendientes para {rel_path}")
 
 
-async def run_commit(task_id: str, window: str, point: str, port: int):
+async def run_commit(task_id: str, window: str, point: str, port: int, only: str = None):
     base = os.path.abspath(task_id)
     rel_md = f"golden/{window}/{point}/{point}_compaction.md"
     rel_rub = f"golden/{window}/{point}/{point}_compaction_rubric.json"
@@ -64,8 +65,10 @@ async def run_commit(task_id: str, window: str, point: str, port: int):
         sys.exit(1)
 
     await page.bring_to_front()
-    await update_and_commit_file(page, rel_md, comp_md)
-    await update_and_commit_file(page, rel_rub, rubric_json)
+    if only in (None, "golden"):
+        await update_and_commit_file(page, task_id, rel_md, comp_md)
+    if only in (None, "rubric"):
+        await update_and_commit_file(page, task_id, rel_rub, rubric_json)
 
     txt = await page.evaluate("document.body.innerText")
     print("  NO_UNSAVED_CHANGES:", "No unsaved changes" in txt)
@@ -74,11 +77,17 @@ async def run_commit(task_id: str, window: str, point: str, port: int):
 
 def main():
     if len(sys.argv) < 4:
-        print("Uso: python commit_task.py <task_id> <window> <point> [port] [--force]")
+        print("Uso: python commit_task.py <task_id> <window> <point> [port] [--only golden|rubric] [--force]")
         sys.exit(1)
     task_id, window, point = sys.argv[1:4]
-    force = "--force" in sys.argv[4:]
-    port_args = [a for a in sys.argv[4:] if a.isdigit()]
+    extra = sys.argv[4:]
+    force = "--force" in extra
+    only = None
+    if "--only" in extra:
+        oi = extra.index("--only")
+        if oi + 1 < len(extra):
+            only = extra[oi + 1]
+    port_args = [a for a in extra if a.isdigit()]
     port = int(port_args[0]) if port_args else 9223
 
     precheck = os.path.join(os.path.dirname(__file__), "precheck.py")
@@ -88,7 +97,7 @@ def main():
             print("\n[ABORTADO] precheck.py encontro BLOCKERS. Corrige antes de subir a Studio (o usa --force).")
             sys.exit(res.returncode)
 
-    asyncio.run(run_commit(task_id, window, point, port))
+    asyncio.run(run_commit(task_id, window, point, port, only=only))
 
 
 if __name__ == "__main__":

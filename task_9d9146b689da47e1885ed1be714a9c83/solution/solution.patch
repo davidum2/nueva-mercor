@@ -1,0 +1,307 @@
+diff --git a/python/pipeline/__init__.py b/python/pipeline/__init__.py
+index 71bbce6..d8157f6 100644
+--- a/python/pipeline/__init__.py
++++ b/python/pipeline/__init__.py
+@@ -17,3 +17,4 @@ from .pipeline_server import PipelineServer
+ from .pipeline_client import PipelineClient
+ from .local_service_handler import LocalServiceHandler
+ from .analyse import Analyst
++from .error_catch import CustomExceptionCode
+diff --git a/python/pipeline/channel.py b/python/pipeline/channel.py
+index 8df5a62..f169c52 100644
+--- a/python/pipeline/channel.py
++++ b/python/pipeline/channel.py
+@@ -42,6 +42,7 @@ class ChannelDataType(enum.Enum):
+     DICT = 0
+     CHANNEL_NPDATA = 1
+     ERROR = 2
++    SKIP = 3
+ 
+ 
+ class ChannelData(object):
+@@ -85,6 +86,9 @@ class ChannelData(object):
+                     datatype = ChannelDataType.ERROR.value
+                     _LOGGER.error("(data_id={} log_id={}) {}".format(
+                         data_id, log_id, error_info))
++            elif datatype == ChannelDataType.SKIP.value:
++                error_code = ChannelDataErrcode.OK.value
++                error_info = ""
+             else:
+                 _LOGGER.critical("(data_id={} log_id={}) datatype not match".
+                                  format(data_id, log_id))
+@@ -181,6 +185,9 @@ class ChannelData(object):
+                     "must be dict, but get {}.".format(type(npdata))
+         return error_code, error_info
+ 
++    def is_skipped(self):
++        return self.datatype == ChannelDataType.SKIP.value
++
+     def parse(self):
+         feed = None
+         if self.datatype == ChannelDataType.CHANNEL_NPDATA.value:
+@@ -189,6 +196,8 @@ class ChannelData(object):
+         elif self.datatype == ChannelDataType.DICT.value:
+             # return dict
+             feed = self.dictdata
++        elif self.datatype == ChannelDataType.SKIP.value:
++            feed = {}
+         else:
+             _LOGGER.critical("Failed to parse channeldata: error " \
+                     "type({}) in datatype.".format(self.datatype))
+diff --git a/python/pipeline/dag.py b/python/pipeline/dag.py
+index d7020ae..319480c 100644
+--- a/python/pipeline/dag.py
++++ b/python/pipeline/dag.py
+@@ -253,6 +253,19 @@ class DAGExecutor(object):
+             data_id = channeldata.id
+             _LOGGER.debug("(logid={}) [recive thread] Fetched data".format(
+                 data_id))
++            active_succs = getattr(channeldata, "_active_successors", None)
++            if channeldata.error_code == ChannelDataErrcode.OK.value \
++                    and not channeldata.is_skipped() \
++                    and active_succs is not None \
++                    and self.name not in active_succs:
++                # the last op routed this request away from the response
++                skip_data = ChannelData(
++                    datatype=ChannelDataType.SKIP.value,
++                    data_id=data_id,
++                    log_id=channeldata.log_id,
++                    client_need_profile=channeldata.client_need_profile)
++                skip_data.profile_data_set = channeldata.profile_data_set
++                channeldata = skip_data
+             with self._cv_for_cv_pool:
+                 cond_v = self._cv_pool[data_id]
+             with cond_v:
+@@ -334,12 +347,27 @@ class DAGExecutor(object):
+             profile_value = None
+             profile_value = dictdata.get(self._client_profile_key)
+             client_need_profile = (profile_value == self._client_profile_value)
+-            return ChannelData(
++
++            request_op = getattr(self._unpack_rpc_func, "__self__", None)
++            active_successors = None
++            if request_op is not None:
++                active_successors, route_ecode, route_einfo = \
++                    request_op._resolve_route(dictdata, data_id, log_id)
++                if route_ecode is not None:
++                    return ChannelData(
++                        error_code=route_ecode,
++                        error_info=route_einfo,
++                        data_id=data_id,
++                        log_id=log_id)
++
++            ret = ChannelData(
+                 datatype=ChannelDataType.DICT.value,
+                 dictdata=dictdata,
+                 data_id=data_id,
+                 log_id=log_id,
+                 client_need_profile=client_need_profile)
++            ret._active_successors = active_successors
++            return ret
+ 
+     def call(self, rpc_request):
+         """
+@@ -560,6 +588,24 @@ class DAG(object):
+                                          format(pred_op.name))
+                         os._exit(-1)
+                     unique_names.add(pred_op.name)
++
++        # record the topology on the ops themselves so that routing can
++        # refer to neighbours by name
++        request_op = None
++        for op in used_ops:
++            op._succ_op_names = set()
++            op._pred_op_names = set()
++            if isinstance(op, RequestOp):
++                request_op = op
++        for op in used_ops:
++            for pred_op in op.get_input_ops():
++                pred_op._succ_op_names.add(op.name)
++                # the request op is the DAG entry, not a producer op
++                if pred_op is not request_op:
++                    op._pred_op_names.add(pred_op.name)
++        for last_op in response_op.get_input_ops():
++            last_op._succ_op_names.add(response_op.name)
++
+         return used_ops, succ_ops_of_use_op
+ 
+     def _gen_channel(self, name_gen):
+diff --git a/python/pipeline/error_catch.py b/python/pipeline/error_catch.py
+index 52beedb..2d56d77 100644
+--- a/python/pipeline/error_catch.py
++++ b/python/pipeline/error_catch.py
+@@ -37,6 +37,7 @@ class CustomExceptionCode(enum.Enum):
+     CLOSED_ERROR = 3001
+     NO_SERVICE = 3002
+     INIT_ERROR = 3003
++    SKIPPED = 3004
+     CONF_ERROR = 4000
+     INPUT_PARAMS_ERROR = 5000
+     TIMEOUT = 6000
+diff --git a/python/pipeline/operator.py b/python/pipeline/operator.py
+index 9341a85..2806e92 100644
+--- a/python/pipeline/operator.py
++++ b/python/pipeline/operator.py
+@@ -121,6 +121,76 @@ class Op(object):
+         self._succ_close_op = False
+         self.dynamic_shape_info = {}
+         self.set_dynamic_shape_info()
++        self._succ_op_names = set()
++        self._pred_op_names = set()
++
++    def route(self, output_data, data_id=0, log_id=0):
++        return None
++
++    def on_skipped(self, data_id=0, log_id=0):
++        return None
++
++    def get_succ_op_names(self):
++        return set(self._succ_op_names)
++
++    def get_pred_op_names(self):
++        return set(self._pred_op_names)
++
++    def _resolve_route(self, output_data, data_id, log_id):
++        """
++        Ask route() which successors stay active for one request.
++
++        Returns:
++            targets: None (all successors) or a set of successor names
++            error_code: None if the routing decision is usable
++            error_info: error message
++        """
++        log_prefix = "(data_id={} log_id={}) {}".format(data_id, log_id,
++                                                        self.name)
++        try:
++            targets = self.route(output_data, data_id=data_id, log_id=log_id)
++        except Exception as e:
++            error_info = "{} Failed to route: {}".format(log_prefix, e)
++            _LOGGER.error(error_info, exc_info=True)
++            return None, ChannelDataErrcode.UNKNOW.value, error_info
++        if targets is None:
++            return None, None, ""
++        if isinstance(targets, str):
++            targets = [targets]
++        try:
++            # route() may hand back a one-shot iterable, read it only once
++            targets = list(targets)
++        except Exception as e:
++            error_info = "{} route() must return None or an iterable of " \
++                "successor names: {}".format(log_prefix, e)
++            _LOGGER.error(error_info)
++            return None, ChannelDataErrcode.INPUT_PARAMS_ERROR.value, error_info
++        unknown = [
++            x for x in targets
++            if not isinstance(x, str) or x not in self._succ_op_names
++        ]
++        if len(unknown) > 0:
++            error_info = "{} route() returned non-successor op(s): {}".format(
++                log_prefix, unknown)
++            _LOGGER.error(error_info)
++            return None, ChannelDataErrcode.INPUT_PARAMS_ERROR.value, error_info
++        return set(targets), None, ""
++
++    def _is_active_for_request(self, channeldata_dict):
++        """
++        An op runs for a request if any producer routed the request to it.
++        Upstream errors always count, so they keep flowing downstream.
++        """
++        active = False
++        for channeldata in channeldata_dict.values():
++            if channeldata.is_skipped():
++                continue
++            if channeldata.error_code != ChannelDataErrcode.OK.value:
++                return True
++            active_succs = getattr(channeldata, "_active_successors", None)
++            if active_succs is None or self.name in active_succs:
++                active = True
++        return active
+ 
+     def set_dynamic_shape_info(self):
+         """
+@@ -743,9 +813,15 @@ class Op(object):
+         client_need_profile = channeldata_dict[key].client_need_profile
+ 
+         for name, data in channeldata_dict.items():
++            if data.is_skipped():
++                continue
+             if data.error_code != ChannelDataErrcode.OK.value:
+                 error_channeldata = data
+                 break
++            active_succs = getattr(data, "_active_successors", None)
++            if active_succs is not None and self.name not in active_succs:
++                # the producer ran but routed this request elsewhere
++                continue
+             parsed_data[name] = data.parse()
+             if client_need_profile:
+                 profile_set |= data.profile_data_set
+@@ -1303,6 +1379,31 @@ class Op(object):
+         profile_dict = {}
+         logid_dict = {}
+         for channeldata_dict in batch:
++            first_key = list(channeldata_dict.keys())[0]
++            channeldata = channeldata_dict[first_key]
++            data_id = channeldata.id
++            log_id = channeldata.log_id
++
++            # no active incoming edge: skip this op and pass the skip on
++            if not self._is_active_for_request(channeldata_dict):
++                try:
++                    self.on_skipped(data_id, log_id)
++                except Exception as e:
++                    _LOGGER.error(
++                        "(data_id={} log_id={}) {} Failed to run on_skipped: {}"
++                        .format(data_id, log_id, self.name, e),
++                        exc_info=True)
++                skip_data = ChannelData(
++                    datatype=ChannelDataType.SKIP.value,
++                    data_id=data_id,
++                    log_id=log_id)
++                self._push_to_output_channels(
++                    data=skip_data,
++                    channels=output_channels,
++                    client_need_profile=channeldata.client_need_profile,
++                    profile_set=channeldata.profile_data_set)
++                continue
++
+             (data_id, error_channeldata, parsed_data,
+                     client_need_profile, profile_set, log_id) = \
+                             self._parse_channeldata(channeldata_dict)
+@@ -1553,6 +1654,25 @@ class Op(object):
+                     for data_id, postped_data in postped_data_dict.items():
+                         if self._server_use_profile:
+                             sys.stderr.write(profile_str)
++
++                        targets, route_ecode, route_einfo = self._resolve_route(
++                            postped_data.parse(), data_id, logid_dict[data_id])
++                        if route_ecode is not None:
++                            # a bad routing decision fails this request only
++                            err_data = ChannelData(
++                                error_code=route_ecode,
++                                error_info=route_einfo,
++                                data_id=data_id,
++                                log_id=logid_dict[data_id])
++                            self._push_to_output_channels(
++                                data=err_data,
++                                channels=output_channels,
++                                profile_str=profile_str,
++                                client_need_profile=need_profile_dict[data_id],
++                                profile_set=profile_dict[data_id])
++                            continue
++
++                        postped_data._active_successors = targets
+                         self._push_to_output_channels(
+                             data=postped_data,
+                             channels=output_channels,
+@@ -1871,7 +1991,10 @@ class ResponseOp(Op):
+         resp = pipeline_service_pb2.Response()
+         error_code = channeldata.error_code
+         error_info = ""
+-        if error_code == ChannelDataErrcode.OK.value:
++        if channeldata.is_skipped():
++            error_code = CustomExceptionCode.SKIPPED.value
++            error_info = "Request was skipped dynamically in DAG"
++        elif error_code == ChannelDataErrcode.OK.value:
+             # Framework level errors
+             if channeldata.datatype == ChannelDataType.CHANNEL_NPDATA.value:
+                 feed = channeldata.parse()

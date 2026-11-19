@@ -57,14 +57,31 @@ def analyze_view(view_path: str):
                 else:
                     full_read_files.add(bn)
 
-        # Detect design decisions / settled signatures in reasoning
-        for m in re.finditer(r"(?i)(?:def __init__|without annotations|annotation-free|settled|plan the code|signature|default[s]?\s+to|will leave|leave it|max len|not exercised)", body):
+        # Detect design decisions / settled signatures / constraints in reasoning (G24 / C2.6)
+        decision_re = re.compile(
+            r"(?i)(?:def __init__|without annotations|annotation-free|settled|plan the code|"
+            r"signature|default[s]?\s+to|will leave|leave it|leave .* as-is|leave .* unchanged|max len|not exercised|"
+            r"I won't|I'll\s+\w+|I will\s+\w+|should treat|exact match|as-is|"
+            r"lowercase|uppercase|instead of|/tmp/|scratch|not in the package|keep it|"
+            r"truncate|clamp|overflow|order matters|declaration order|"
+            r"pre-existing|not my concern|doesn't ask|outside.*scope|not regenerating|untouched|unchanged|"
+            r"keep \w+ing|still emitted|skip protocols?|no direct dep|no dep needed|transitively)"
+        )
+        for m in decision_re.finditer(body):
             line_start = body.rfind("\n", 0, m.start()) + 1
             line_end = body.find("\n", m.end())
             if line_end == -1:
                 line_end = len(body)
-            snippet = body[line_start:line_end].strip()[:140]
-            decisions.append((rid, snippet))
+            full_line = body[line_start:line_end].strip()
+            if len(full_line) > 1500:
+                rel = m.start() - line_start
+                s_idx = max(0, rel - 450)
+                e_idx = min(len(full_line), rel + 650)
+                snippet = full_line[s_idx:e_idx]
+            else:
+                snippet = full_line
+            if snippet and not snippet.startswith(("+", "-", "def ", "class ", "#include", "//")):
+                decisions.append((rid, snippet))
 
     # Files that had at least one truncated read
     grep_only_files -= full_read_files
@@ -82,12 +99,12 @@ def analyze_tail(tail_path: str):
     rows = parse_rows(text)
     highlights = []
     for rid, header, body in rows:
-        for m in re.finditer(r"(?i)(?:different dbc|without annotations|annotation-free|plan|verify|synthetic|old|new|signature|default|contradict|actually)", body):
+        for m in re.finditer(r"(?i)(?:different dbc|different|turns out|not generated|wrong|mistake|without annotations|annotation-free|plan|verify|synthetic|old|new|signature|default|contradict|actually)", body):
             ls = body.rfind("\n", 0, m.start()) + 1
             le = body.find("\n", m.end())
             if le == -1:
                 le = len(body)
-            highlights.append((rid, body[ls:le].strip()[:140]))
+            highlights.append((rid, body[ls:le].strip()[:300]))
     return len(text), highlights
 
 
@@ -126,17 +143,23 @@ def main():
     print(f"\n[3] ARCHIVOS SOLO GREP/LS EN view.txt ({len(grep_only)}) — NO decir 'Read <archivo>':")
     print("  ", sorted(grep_only)[:25])
 
-    print(f"\n[4] SENALES DE DECISION / FIRMAS / LIMITES EN view.txt (muestra hasta 20):")
+    print(f"\n[4] SENALES DE DECISION / FIRMAS / LIMITES EN view.txt (guardadas en _audit_decisions.txt):")
     seen = set()
-    shown = 0
+    unique_decisions = []
     for rid, snip in decisions:
-        if snip in seen:
+        key = (rid, snip)
+        if key in seen:
             continue
-        seen.add(snip)
+        seen.add(key)
+        unique_decisions.append((rid, snip))
+
+    dec_out = os.path.join(task_dir, "_audit_decisions.txt")
+    with open(dec_out, "w", encoding="utf-8") as df:
+        for rid, snip in unique_decisions:
+            df.write(f"[row {rid}] {snip}\n")
+    print(f"  Total lineas unicas de decision: {len(unique_decisions)} (archivo: {dec_out})")
+    for rid, snip in unique_decisions[:45]:
         print(f"  [row {rid}] {snip}")
-        shown += 1
-        if shown >= 20:
-            break
 
     # 3. Tail analysis
     tlen, thighlights = analyze_tail(tail_path)

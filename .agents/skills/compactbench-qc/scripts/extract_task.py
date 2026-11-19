@@ -67,7 +67,7 @@ async def extract_task(task_id: str, window: str, point: str, port: int = 9223):
                 : []"""
             )
             for m in reversed(models):
-                if m["uri"].endswith(rel_path) or fname in m["uri"]:
+                if task_id in m["uri"] and (m["uri"].endswith(rel_path) or fname in m["uri"]):
                     content = m["val"]
                     break
             if content is not None:

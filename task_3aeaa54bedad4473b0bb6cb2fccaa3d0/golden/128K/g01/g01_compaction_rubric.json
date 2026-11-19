@@ -1,0 +1,276 @@
+{
+  "criteria": [
+    {
+      "criteria_id": "criteria_0",
+      "description": "States the objective of replacing GUIslice's single-bounding-box invalidation model with a bounded multi-region dirty-rectangle manager wired through the partial-redraw path.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_1",
+      "description": "States the requirement that the SDL1 display driver updates only the individual active regions with one update per region, even when a single active region covers the whole display.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_2",
+      "description": "States the requirement that whole-display-only display drivers such as SDL2 keep presenting the whole display unchanged.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_3",
+      "description": "Records that `src/GUIslice.c::gslc_PageRedrawCalc` forces a full-page redraw when an element lacks `GSLC_ELEM_FEA_FILL_EN` even with `bRedrawPartialEn` enabled.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_4",
+      "description": "Records that `src/GUIslice.c::gslc_SetStackPage` calls `gslc_InvalidateRgnPage` when changing stack pages.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_5",
+      "description": "Records that `src/GUIslice.c::gslc_ElemSetRect` calls `gslc_InvalidateRgnAdd` for the old rectangle before updating `pElem->rElem`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_6",
+      "description": "Records that `src/GUIslice.h` defines `nDispW` as `uint16_t`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_7",
+      "description": "Records that `src/GUIslice_drv_sdl.c::gslc_DrvSetClipRect` delegates to `SDL_SetClipRect` under `DRV_DISP_SDL1`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_8",
+      "description": "Records that `src/GUIslice.c::gslc_ElemSetVisible` calls `gslc_InvalidateRgnAdd` on `pElem->rElem` when hiding an element (`bVisible == false`).",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_9",
+      "description": "Records that `src/GUIslice.c::gslc_CollectEvent` propagates `GSLC_EVT_DRAW` to every element reference in `pCollect->asElemRef` via `gslc_ElemEvent`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_10",
+      "description": "Records that `src/GUIslice.c::gslc_PageFlipGo` calls `gslc_DrvPageFlipNow` only when `pGui->bScreenNeedFlip` is true.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_11",
+      "description": "Records that `src/GUIslice_drv_sdl.c` sets `pGui->bRedrawPartialEn` to `true` under `DRV_DISP_SDL1`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_12",
+      "description": "Records that `examples/linux/Makefile` selects the display backend via the `GSLC_DRV` parameter.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_13",
+      "description": "Records the planned design of adding an internal hold flag in `gslc_tsGui` so `src/GUIslice.c::gslc_ElemSetRedraw` returns early on `GSLC_REDRAW_NONE` during every region pass except the last.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_14",
+      "description": "Records the planned reordering of `gslc_InvalidateRgnReset` after `gslc_PageFlipGo` in `src/GUIslice.c::gslc_PageRedrawGo` so active regions remain populated during screen presentation.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_15",
+      "description": "Explains that storing a redraw snapshot in spare bits 8 and 9 of `eElemFlags` was rejected because `src/GUIslice.c::gslc_SetElemRefFlag` truncates flags to `uint8_t`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_16",
+      "description": "Records that the agent rejected variable-length arrays (VLAs) based on its reasoning that the codebase targets C89/C++.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_17",
+      "description": "Records the planned invariant in `src/GUIslice.c` that `bInvalidateEn` is true if and only if `nInvalidateRgnCnt > 0`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_18",
+      "description": "Records the planned placement of the `#ifndef GSLC_INVALIDATE_RGN_MAX` default in `src/GUIslice.h` right after `#include \"GUIslice_config.h\"`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_19",
+      "description": "Records that `src/GUIslice_drv_sdl.c` creates the SDL1 screen surface via `SDL_SetVideoMode` with `SDL_SWSURFACE | SDL_FULLSCREEN`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_20",
+      "description": "Records the planned choice in `src/GUIslice.c::gslc_InvalidateRgnGet` to copy active regions into a local stack buffer and insertion-sort them rather than keeping the internal array sorted.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_21",
+      "description": "Records the planned snapshot in `src/GUIslice.c::gslc_PageRedrawGo` into a local `asRgn[GSLC_INVALIDATE_RGN_MAX]` array via `gslc_InvalidateRgnGet` before iterating regions.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_22",
+      "description": "Records the planned use of `uint32_t` area arithmetic in `src/GUIslice.c` for forced-merge wasted-area minimization under the signed 16-bit edge assumption.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_23",
+      "description": "Records the planned removal of the redundant trailing `pGui->bInvalidateEn = true` statement in `src/GUIslice.c::gslc_InvalidateRgnPage` so empty page bounds are not force-enabled.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_24",
+      "description": "Records the agent's reasoning that `src/GUIslice_drv_sdl.c::gslc_DrvDrawBkgnd` honors the active SDL1 clip rectangle when calling `gslc_DrvPasteSurface`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_25",
+      "description": "Records that no code changes have been made to the repository yet.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_26",
+      "description": "Specifies implementing `gslc_InvalidateRgnCoalesce` in `src/GUIslice.c` as a pending implementation step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_27",
+      "description": "Specifies updating the `DBG_REDRAW` diagnostics in `src/GUIslice.c::gslc_PageRedrawGo` that reference `rInvalidateRect` as a pending implementation step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_28",
+      "description": "Contains at most 31200 characters.",
+      "metadata": {
+        "category": "Compression efficiency",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_29",
+      "description": "Specifies compiling with `gcc` against the installed `libsdl1.2-dev` headers in the Linux environment as a pending verification step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_30",
+      "description": "Keeps the outstanding implementation steps together so pending work is directly findable.",
+      "metadata": {
+        "category": "Structural clarity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_31",
+      "description": "States that `malloc` will be used to allocate the active invalidation region array in `src/GUIslice.c`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_32",
+      "description": "States that `GSLC_INVALIDATE_RGN_MAX` cannot be overridden by a user configuration header.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_33",
+      "description": "States that spare `eElemFlags` bits 8 and 9 were chosen to snapshot pending redraw flags.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "negative"
+      }
+    }
+  ]
+}

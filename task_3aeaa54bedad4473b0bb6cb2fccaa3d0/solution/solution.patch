@@ -1,0 +1,591 @@
+diff --git a/src/GUIslice.c b/src/GUIslice.c
+index 821a5a9..2051402 100755
+--- a/src/GUIslice.c
++++ b/src/GUIslice.c
+@@ -180,6 +180,7 @@ bool gslc_Init(gslc_tsGui* pGui,void* pvDriver,gslc_tsPage* asPage,uint8_t nMaxP
+     pGui->abPageStackDoDraw[nInd] = true;
+   }
+   pGui->bRedrawNeeded      = false;
++  pGui->bRedrawHold        = false;
+   pGui->bScreenNeedRedraw  = true;
+   pGui->bScreenNeedFlip    = false;
+ 
+@@ -1453,13 +1454,101 @@ void gslc_UnionRect(gslc_tsRect* pRect,gslc_tsRect rAddRect)
+ 
+ }
+ 
++static bool gslc_RectsOverlap(gslc_tsRect r1, gslc_tsRect r2) {
++  int32_t x0 = (r1.x > r2.x) ? r1.x : r2.x;
++  int32_t y0 = (r1.y > r2.y) ? r1.y : r2.y;
++  int32_t r1_x1 = (int32_t)r1.x + r1.w;
++  int32_t r2_x1 = (int32_t)r2.x + r2.w;
++  int32_t r1_y1 = (int32_t)r1.y + r1.h;
++  int32_t r2_y1 = (int32_t)r2.y + r2.h;
++  int32_t x1 = (r1_x1 < r2_x1) ? r1_x1 : r2_x1;
++  int32_t y1 = (r1_y1 < r2_y1) ? r1_y1 : r2_y1;
++  return (x0 < x1) && (y0 < y1);
++}
++
++static gslc_tsRect gslc_GetUnionRect(gslc_tsRect r1, gslc_tsRect r2) {
++  int32_t x0 = (r1.x < r2.x) ? r1.x : r2.x;
++  int32_t y0 = (r1.y < r2.y) ? r1.y : r2.y;
++  int32_t r1_x1 = (int32_t)r1.x + r1.w;
++  int32_t r2_x1 = (int32_t)r2.x + r2.w;
++  int32_t r1_y1 = (int32_t)r1.y + r1.h;
++  int32_t r2_y1 = (int32_t)r2.y + r2.h;
++  int32_t x1 = (r1_x1 > r2_x1) ? r1_x1 : r2_x1;
++  int32_t y1 = (r1_y1 > r2_y1) ? r1_y1 : r2_y1;
++  return (gslc_tsRect){ (int16_t)x0, (int16_t)y0, (uint16_t)(x1 - x0), (uint16_t)(y1 - y0) };
++}
++
++static bool gslc_ClampRectToDisplay(gslc_tsGui* pGui, gslc_tsRect* pRect) {
++  int32_t rx = pRect->x;
++  int32_t ry = pRect->y;
++  int32_t rw = pRect->w;
++  int32_t rh = pRect->h;
++
++  if (rx < 0) {
++    rw += rx;
++    rx = 0;
++  }
++  if (ry < 0) {
++    rh += ry;
++    ry = 0;
++  }
++
++  int32_t dw = pGui->nDispW;
++  int32_t dh = pGui->nDispH;
++
++  if (rx >= dw || ry >= dh || rw <= 0 || rh <= 0) {
++    pRect->w = 0;
++    pRect->h = 0;
++    return false;
++  }
++
++  if (rx + rw > dw) {
++    rw = dw - rx;
++  }
++  if (ry + rh > dh) {
++    rh = dh - ry;
++  }
++
++  if (rw <= 0 || rh <= 0) {
++    pRect->w = 0;
++    pRect->h = 0;
++    return false;
++  }
++
++  pRect->x = (int16_t)rx;
++  pRect->y = (int16_t)ry;
++  pRect->w = (uint16_t)rw;
++  pRect->h = (uint16_t)rh;
++  return true;
++}
++
++// Canonical region ordering: ascending by y, then x, then h, then w
++static bool gslc_RectLess(gslc_tsRect r1, gslc_tsRect r2) {
++  if (r1.y != r2.y) { return r1.y < r2.y; }
++  if (r1.x != r2.x) { return r1.x < r2.x; }
++  if (r1.h != r2.h) { return r1.h < r2.h; }
++  return r1.w < r2.w;
++}
++
++static void gslc_SortRects(gslc_tsRect* asRect, uint8_t nCnt) {
++  for (uint8_t i = 1; i < nCnt; i++) {
++    gslc_tsRect key = asRect[i];
++    int16_t j = i - 1;
++    while (j >= 0 && gslc_RectLess(key, asRect[j])) {
++      asRect[j + 1] = asRect[j];
++      j--;
++    }
++    asRect[j + 1] = key;
++  }
++}
++
+ void gslc_InvalidateRgnReset(gslc_tsGui* pGui)
+ {
+ #if defined(DBG_REDRAW)
+   GSLC_DEBUG_PRINT("DBG: InvRgnReset\n", "");
+ #endif
+   pGui->bInvalidateEn = false;
+-  pGui->rInvalidateRect = (gslc_tsRect) { 0, 0, 1, 1 };
++  pGui->nInvalidateRgnCnt = 0;
+ }
+ 
+ void gslc_InvalidateRgnScreen(gslc_tsGui* pGui)
+@@ -1468,7 +1557,8 @@ void gslc_InvalidateRgnScreen(gslc_tsGui* pGui)
+   GSLC_DEBUG_PRINT("DBG: InvRgnScreen\n", "");
+ #endif
+   pGui->bInvalidateEn = true;
+-  pGui->rInvalidateRect = (gslc_tsRect) { 0, 0, pGui->nDispW, pGui->nDispH };
++  pGui->asInvalidateRect[0] = (gslc_tsRect) { 0, 0, pGui->nDispW, pGui->nDispH };
++  pGui->nInvalidateRgnCnt = 1;
+ }
+ 
+ void gslc_InvalidateRgnPage(gslc_tsGui* pGui, gslc_tsPage* pPage)
+@@ -1479,21 +1569,179 @@ void gslc_InvalidateRgnPage(gslc_tsGui* pGui, gslc_tsPage* pPage)
+ #if defined(DBG_REDRAW)
+   GSLC_DEBUG_PRINT("DBG: InvRgnPage: Page=%d (%d,%d)-(%d,%d)\n",
+     pPage->nPageId,
+-    pPage->rBounds.x, pPage->rBounds.y, pPage->rBounds.x + pPage->rBounds.w - 1, pPage->rBounds.y + pPage->rBounds.h - 1); //xxx
++    pPage->rBounds.x, pPage->rBounds.y, pPage->rBounds.x + pPage->rBounds.w - 1, pPage->rBounds.y + pPage->rBounds.h - 1);
+ #endif // DBG_REDRAW
+   gslc_InvalidateRgnAdd(pGui, pPage->rBounds);
++}
++
++void gslc_InvalidateRgnAdd(gslc_tsGui* pGui, gslc_tsRect rAddRect)
++{
++  if (pGui == NULL) {
++    return;
++  }
++
++  gslc_tsRect rClamped = rAddRect;
++  if (!gslc_ClampRectToDisplay(pGui, &rClamped)) {
++    return;
++  }
++
+   pGui->bInvalidateEn = true;
++
++  // 1. Create a local temporary array to hold the active regions plus the new one
++  gslc_tsRect temp[GSLC_INVALIDATE_RGN_MAX + 1];
++  uint8_t temp_cnt = 0;
++
++  // Copy existing regions to temp
++  for (uint8_t i = 0; i < pGui->nInvalidateRgnCnt; i++) {
++    temp[temp_cnt++] = pGui->asInvalidateRect[i];
++  }
++
++  // 2. Coalesce the new region transitively with the existing regions in temp
++  gslc_tsRect r = rClamped;
++  bool coalesced = true;
++  while (coalesced) {
++    coalesced = false;
++    for (uint8_t i = 0; i < temp_cnt; i++) {
++      if (gslc_RectsOverlap(r, temp[i])) {
++        r = gslc_GetUnionRect(r, temp[i]);
++        // Remove temp[i]
++        for (uint8_t j = i; j < temp_cnt - 1; j++) {
++          temp[j] = temp[j + 1];
++        }
++        temp_cnt--;
++        coalesced = true;
++        break;
++      }
++    }
++  }
++
++  // Append the coalesced region to temp
++  temp[temp_cnt++] = r;
++
++  // 3. If count exceeds max, repeatedly merge the optimal pair
++  while (temp_cnt > GSLC_INVALIDATE_RGN_MAX) {
++    int32_t min_added_area = -1;
++    uint8_t best_i = 0, best_j = 0;
++
++    // Keep the candidates in canonical order so that the first pair found
++    // with the least wasted area is also the canonically smallest one
++    gslc_SortRects(temp, temp_cnt);
++
++    for (uint8_t i = 0; i < temp_cnt; i++) {
++      for (uint8_t j = i + 1; j < temp_cnt; j++) {
++        gslc_tsRect a = temp[i];
++        gslc_tsRect b = temp[j];
++        gslc_tsRect u = gslc_GetUnionRect(a, b);
++
++        int32_t area_a = (int32_t)a.w * a.h;
++        int32_t area_b = (int32_t)b.w * b.h;
++        int32_t area_u = (int32_t)u.w * u.h;
++        int32_t added_area = area_u - area_a - area_b;
++
++        if (min_added_area == -1 || added_area < min_added_area) {
++          min_added_area = added_area;
++          best_i = i;
++          best_j = j;
++        }
++      }
++    }
++
++    // Merge the best pair
++    gslc_tsRect merged = gslc_GetUnionRect(temp[best_i], temp[best_j]);
++
++    // Remove best_j (which is > best_i)
++    for (uint8_t k = best_j; k < temp_cnt - 1; k++) {
++      temp[k] = temp[k + 1];
++    }
++    temp_cnt--;
++
++    // Remove best_i
++    for (uint8_t k = best_i; k < temp_cnt - 1; k++) {
++      temp[k] = temp[k + 1];
++    }
++    temp_cnt--;
++
++    // Now transitively coalesce the merged region with the remaining ones in temp
++    gslc_tsRect r_m = merged;
++    coalesced = true;
++    while (coalesced) {
++      coalesced = false;
++      for (uint8_t i = 0; i < temp_cnt; i++) {
++        if (gslc_RectsOverlap(r_m, temp[i])) {
++          r_m = gslc_GetUnionRect(r_m, temp[i]);
++          for (uint8_t j = i; j < temp_cnt - 1; j++) {
++            temp[j] = temp[j + 1];
++          }
++          temp_cnt--;
++          coalesced = true;
++          break;
++        }
++      }
++    }
++
++    // Append the coalesced merged region to temp
++    temp[temp_cnt++] = r_m;
++  }
++
++  // 4. Copy the result back to GUIslice's state
++  pGui->nInvalidateRgnCnt = temp_cnt;
++  for (uint8_t i = 0; i < temp_cnt; i++) {
++    pGui->asInvalidateRect[i] = temp[i];
++  }
+ }
+ 
++uint8_t gslc_InvalidateRgnGet(gslc_tsGui* pGui, gslc_tsRect* asRect, uint8_t nRectMax)
++{
++  if (pGui == NULL) {
++    return 0;
++  }
++  if (!pGui->bInvalidateEn) {
++    return 0;
++  }
+ 
+-void gslc_InvalidateRgnAdd(gslc_tsGui* pGui, gslc_tsRect rAddRect)
++  uint8_t nCnt = pGui->nInvalidateRgnCnt;
++  gslc_tsRect temp[GSLC_INVALIDATE_RGN_MAX];
++  for (uint8_t i = 0; i < nCnt; i++) {
++    temp[i] = pGui->asInvalidateRect[i];
++  }
++
++  gslc_SortRects(temp, nCnt);
++
++  if (asRect != NULL && nRectMax > 0) {
++    uint8_t nWrite = (nCnt < nRectMax) ? nCnt : nRectMax;
++    for (uint8_t i = 0; i < nWrite; i++) {
++      asRect[i] = temp[i];
++    }
++  }
++
++  return nCnt;
++}
++
++bool gslc_InvalidateRgnIsDirty(gslc_tsGui* pGui, gslc_tsRect rTest)
+ {
+-  if (pGui->bInvalidateEn) {
+-    gslc_UnionRect(&(pGui->rInvalidateRect), rAddRect);
+-  } else {
+-    pGui->bInvalidateEn = true;
+-    pGui->rInvalidateRect = rAddRect;
++  if (pGui == NULL) {
++    return false;
++  }
++  if (!pGui->bInvalidateEn) {
++    return false;
+   }
++  for (uint8_t i = 0; i < pGui->nInvalidateRgnCnt; i++) {
++    if (gslc_RectsOverlap(pGui->asInvalidateRect[i], rTest)) {
++      return true;
++    }
++  }
++  return false;
++}
++
++uint8_t gslc_InvalidateRgnCount(gslc_tsGui* pGui)
++{
++  if (pGui == NULL) {
++    return 0;
++  }
++  if (!pGui->bInvalidateEn) {
++    return 0;
++  }
++  return pGui->nInvalidateRgnCnt;
+ }
+ 
+ 
+@@ -2319,101 +2567,93 @@ void gslc_PageRedrawGo(gslc_tsGui* pGui)
+   // Determine final state of full-screen redraw
+   bool  bPageRedraw = gslc_PageRedrawGet(pGui);
+ 
+-  // Set the clipping based on the current invalidated region
+-  if (pGui->bInvalidateEn) {
+-    #if defined(DBG_REDRAW)
+-    // Note that this will still outline the invalidation region
+-    // even if we later discover that the changed element is on
+-    // a page in the stack that has been disabled through
+-    // abPageStackDoDraw[] = false.
+-    GSLC_DEBUG_PRINT("DBG: PageRedrawGo() InvRgn: En=%d (%d,%u)-(%d,%d) PageRedraw=%d\n",
+-      pGui->bInvalidateEn, pGui->rInvalidateRect.x, pGui->rInvalidateRect.y,
+-      pGui->rInvalidateRect.x + pGui->rInvalidateRect.w - 1,
+-      pGui->rInvalidateRect.y + pGui->rInvalidateRect.h - 1, bPageRedraw);
++  uint8_t nRgns = pGui->bInvalidateEn ? pGui->nInvalidateRgnCnt : 0;
+ 
+-    // Mark the invalidation region
+-    gslc_DrvDrawFrameRect(pGui, pGui->rInvalidateRect, GSLC_COL_RED);
++  if (pGui->bInvalidateEn && nRgns > 0) {
++    // Loop over each active invalidation region
++    for (uint8_t r = 0; r < nRgns; r++) {
++      gslc_tsRect rRegion = pGui->asInvalidateRect[r];
+ 
+-    // Slow down rendering
+-    delay(1000);
+-    #endif // DBG_REDRAW
++#if defined(DBG_REDRAW)
++      GSLC_DEBUG_PRINT("DBG: PageRedrawGo() InvRgn: [%d] (%d,%d)-(%d,%d) PageRedraw=%d\n",
++        r, rRegion.x, rRegion.y,
++        rRegion.x + rRegion.w - 1,
++        rRegion.y + rRegion.h - 1, bPageRedraw);
+ 
+-    gslc_SetClipRect(pGui, &(pGui->rInvalidateRect));
+-  }
+-  else {
+-    // No invalidation region defined, so default the
+-    // clipping region to the entire display
++      // Mark the invalidation region
++      gslc_DrvDrawFrameRect(pGui, rRegion, GSLC_COL_RED);
++
++      // Slow down rendering
++      delay(1000);
++#endif // DBG_REDRAW
++
++      // Set clipping for this region
++      gslc_SetClipRect(pGui, &rRegion);
++
++      // Draw background if full page redraw required
++      if (bPageRedraw) {
++        gslc_DrvDrawBkgnd(pGui);
++        gslc_PageFlipSet(pGui, true);
++      }
++
++      // Draw elements on this region
++      // - On a partial redraw, the pending elements are rendered once per
++      //   region, so their redraw state is only cleared by the last pass
++      pGui->bRedrawHold = (!bPageRedraw && (r + 1 < nRgns));
++      uint32_t nSubType = (bPageRedraw) ? GSLC_EVTSUB_DRAW_FORCE : GSLC_EVTSUB_DRAW_NEEDED;
++      for (int nStackPage = 0; nStackPage < GSLC_STACK__MAX; nStackPage++) {
++        gslc_tsPage* pStackPage = pGui->apPageStack[nStackPage];
++        if (!pStackPage) {
++          continue;
++        }
++        if (!bPageRedraw && !pGui->abPageStackDoDraw[nStackPage]) {
++          continue;
++        }
++        void* pvData = (void*)(pStackPage);
++        gslc_tsEvent sEvent = gslc_EventCreate(pGui, GSLC_EVT_DRAW, nSubType, pvData, NULL);
++        gslc_PageEvent(pGui, sEvent);
++      }
++    }
++    pGui->bRedrawHold = false;
++  } else {
++    // No invalidation region defined, redraw everything once
+     gslc_SetClipRect(pGui, NULL);
+-  }
+ 
+-  // If a full page redraw is required, then start by
+-  // redrawing the background.
+-  // NOTE:
+-  // - It would be cleaner if we could treat the background
+-  //   layer like any other element (and hence check for its
+-  //   need-redraw status).
+-  // - For now, assume background doesn't need update except
+-  //   if the entire page is to be redrawn
+-  //   TODO: Fix this assumption (either add specific flag
+-  //         for bBkgndNeedRedraw or make the background just
+-  //         another element).
+-  if (bPageRedraw) {
+-    gslc_DrvDrawBkgnd(pGui);
+-    gslc_PageFlipSet(pGui,true);
+-  }
+-
+-  // Draw other elements (as needed, unless forced page redraw)
+-  // TODO: Handle GSLC_EVTSUB_DRAW_NEEDED
+-  uint32_t nSubType = (bPageRedraw)?GSLC_EVTSUB_DRAW_FORCE:GSLC_EVTSUB_DRAW_NEEDED;
+-  void*    pvData = NULL;
+-
+-  // TODO: Consider creating a flag that indicates whether any elements
+-  // on the page have requested redraw. This would enable us to skip
+-  // over this exhaustive search every time we call Update()
+-
+-  // Issue page redraw events to all pages in stack
+-  // - Start from bottom page in stack first
+-  for (int nStackPage = 0; nStackPage < GSLC_STACK__MAX; nStackPage++) {
+-    gslc_tsPage* pStackPage = pGui->apPageStack[nStackPage];
+-    if (!pStackPage) {
+-      continue;
++    if (bPageRedraw) {
++      gslc_DrvDrawBkgnd(pGui);
++      gslc_PageFlipSet(pGui, true);
+     }
+-    if (!bPageRedraw && !pGui->abPageStackDoDraw[nStackPage]) {
+-      // When doing a full page redraw, proceed as normal
+-      // When only doing a parital page redraw, check to see if
+-      // the page has been marked as redraw-disabled. If so, skip
+-      // updating the elements on the page.
+-      //
+-      // The redraw-disabled mode is useful to prevent "show-through"
+-      // from dynamically-updating elements in lower layers of the
+-      // page stack (this may occur with popup dialogs). If the overlay
+-      // page does not overlap dynamically-updating elements, then
+-      // DoDraw can be set to true, enabling background updates to occur.
+-      continue;
++
++    uint32_t nSubType = (bPageRedraw) ? GSLC_EVTSUB_DRAW_FORCE : GSLC_EVTSUB_DRAW_NEEDED;
++    for (int nStackPage = 0; nStackPage < GSLC_STACK__MAX; nStackPage++) {
++      gslc_tsPage* pStackPage = pGui->apPageStack[nStackPage];
++      if (!pStackPage) {
++        continue;
++      }
++      if (!bPageRedraw && !pGui->abPageStackDoDraw[nStackPage]) {
++        continue;
++      }
++      void* pvData = (void*)(pStackPage);
++      gslc_tsEvent sEvent = gslc_EventCreate(pGui, GSLC_EVT_DRAW, nSubType, pvData, NULL);
++      gslc_PageEvent(pGui, sEvent);
+     }
+-    pvData = (void*)(pStackPage);
+-    gslc_tsEvent sEvent = gslc_EventCreate(pGui,GSLC_EVT_DRAW,nSubType,pvData,NULL);
+-    gslc_PageEvent(pGui,sEvent);
+   }
+ 
+-
+   // Clear the page redraw flag
+   gslc_PageRedrawSet(pGui,false);
+ 
+-  // Reset the invalidated regions
+-  gslc_InvalidateRgnReset(pGui);
+- 
+-  // Restore the clipping region to the entire display
+-  gslc_SetClipRect(pGui, NULL);
+-
+   // Clear the "need redraw" flag
+   pGui->bRedrawNeeded = false;
+ 
+-  // Page flip the entire screen
+-  // - TODO: We could also call Update instead of Flip as that would
+-  //         limit the region to refresh.
++  // Page flip the entire screen (or the dirty regions as implemented in gslc_DrvPageFlipNow)
+   gslc_PageFlipGo(pGui);
+ 
++  // Reset the invalidated regions AFTER the redraw and flip are complete,
++  // so that gslc_DrvPageFlipNow can still inspect pGui->asInvalidateRect!
++  gslc_InvalidateRgnReset(pGui);
++
++  // Restore the clipping region to the entire display
++  gslc_SetClipRect(pGui, NULL);
+ }
+ 
+ 
+@@ -3530,7 +3770,11 @@ void gslc_ElemSetRedraw(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawT
+     // If a GSLC_REDRAW_NONE is assigned, override any existing
+     // redraw state. This is often used to clear a redraw state
+     // once a redraw has been completed.
+-    eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_NONE;
++    // - The state is kept while further invalidation regions
++    //   are still waiting to be rendered.
++    if (!pGui->bRedrawHold) {
++      eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_NONE;
++    }
+   } else {
+ 
+     // Indicate that at least one element requires redraw
+diff --git a/src/GUIslice.h b/src/GUIslice.h
+index ce8e611..bf42a4a 100755
+--- a/src/GUIslice.h
++++ b/src/GUIslice.h
+@@ -68,6 +68,14 @@ extern "C" {
+   #define GSLC_FEATURE_FOCUS_ON_TOUCH 1
+ #endif
+ 
++// Bounded multi-region invalidation dirty-rectangle manager limits
++#ifndef GSLC_INVALIDATE_RGN_MAX
++  #define GSLC_INVALIDATE_RGN_MAX 8
++#endif
++#if (GSLC_INVALIDATE_RGN_MAX < 1) || (GSLC_INVALIDATE_RGN_MAX > 32)
++  #error "CONFIG: GSLC_INVALIDATE_RGN_MAX must be between 1 and 32"
++#endif
++
+ // Ensure that touch/input drivers have not been disabled if FEATURE_INPUT has been requested
+ // - Either use DRV_TOUCH_INPUT if no touch-screen is used (but external pins are being used)
+ // - Or select a DRV_TOUCH_* driver specific to the touch-screen device
+@@ -818,6 +826,7 @@ typedef struct {
+                                         ///< If false, entire page is redrawn when any
+                                         ///< element has been updated prior to next
+                                         ///< page redraw command.
++  bool                bRedrawHold;      ///< Keep element redraw state until all regions are rendered
+ 
+   // Pending events
+   bool                bEventPending;    ///< Is there an event pending?
+@@ -846,7 +855,8 @@ typedef struct {
+ 
+   // Current clip region
+   bool                bInvalidateEn;     ///< A region of the display has been invalidated
+-  gslc_tsRect         rInvalidateRect;   ///< The rect region that has been invalidated
++  gslc_tsRect         asInvalidateRect[GSLC_INVALIDATE_RGN_MAX]; ///< The set of active dirty rectangles
++  uint8_t             nInvalidateRgnCnt; ///< The number of active dirty rectangles
+ 
+   // Callback functions
+   //GSLC_CB_EVENT       pfuncXEvent;      ///< UNUSED: Callback func ptr for events
+@@ -1184,6 +1194,36 @@ void gslc_InvalidateRgnScreen(gslc_tsGui* pGui);
+ ///
+ void gslc_InvalidateRgnAdd(gslc_tsGui* pGui, gslc_tsRect rAddRect);
+ 
++///
++/// Get the current set of active invalidation regions
++///
++/// \param[in]  pGui:     Pointer to GUI
++/// \param[out] asRect:   Pointer to array to receive active regions (can be NULL)
++/// \param[in]  nRectMax: Maximum number of entries to write to asRect
++///
++/// \return total count of active dirty regions
++///
++uint8_t gslc_InvalidateRgnGet(gslc_tsGui* pGui, gslc_tsRect* asRect, uint8_t nRectMax);
++
++///
++/// Check if a test rectangle overlaps any active dirty regions
++///
++/// \param[in]  pGui:     Pointer to GUI
++/// \param[in]  rTest:    Rectangle to test
++///
++/// \return true if rTest has a positive-area intersection with at least one active dirty region
++///
++bool gslc_InvalidateRgnIsDirty(gslc_tsGui* pGui, gslc_tsRect rTest);
++
++///
++/// Get the number of currently tracked active dirty regions
++///
++/// \param[in]  pGui:     Pointer to GUI
++///
++/// \return number of tracked active regions (0 if bInvalidateEn is false)
++///
++uint8_t gslc_InvalidateRgnCount(gslc_tsGui* pGui);
++
+ ///
+ /// Perform basic clipping of a single point to a clipping region
+ ///
+diff --git a/src/GUIslice_drv_sdl.c b/src/GUIslice_drv_sdl.c
+index b5b219f..8178da3 100755
+--- a/src/GUIslice_drv_sdl.c
++++ b/src/GUIslice_drv_sdl.c
+@@ -658,7 +658,14 @@ void gslc_DrvPageFlipNow(gslc_tsGui* pGui)
+   gslc_tsDriver* pDriver = (gslc_tsDriver*)(pGui->pvDriver);
+ #if defined(DRV_DISP_SDL1)
+   SDL_Surface*   pScreen = pDriver->pSurfScreen;
+-  SDL_Flip(pScreen);
++  if (pGui->bInvalidateEn && pGui->nInvalidateRgnCnt > 0) {
++    for (uint8_t i = 0; i < pGui->nInvalidateRgnCnt; i++) {
++      gslc_tsRect r = pGui->asInvalidateRect[i];
++      SDL_UpdateRect(pScreen, r.x, r.y, r.w, r.h);
++    }
++  } else {
++    SDL_Flip(pScreen);
++  }
+ #endif
+ #if defined(DRV_DISP_SDL2)
+   SDL_Renderer* pRender = pDriver->pRender;

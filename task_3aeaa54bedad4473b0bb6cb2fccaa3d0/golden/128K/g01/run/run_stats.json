@@ -1,0 +1,75 @@
+{
+  "authoring": {
+    "edit": {
+      "baseline_chars": 7178,
+      "golden_chars": 8429
+    }
+  },
+  "call_ids": [
+    "fc-01M7QHYT97ZGDMP3T1J778ACMK",
+    "fc-01M7QHYVAPYHJ44F7KVAW5N4RX",
+    "fc-01M7QHYW4XPMPG1YCDSGK7EGQP",
+    "fc-01M7QHYX0516HRVQRK1EM9K9QC"
+  ],
+  "compaction_count": 3,
+  "compactor_model": "openai/modal-glm53/zai-org/GLM-5.3",
+  "context_window": 128000,
+  "evaluated": 1,
+  "n": 4,
+  "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/516e04d1-642f-43d8-bf1a-937e78a04aa4/output-artifacts.tar.gz",
+  "passes": 1,
+  "prior_status_id": "5eed0000-0000-4000-8000-000000000001",
+  "rollouts": [
+    {
+      "call_id": "fc-01M7QHYT97ZGDMP3T1J778ACMK",
+      "index": 0,
+      "passed": false,
+      "status": "cancelled"
+    },
+    {
+      "call_id": "fc-01M7QHYVAPYHJ44F7KVAW5N4RX",
+      "index": 1,
+      "passed": false,
+      "status": "cancelled"
+    },
+    {
+      "call_id": "fc-01M7QHYW4XPMPG1YCDSGK7EGQP",
+      "compaction_count": 3,
+      "duration_s": 1705,
+      "error_message": null,
+      "f2p_pass_rate": 1.0,
+      "f2p_passed": 35,
+      "f2p_total": 35,
+      "index": 2,
+      "is_429": false,
+      "n_steps": 192,
+      "outcome": "completed",
+      "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/516e04d1-642f-43d8-bf1a-937e78a04aa4/output-artifacts.tar.gz",
+      "p2p_passed": 1,
+      "p2p_total": 1,
+      "passed": true,
+      "peak_context": 114526,
+      "score": 1.0,
+      "status": "completed",
+      "tests_failed": 0,
+      "tests_failing": [],
+      "tests_other": 0,
+      "tests_passed": 36,
+      "total_tokens": 13313987
+    },
+    {
+      "call_id": "fc-01M7QHYX0516HRVQRK1EM9K9QC",
+      "index": 3,
+      "passed": false,
+      "status": "cancelled"
+    }
+  ],
+  "round": 1,
+  "solver_model": "openai/modal-glm53/zai-org/GLM-5.3",
+  "task_id": "task_3aeaa54bedad4473b0bb6cb2fccaa3d0",
+  "trigger_tokens": 112290,
+  "winner_f2p_rate": 1.0,
+  "winner_index": 2,
+  "winner_passed": true,
+  "winner_test_pass_rate": 1.0
+}

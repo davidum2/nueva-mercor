@@ -1,0 +1,3195 @@
+# compactor view covers the whole input (no earlier compaction)
+[3] system: 
+[4] user: Replace GUIslice's single-bounding-box invalidation model with a bounded multi-region dirty-rectangle manager and wire it through the partial-redraw path.
+
+Introduce `GSLC_INVALIDATE_RGN_MAX` as the maximum number of simultaneously-tracked active regions. It defaults to 8, and a user configuration header (one of the stock `configs/` files or a project's own) or a compiler define can set it to any value from 1 to 32. Add three net-new public query functions:
+- `gslc_InvalidateRgnCount` takes the GUI context and returns a `uint8_t` count of active tracked regions, or 0 if invalidation is disabled.
+- `gslc_InvalidateRgnGet` takes the GUI context, a rectangle array, and a `uint8_t` maximum count, writes the active regions sorted canonically (ascending by y, then x, then h, then w) into that array when it is non-null and up to that maximum, and returns the `uint8_t` total count of active tracked regions.
+- `gslc_InvalidateRgnIsDirty` takes the GUI context and a test rectangle, and returns a `bool` reporting whether that rectangle has a positive-area intersection with at least one active region.
+
+Refactor the existing region invalidation functions to maintain a set of at most `GSLC_INVALIDATE_RGN_MAX` pairwise non-overlapping regions with no dynamic memory allocation, neither when the set is updated or queried nor when it is redrawn and presented. Neither the core library nor its SDL driver calls an allocation function of the C library or the operating system anywhere in its own code today (the `malloc` family, memory mapping, or helpers such as `strdup` and `asprintf` that return allocated buffers), and that must stay true; what SDL does internally on their behalf, such as creating a surface or rendering text, is not part of this. The addition function clamps each input rectangle to the display bounds and drops any that come out empty or fall entirely offscreen. As elsewhere in the library, the right and bottom edges of a rectangle are assumed to fit in the signed 16-bit coordinate range. Any added rectangle with positive-area overlap must transitively coalesce with the existing active regions into their bounding-box union until every region is pairwise disjoint. Two areas invalidated in the course of a single element operation therefore remain separate active regions when they do not overlap.
+
+If the region count exceeds `GSLC_INVALIDATE_RGN_MAX`, repeatedly merge the pair that minimizes wasted area (union area minus the two individual areas). Break ties independently of the order in which the regions were added: put the canonically smaller region of each pair first, then take the pair whose first region is canonically smallest, or whose second region is canonically smallest when the first regions are equal, comparing regions ascending by y, then x, then h, then w. Re-run transitive coalescing after each forced merge. The screen invalidation function yields exactly one region covering the full display, and the reset function empties the set and disables invalidation.
+
+When invalidation is active, each active region must be drawn independently, with the clipping rectangle set to that region before its background and element rendering, so that nothing outside the active regions is repainted. On a partial redraw every element that is pending redraw must still end up rendered in each active region it intersects, including an element that reaches into more than one of them. To prevent full-screen flicker, the screen presentation step of the SDL1 display driver must update only the individual active regions, exactly one update per region, instead of refreshing the entire display, and this holds even when a single active region covers the whole display; with no active region it refreshes the whole display as before. Display drivers that can only present the whole display, such as SDL2, keep doing so. The active region set must remain fully populated during that presentation step, and must only be emptied after the redraw and presentation pass completes, at which point clipping is restored to the full display.
+[5] assistant: [reasoning]
+Let me start by exploring the repository structure to understand the codebase.
+[tool:bash] {"command": "ls /workspace/repo && ls /workspace/repo/src 2>/dev/null | head -50", "timeout": 10}
+[tool:bash] {"command": "find /workspace/repo -name \"*.md\" -maxdepth 2 | head -20; echo ---; ls /workspace/repo/configs 2>/dev/null", "timeout": 10}
+[6] toolResult: LICENSE
+README.md
+builder
+configs
+docs
+doxygen.conf
+examples
+library.json
+library.properties
+platformio.ini
+src
+GUIslice.c
+GUIslice.h
+GUIslice_config.h
+GUIslice_drv.h
+GUIslice_drv_adagfx.cpp
+GUIslice_drv_adagfx.h
+GUIslice_drv_m5stack.cpp
+GUIslice_drv_m5stack.h
+GUIslice_drv_sdl.c
+GUIslice_drv_sdl.h
+GUIslice_drv_tft_espi.cpp
+GUIslice_drv_tft_espi.h
+GUIslice_drv_utft.cpp
+GUIslice_drv_utft.h
+GUIslice_ex.h
+GUIslice_th.cpp
+GUIslice_th.h
+GUIslice_th_XPT2046.h
+GUIslice_version.h
+PROGRAMMING
+TODO
+elem
+[7] toolResult: /workspace/repo/README.md
+/workspace/repo/builder/README.md
+/workspace/repo/docs/README.md
+---
+ard-adagfx-hx8347-xpt2046.h
+ard-adagfx-hx8357-ft6206.h
+ard-adagfx-hx8357-notouch.h
+ard-adagfx-hx8357-simple.h
+ard-adagfx-hx8357-stmpe610.h
+ard-adagfx-ili9225-notouch.h
+ard-adagfx-ili9341-ft6206.h
+ard-adagfx-ili9341-input.h
+ard-adagfx-ili9341-notouch.h
+ard-adagfx-ili9341-simple.h
+ard-adagfx-ili9341-stmpe610.h
+ard-adagfx-ili9341-xpt2046.h
+ard-adagfx-ili9488-notouch.h
+ard-adagfx-pcd8544-notouch.h
+ard-adagfx-ra8875-notouch.h
+ard-adagfx-ra8875-simple_int.h
+ard-adagfx-ra8876-ft5206.h
+ard-adagfx-ra8876-notouch.h
+ard-adagfx-ssd1306-notouch.h
+ard-adagfx-st7735-notouch.h
+ard-lcdgfx-notouch.h
+ard-lcdgfx-stmpe610.h
+ard-shld-adafruit_18_joy.h
+ard-shld-adafruit_28_cap.h
+ard-shld-adafruit_28_res.h
+ard-shld-eastrising_35_ili9488_cap.h
+ard-shld-eastrising_50_ra8875_res.h
+ard-shld-eastrising_50_ra8875_sumo_res.h
+ard-shld-eastrising_50_ssd1963_res.h
+ard-shld-eastrising_70_ra8876_gv.h
+ard-shld-elegoo_28_res.h
+ard-shld-generic1_35_touch.h
+ard-shld-generic1_35_touch1.h
+ard-shld-gevino_opto.h
+ard-shld-gevino_tft.h
+ard-shld-ili9341_16b_urtouch.h
+ard-shld-mcufriend.h
+ard-shld-mcufriend_4wire.h
+ard-shld-mcufriend_xpt2046.h
+ard-shld-osmart_22_68130_touch.h
+ard-shld-utft-notouch.h
+ard-shld-waveshare_28_touch.h
+ard-shld-waveshare_40_notouch.h
+ard-shld-waveshare_40_xpt2046.h
+due-adagfx-ili9225-notouch.h
+due-adagfx-ili9341-ft6206.h
+due-adagfx-ili9341-urtouch.h
+due-adagfx-ra8875-urtouch.h
+esp-aztouch-mod-ili9341-xpt2046-esp32.h
+esp-aztouch-mod-ili9341-xpt2046-esp8266.h
+esp-shld-adafruit_24_feather_touch-espi.h
+esp-shld-m5stack.h
+esp-shld-ttgo_btc_ticker.h
+esp-shld-wio-input.h
+esp-shld-wio-notouch.h
+esp-tftespi-default-ft6206.h
+esp-tftespi-default-notouch.h
+esp-tftespi-default-simple.h
+esp-tftespi-default-stmpe610.h
+esp-tftespi-default-tsc2007.h
+esp-tftespi-default-xpt2046.h
+esp-tftespi-default-xpt2046_int.h
+linux-sdl1-default-mouse.h
+mult-shld-adafruit_24_feather_touch.h
+mult-shld-adafruit_35_feather_tou
+
+[... 37 more characters truncated]
+[8] assistant: [reasoning]
+Let me look at the main GUIslice.c and GUIslice.h files, particularly focusing on invalidation.
+[tool:bash] {"command": "grep -n -i \"invalidate\" /workspace/repo/src/GUIslice.h | head -50", "timeout": 10}
+[tool:bash] {"command": "grep -n -i \"invalidate\" /workspace/repo/src/GUIslice.c | head -80", "timeout": 10}
+[9] toolResult: 848:  bool                bInvalidateEn;     ///< A region of the display has been invalidated
+849:  gslc_tsRect         rInvalidateRect;   ///< The rect region that has been invalidated
+1155:void gslc_InvalidateRgnReset(gslc_tsGui* pGui);
+1165:void gslc_InvalidateRgnPage(gslc_tsGui* pGui, gslc_tsPage* pPage);
+1168:/// Mark the entire screen as invalidated
+1174:void gslc_InvalidateRgnScreen(gslc_tsGui* pGui);
+1185:void gslc_InvalidateRgnAdd(gslc_tsGui* pGui, gslc_tsRect rAddRect);
+[10] toolResult: 186:  gslc_InvalidateRgnReset(pGui);
+296:  // Initialize the entire display as being invalidated
+297:  gslc_InvalidateRgnScreen(pGui);
+1456:void gslc_InvalidateRgnReset(gslc_tsGui* pGui)
+1461:  pGui->bInvalidateEn = false;
+1462:  pGui->rInvalidateRect = (gslc_tsRect) { 0, 0, 1, 1 };
+1465:void gslc_InvalidateRgnScreen(gslc_tsGui* pGui)
+1470:  pGui->bInvalidateEn = true;
+1471:  pGui->rInvalidateRect = (gslc_tsRect) { 0, 0, pGui->nDispW, pGui->nDispH };
+1474:void gslc_InvalidateRgnPage(gslc_tsGui* pGui, gslc_tsPage* pPage)
+1484:  gslc_InvalidateRgnAdd(pGui, pPage->rBounds);
+1485:  pGui->bInvalidateEn = true;
+1489:void gslc_InvalidateRgnAdd(gslc_tsGui* pGui, gslc_tsRect rAddRect)
+1491:  if (pGui->bInvalidateEn) {
+1492:    gslc_UnionRect(&(pGui->rInvalidateRect), rAddRect);
+1494:    pGui->bInvalidateEn = true;
+1495:    pGui->rInvalidateRect = rAddRect;
+2101:  // Invalidate the old page in the stack
+2103:    gslc_InvalidateRgnPage(pGui, pPageSaved);
+2106:  // Invalidate the new page in the stack and any above
+2111:      gslc_InvalidateRgnPage(pGui, pPage);
+2322:  // Set the clipping based on the current invalidated region
+2323:  if (pGui->bInvalidateEn) {
+2330:      pGui->bInvalidateEn, pGui->rInvalidateRect.x, pGui->rInvalidateRect.y,
+2331:      pGui->rInvalidateRect.x + pGui->rInvalidateRect.w - 1,
+2332:      pGui->rInvalidateRect.y + pGui->rInvalidateRect.h - 1, bPageRedraw);
+2335:    gslc_DrvDrawFrameRect(pGui, pGui->rInvalidateRect, GSLC_COL_RED);
+2341:    gslc_SetClipRect(pGui, &(pGui->rInvalidateRect));
+2403:  // Reset the invalidated regions
+2404:  gslc_InvalidateRgnReset(pGui);
+2430:  // for display drivers that don't invalidate the double-buffer (eg. SDL1.2)
+2656:  // If we have changed the global settings, invalidate the page for full redraw
+2657:  gslc_InvalidateRgnScreen(pGui);
+3364:  // Invalidate region including both rects from before & after
+3365:  gslc_InvalidateRgnAdd(pGui, pElem->rElem); // Old region
+3366:  gslc_InvalidateRgnAdd(pGui, rElem); // New r
+
+[... 37 more characters truncated]
+[11] assistant: [reasoning]
+Let me look at the GUI context struct and the key functions in detail. First, let me read the relevant portions of GUIslice.h and GUIslice.c.
+[tool:read] {"limit": 100, "offset": 800, "path": "/workspace/repo/src/GUIslice.h"}
+[tool:read] {"limit": 120, "offset": 1100, "path": "/workspace/repo/src/GUIslice.h"}
+[12] toolResult: gslc_tsElem         sElemTmpProg;     ///< Temporary element for Flash compatibility
+
+  gslc_teInitStat     eInitStatTouch;   ///< Status of touch initialization
+  // TODO: exclude these in DRV_TOUCH_NONE
+  int16_t             nTouchLastX;      ///< Last touch event X coord
+  int16_t             nTouchLastY;      ///< Last touch event Y coord
+  uint16_t            nTouchLastPress;  ///< Last touch event pressure (0=none))
+  bool                bTouchRemapEn;    ///< Enable touch remapping?
+  bool                bTouchRemapYX;    ///< Enable touch controller swapping of X & Y
+  bool                bTouchEn;         ///< Enable reaction to touch events
+
+
+  void*               pvDriver;         ///< Driver-specific members (gslc_tsDriver*)
+  bool                bRedrawNeeded;    ///< Does anything on page require redraw?
+  bool                bRedrawPartialEn; ///< Driver supports partial page redraw.
+                                        ///< If true, only changed elements are redrawn
+                                        ///< during next page redraw command.
+                                        ///< If false, entire page is redrawn when any
+                                        ///< element has been updated prior to next
+                                        ///< page redraw command.
+
+  // Pending events
+  bool                bEventPending;    ///< Is there an event pending?
+  gslc_tsEventTouch   sEventTouchPend;  ///< A touch event that has been deferred (if bEventPending=true)
+  gslc_tsEvent        sEventPend;       ///< An event that has been deferred (if bEventPending=true)
+
+  // Primary surface definitions
+  gslc_tsImgRef       sImgRefBkgnd;     ///< Image reference for background
+
+  uint8_t             nFrameRateCnt;    ///< Diagnostic frame rate count
+  uint8_t             nFrameRateStart;  ///< Diagnostic frame rate timestamp
+
+
+  // Pages
+  gslc_tsPage*        asPage;           ///< Array of all pages defined in system
+  uint8_t             nPag
+
+[... 38 more characters truncated]
+[13] toolResult: /// \param[in]  rRect:       Rectangular region to compare against
+///
+/// \return true if inside region, false otherwise
+///
+bool gslc_IsInRect(int16_t nSelX,int16_t nSelY,gslc_tsRect rRect);
+
+
+///
+/// Expand or contract a rectangle in width and/or height (equal
+/// amounts on both side), based on the centerpoint of the rectangle.
+///
+/// \param[in]  rRect:       Rectangular region before resizing
+/// \param[in]  nExpandW:    Number of pixels to expand the width (if positive)
+///                          of contract the width (if negative)
+/// \param[in]  nExpandH:    Number of pixels to expand the height (if positive)
+///                          of contract the height (if negative)
+///
+/// \return gslc_tsRect() with resized dimensions
+///
+gslc_tsRect gslc_ExpandRect(gslc_tsRect rRect,int16_t nExpandW,int16_t nExpandH);
+
+
+///
+/// Determine if a coordinate is inside of a width x height region.
+/// - This routine is useful in determining if a relative coordinate
+///   is within a given W x H dimension
+///
+/// \param[in]  nSelX:       X coordinate to test
+/// \param[in]  nSelY:       X coordinate to test
+/// \param[in]  nWidth:      Width to test against
+/// \param[in]  nHeight:     Height to test against
+///
+/// \return true if inside region, false otherwise
+///
+bool gslc_IsInWH(int16_t nSelX,int16_t nSelY,uint16_t nWidth,uint16_t nHeight);
+
+///
+/// Expand a rect to include another rect
+/// - This routine can be useful to modify an invalidation region to
+///   include another modified element
+///
+/// \param[in]  pRect:    Initial rect region
+/// \param[in]  rAddRect: Rectangle to add to the rect region
+///
+/// \return none
+///
+void gslc_UnionRect(gslc_tsRect* pRect, gslc_tsRect rAddRect);
+
+///
+/// Reset the invalidation region
+///
+/// \param[in]  pGui:        Pointer to GUI
+///
+/// \return none
+///
+void gslc_InvalidateRgnReset(gslc_tsGui* pGui);
+
+///
+/// Include an entire page (eg. from a page stack) in the invalidation region
+///
+/// \param[in]  pGui:        Pointe
+
+[... 38 more characters truncated]
+[14] assistant: [reasoning]
+Now let me look at GUIslice.c around the invalidation functions and the redraw path. Let me read lines 1400-1550, 2300-2450, and 5500-5650.
+[tool:read] {"limit": 120, "offset": 1440, "path": "/workspace/repo/src/GUIslice.c"}
+[tool:read] {"limit": 160, "offset": 2290, "path": "/workspace/repo/src/GUIslice.c"}
+[15] toolResult: nAddY1 = rAddRect.y + rAddRect.h - 1;
+
+  // Find the new maximal dimensions
+  nSrcX0 = (nAddX0 < nSrcX0) ? nAddX0 : nSrcX0;
+  nSrcY0 = (nAddY0 < nSrcY0) ? nAddY0 : nSrcY0;
+  nSrcX1 = (nAddX1 > nSrcX1) ? nAddX1 : nSrcX1;
+  nSrcY1 = (nAddY1 > nSrcY1) ? nAddY1 : nSrcY1;
+
+  // Update the original rect region
+  pRect->x = nSrcX0;
+  pRect->y = nSrcY0;
+  pRect->w = nSrcX1 - nSrcX0 + 1;
+  pRect->h = nSrcY1 - nSrcY0 + 1;
+
+}
+
+void gslc_InvalidateRgnReset(gslc_tsGui* pGui)
+{
+#if defined(DBG_REDRAW)
+  GSLC_DEBUG_PRINT("DBG: InvRgnReset\n", "");
+#endif
+  pGui->bInvalidateEn = false;
+  pGui->rInvalidateRect = (gslc_tsRect) { 0, 0, 1, 1 };
+}
+
+void gslc_InvalidateRgnScreen(gslc_tsGui* pGui)
+{
+#if defined(DBG_REDRAW)
+  GSLC_DEBUG_PRINT("DBG: InvRgnScreen\n", "");
+#endif
+  pGui->bInvalidateEn = true;
+  pGui->rInvalidateRect = (gslc_tsRect) { 0, 0, pGui->nDispW, pGui->nDispH };
+}
+
+void gslc_InvalidateRgnPage(gslc_tsGui* pGui, gslc_tsPage* pPage)
+{
+  if (pPage == NULL) {
+    return;
+  }
+#if defined(DBG_REDRAW)
+  GSLC_DEBUG_PRINT("DBG: InvRgnPage: Page=%d (%d,%d)-(%d,%d)\n",
+    pPage->nPageId,
+    pPage->rBounds.x, pPage->rBounds.y, pPage->rBounds.x + pPage->rBounds.w - 1, pPage->rBounds.y + pPage->rBounds.h - 1); //xxx
+#endif // DBG_REDRAW
+  gslc_InvalidateRgnAdd(pGui, pPage->rBounds);
+  pGui->bInvalidateEn = true;
+}
+
+
+void gslc_InvalidateRgnAdd(gslc_tsGui* pGui, gslc_tsRect rAddRect)
+{
+  if (pGui->bInvalidateEn) {
+    gslc_UnionRect(&(pGui->rInvalidateRect), rAddRect);
+  } else {
+    pGui->bInvalidateEn = true;
+    pGui->rInvalidateRect = rAddRect;
+  }
+}
+
+
+// Draw a circle using midpoint circle algorithm
+// - Algorithm reference: https://en.wikipedia.org/wiki/Midpoint_circle_algorithm
+void gslc_DrawFrameCircle(gslc_tsGui* pGui,int16_t nMidX,int16_t nMidY,
+  uint16_t nRadius,gslc_tsColor nCol)
+{
+
+  #if (DRV_HAS_DRAW_CIRCLE_FRAME)
+    // Call optimized driver implementation
+    gslc_DrvDrawFrameCircle(pGui,nMidX,nMidY,nRadius,nCol);
+  #else
+    // Emulate circle with point drawing
+
+ 
+
+[... 38 more characters truncated]
+[16] toolResult: break;
+        }
+
+      }
+    }
+
+  } // nStackPage
+
+  if (bRedrawFullPage) {
+    // Mark the entire screen as requiring redraw
+    gslc_PageRedrawSet(pGui,true);
+  }
+
+}
+
+// Redraw the active page
+// - If the page has been marked as needing redraw, then all
+//   elements are rendered
+// - If the entire page has not been marked as needing redraw then only
+//   the elements that have been marked as needing redraw
+//   are rendered.
+void gslc_PageRedrawGo(gslc_tsGui* pGui)
+{
+  // Update any page redraw status that may be required
+  // - Note that this routine handles cases where an element
+  //   marked as requiring update is semi-transparent which can
+  //   cause other elements to be redrawn as well.
+  gslc_PageRedrawCalc(pGui);
+
+  // Determine final state of full-screen redraw
+  bool  bPageRedraw = gslc_PageRedrawGet(pGui);
+
+  // Set the clipping based on the current invalidated region
+  if (pGui->bInvalidateEn) {
+    #if defined(DBG_REDRAW)
+    // Note that this will still outline the invalidation region
+    // even if we later discover that the changed element is on
+    // a page in the stack that has been disabled through
+    // abPageStackDoDraw[] = false.
+    GSLC_DEBUG_PRINT("DBG: PageRedrawGo() InvRgn: En=%d (%d,%u)-(%d,%d) PageRedraw=%d\n",
+      pGui->bInvalidateEn, pGui->rInvalidateRect.x, pGui->rInvalidateRect.y,
+      pGui->rInvalidateRect.x + pGui->rInvalidateRect.w - 1,
+      pGui->rInvalidateRect.y + pGui->rInvalidateRect.h - 1, bPageRedraw);
+
+    // Mark the invalidation region
+    gslc_DrvDrawFrameRect(pGui, pGui->rInvalidateRect, GSLC_COL_RED);
+
+    // Slow down rendering
+    delay(1000);
+    #endif // DBG_REDRAW
+
+    gslc_SetClipRect(pGui, &(pGui->rInvalidateRect));
+  }
+  else {
+    // No invalidation region defined, so default the
+    // clipping region to the entire display
+    gslc_SetClipRect(pGui, NULL);
+  }
+
+  // If a full page redraw is required, then start by
+  // redrawing the background.
+  // NOTE:
+  // - It would be cleaner if 
+
+[... 38 more characters truncated]
+[17] assistant: [reasoning]
+Now I see the current model: `bInvalidateEn` + `rInvalidateRect`. The `gslc_PageRedrawGo` sets the clip rect to the invalidation region, then draws background + elements, then resets invalidation and flips.
+
+Now I need to understand:
+1. The redraw path: `gslc_PageRedrawGo` draws the whole page with clipping set to the invalidated region. With multi-region, I need to loop over each active region, set clipping to that region, draw background + elements (only those needing redraw), for each region.
+
+2. The SDL1 driver's `gslc_DrvPageFlipNow` - currently updates the entire display. Need to update only individual active regions, one update per region.
+
+Let me look at the SDL driver.
+[tool:bash] {"command": "grep -n \"Flip\\|FlipNow\\|UpdateRects\\|UpdateWindowSurface\\|SDL_Flip\" /workspace/repo/src/GUIslice_drv_sdl.c | head -40", "timeout": 10}
+[tool:bash] {"command": "grep -n \"gslc_DrvPageFlipNow\\|DrvPageFlip\" /workspace/repo/src/*.h /workspace/repo/src/*.c /workspace/repo/src/*.cpp | head -20", "timeout": 10}
+[18] toolResult: 656:void gslc_DrvPageFlipNow(gslc_tsGui* pGui)
+661:  SDL_Flip(pScreen);
+666:    // Flip the offscreen buffer so we can display our drawing output
+[19] toolResult: /workspace/repo/src/GUIslice_drv_adagfx.h:471:void gslc_DrvPageFlipNow(gslc_tsGui* pGui);
+/workspace/repo/src/GUIslice_drv_m5stack.h:375:void gslc_DrvPageFlipNow(gslc_tsGui* pGui);
+/workspace/repo/src/GUIslice_drv_sdl.h:378:void gslc_DrvPageFlipNow(gslc_tsGui* pGui);
+/workspace/repo/src/GUIslice_drv_tft_espi.h:435:void gslc_DrvPageFlipNow(gslc_tsGui* pGui);
+/workspace/repo/src/GUIslice_drv_utft.h:385:void gslc_DrvPageFlipNow(gslc_tsGui* pGui);
+/workspace/repo/src/GUIslice.c:2432:  gslc_DrvPageFlipNow(pGui);
+/workspace/repo/src/GUIslice.c:2452:    gslc_DrvPageFlipNow(pGui);
+/workspace/repo/src/GUIslice_drv_sdl.c:656:void gslc_DrvPageFlipNow(gslc_tsGui* pGui)
+/workspace/repo/src/GUIslice_drv_adagfx.cpp:1517:void gslc_DrvPageFlipNow(gslc_tsGui* pGui)
+/workspace/repo/src/GUIslice_drv_m5stack.cpp:360:void gslc_DrvPageFlipNow(gslc_tsGui* pGui)
+/workspace/repo/src/GUIslice_drv_tft_espi.cpp:539:void gslc_DrvPageFlipNow(gslc_tsGui* pGui)
+/workspace/repo/src/GUIslice_drv_utft.cpp:415:void gslc_DrvPageFlipNow(gslc_tsGui* pGui)
+[20] assistant: [tool:read] {"limit": 80, "offset": 620, "path": "/workspace/repo/src/GUIslice_drv_sdl.c"}
+[tool:bash] {"command": "grep -n \"DRV_HAS_DRAW_POINT\\|DRV_HAS_DRAW_RECT\\|DRV_HAS_BLIT\\|SDL_Update\" /workspace/repo/src/GUIslice_drv_sdl.c | head; echo ---; sed -n '1,80p' /workspace/repo/src/GUIslice_drv_sdl.c", "timeout": 10}
+[21] toolResult: #if defined(DRV_DISP_SDL1)
+  gslc_DrvPasteSurface(pGui,nTxtX,nTxtY,pSurfTxt,pDriver->pSurfScreen);
+#endif
+#if defined(DRV_DISP_SDL2)
+  SDL_Rect rRect = (SDL_Rect){nTxtX,nTxtY,pSurfTxt->w,pSurfTxt->h};
+  SDL_Renderer* pRender = pDriver->pRender;
+  SDL_Texture* pTex = SDL_CreateTextureFromSurface(pRender,pSurfTxt);
+  if (pTex == NULL) {
+    GSLC_DEBUG2_PRINT("ERROR: DrvDrawTxt() error in SDL_CreateTextureFromSurface(): %s\n",SDL_GetError());
+    return false;
+  }
+  SDL_RenderCopy(pRender,pTex,NULL,&rRect);
+
+  // Destroy texture
+  // TODO: Consider if worth optimizing by retaining texture in case
+  //       we need to redraw it without changing content
+  SDL_DestroyTexture(pTex);
+  pTex = NULL;
+#endif
+
+  // Dispose of temporary surface
+  if (pSurfTxt != NULL) {
+    SDL_FreeSurface(pSurfTxt);
+    pSurfTxt = NULL;
+  }
+
+  return true;
+}
+
+
+// -----------------------------------------------------------------------
+// Screen Management Functions
+// -----------------------------------------------------------------------
+
+void gslc_DrvPageFlipNow(gslc_tsGui* pGui)
+{
+  gslc_tsDriver* pDriver = (gslc_tsDriver*)(pGui->pvDriver);
+#if defined(DRV_DISP_SDL1)
+  SDL_Surface*   pScreen = pDriver->pSurfScreen;
+  SDL_Flip(pScreen);
+#endif
+#if defined(DRV_DISP_SDL2)
+  SDL_Renderer* pRender = pDriver->pRender;
+  if (pRender) {
+    // Flip the offscreen buffer so we can display our drawing output
+    SDL_RenderPresent(pRender);
+    // Clear the drawing before any new drawing occurs
+    SDL_SetRenderDrawColor(pRender,0x00,0x00,0x00,0xFF);
+    SDL_RenderClear(pRender);
+  }
+#endif
+}
+
+
+// -----------------------------------------------------------------------
+// Graphics Primitives Functions
+// -----------------------------------------------------------------------
+
+
+bool gslc_DrvDrawPoint(gslc_tsGui* pGui,int16_t nX,int16_t nY,gslc_tsColor nCol)
+{
+#if defined(DRV_DISP_SDL1)
+  if (gslc_DrvScreenLock(pGui)) {
+    uint32_t nColRaw = gslc_DrvAdaptColorRaw(pGui,nCol);
+    gslc_DrvDrawSetPixelRaw(
+
+[... 37 more characters truncated]
+[22] toolResult: ---
+// =======================================================================
+// GUIslice library (driver layer for SDL 1.2 & 2.0)
+// - Calvin Hass
+// - https://www.impulseadventure.com/elec/guislice-gui.html
+// - https://github.com/ImpulseAdventure/GUIslice
+// =======================================================================
+//
+// The MIT License
+//
+// Copyright 2016-2020 Calvin Hass
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+// =======================================================================
+/// \file GUIslice_drv_sdl.c
+
+// Compiler guard for requested driver
+#include "GUIslice_config.h" // Sets DRV_DISP_*
+#if defined(DRV_DISP_SDL1) || defined(DRV_DISP_SDL2)
+
+// =======================================================================
+// Driver Layer for SDL
+// =======================================================================
+
+
+// GUIslice library
+#include "GUIslice_drv_sdl.h"
+
+#include <stdio.h>
+
+// -------------------------------
+
+[... 38 more characters truncated]
+[23] assistant: [reasoning]
+Now I understand the SDL1 flip. With SDL1.2, `SDL_Flip` flips the whole screen. The requirement says: "the screen presentation step of the SDL1 display driver must update only the individual active regions, exactly one update per region, instead of refreshing the entire display" — so I should use `SDL_UpdateRect` (or `SDL_UpdateRects`) per region instead of `SDL_Flip`. And "this holds even when a single active region covers the whole display" — meaning we never call `SDL_Flip` in the partial path; we always call `SDL_UpdateRect` per region. And "with no active region it refreshes the whole display as before" — so when no active regions, do `SDL_Flip` as before.
+
+Hmm, but wait — SDL_UpdateRect on the screen surface updates from the surface. With SDL1.2 double buffering (SDL_HWSURFACE with SDL_DOUBLEBUF), SDL_Flip swaps buffers. Using SDL_UpdateRect on a software surface works. Let me check how the screen surface is set up in the SDL1 driver.
+
+Let me also look at `gslc_DrvScreenLock`, and how the GUI context is accessed by the driver — the driver has access to `pGui->pvDriver`. The driver function `gslc_DrvPageFlipNow(pGui)` receives the GUI pointer, so it can access the invalidation region set via a public query function like `gslc_InvalidateRgnGet`.
+
+Let me look at the whole SDL1 driver file more carefully, especially init and screen surface creation.
+[tool:bash] {"command": "grep -n \"SDL_SetVideoMode\\|SDL_DOUBLEBUF\\|SDL_HWSURFACE\\|SDL_SWSURFACE\\|SDL_UpdateRect\\|SDL_Flip\\|SDL_CreateWindow\\|SDL_GetWindowSurface\" /workspace/repo/src/GUIslice_drv_sdl.c", "timeout": 10}
+[tool:read] {"limit": 60, "offset": 240, "path": "/workspace/repo/src/GUIslice.c"}
+[24] toolResult: 160:  // SDL_SWSURFACE is apparently more reliable
+161:  pDriver->pSurfScreen = SDL_SetVideoMode(nSystemX,nSystemY,nBpp,SDL_SWSURFACE | SDL_FULLSCREEN);
+163:    GSLC_DEBUG_PRINT("ERROR: DrvInit() error in SDL_SetVideoMode(): %s\n",SDL_GetError());
+171:  pDriver->pWind = SDL_CreateWindow("GUIslice",SDL_WINDOWPOS_UNDEFINED,SDL_WINDOWPOS_UNDEFINED,
+174:    GSLC_DEBUG_PRINT("ERROR: DrvInit() error in SDL_CreateWindow(): %s\n",SDL_GetError());
+419:  pSurfBkgnd = SDL_CreateRGBSurface(SDL_SWSURFACE,nScreenW,nScreenH,nBpp,0,0,0,0);
+661:  SDL_Flip(pScreen);
+1044:// with SDL_Quit) then the next time SDL_SetVideoMode
+1048:// in SDL, making the SDL_SetVideoMode call more robust.
+1055://   SDL_SetVideoMode(), program execution may hang in
+1064://   in the call to SDL_SetVideoMode().
+[25] toolResult: pGui->nFocusSavedPageInd    = GSLC_IND_NONE;
+  pGui->nFocusSavedElemInd    = GSLC_IND_NONE;
+
+  pGui->colFocusNone          = GSLC_COL_BLACK;
+  pGui->colFocus              = GSLC_COL_MAGENTA;
+  pGui->colFocusEdit          = GSLC_COL_RED;
+  #endif // GSLC_FEATURE_INPUT
+
+  pGui->sImgRefBkgnd = gslc_ResetImage();
+
+  // Save a link to the driver
+  pGui->pvDriver = pvDriver;
+
+  // Default to no support for partial redraw
+  // - This may be overridden by the driver-specific init
+  pGui->bRedrawPartialEn = false;
+
+
+  #ifdef DBG_FRAME_RATE
+  pGui->nFrameRateCnt = 0;
+  pGui->nFrameRateStart = time(NULL);
+  #endif
+
+  // Initialize the display and touch drivers
+  if (bOk) {
+    bOk &= gslc_DrvInit(pGui);
+    if (bOk) {
+      #if !defined(INIT_MSG_DISABLE)
+      GSLC_DEBUG_PRINT("- Init display handler [%s] OK\n", gslc_GetNameDisp(pGui));
+      #endif
+    } else {
+      GSLC_DEBUG_PRINT("- Init display handler [%s] FAIL\n", gslc_GetNameDisp(pGui));
+    }
+  }
+  #if defined(DRV_TOUCH_NONE)
+    pGui->eInitStatTouch = GSLC_INITSTAT_INACTIVE;
+    GSLC_DEBUG_PRINT("- No touch handler enabled\n", "");
+  #else
+    if (bOk) {
+      // Touch initialization is not made to be a fatal error
+      // Instead, a flag is set that can be used to alert the
+      // user on their display (in case the debug messaging was
+      // not enabled)
+      bool bTouchOk = gslc_InitTouch(pGui,GSLC_DEV_TOUCH);
+      if (bTouchOk) {
+        #if !defined(INIT_MSG_DISABLE)
+        GSLC_DEBUG_PRINT("- Init touch handler [%s] OK\n", gslc_GetNameTouch(pGui));
+        #endif
+        pGui->eInitStatTouch = GSLC_INITSTAT_ACTIVE;
+      } else {
+        GSLC_DEBUG_PRINT("- Init touch handler [%s] FAIL\n", gslc_GetNameTouch(pGui));
+        pGui->eInitStatTouch = GSLC_INITSTAT_FAIL;
+      }
+    }
+  #endif
+
+  // Initialize the entire display as being invalidated
+  gslc_InvalidateRgnScreen(pGui);
+
+  // If the display didn't initialize properly, then return
+
+[5760 more lines in file. Use offset=300 to continue.]
+[26] assistant: [reasoning]
+Now let me understand the redraw flow more. Let me look at `gslc_PageRedrawGo` fully and also `gslc_PageFlipGo`, `gslc_Update`, and how elements are drawn (gslc_ElemDrawByRef / `gslc_PageEvent` / `gslc_PageEvent`). I also need to check `gslc_SetClipRect` and how the elements check `bRedraw` flags.
+
+Let me first view the whole `gslc_PageRedrawGo` and surrounding.
+[tool:read] {"limit": 5760, "offset": 1, "path": "/workspace/repo/src/GUIslice.c"}
+[27] toolResult: // =======================================================================
+// GUIslice library
+// - Calvin Hass
+// - https://www.impulseadventure.com/elec/guislice-gui.html
+// - https://github.com/ImpulseAdventure/GUIslice
+//
+// - Version 0.17.0
+// =======================================================================
+//
+// The MIT License
+//
+// Copyright 2016-2021 Calvin Hass
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+// =======================================================================
+/// \file GUIslice.c
+
+
+// GUIslice library
+
+// Import configuration ( which will import a sub-config depending on device type)
+#include "GUIslice_config.h"
+
+#include "GUIslice.h"
+#include "GUIslice_drv.h"
+
+#include <stdio.h>
+
+#if defined(DBG_REDRAW)
+  #include <Arduino.h> // For delay()
+#endif // DBG_REDRAW
+
+#ifdef DBG_FRAME_RATE
+  #include <time.h> // for FrameRate reporting
+#endif
+
+#if (GSLC_USE_FLOAT)
+  #include <math.h>
+#endif
+
+#if (GSLC_USE_PROGMEM)
+  #if d
+
+[... 39 more characters truncated]
+[28] assistant: [reasoning]
+The file is large. I got the first 1731 lines. Let me continue reading the key parts — I need to see `gslc_SetClipRect`, `gslc_PageRedrawCalc`, `gslc_PageEvent`, and the element drawing function (`gslc_ElemDrawByRef`?). Let me search for the relevant sections.
+[tool:bash] {"command": "grep -n \"gslc_SetClipRect\\|gslc_PageRedrawCalc\\|gslc_PageEvent\\|gslc_ElemDrawByRef\\|gslc_PageFlipGo\\|gslc_ElemIsRedraw\\|bRedrawLot\\|GSLC_EVTSUB_DRAW\" /workspace/repo/src/GUIslice.c | head -40", "timeout": 10}
+[tool:bash] {"command": "grep -n \"gslc_SetClipRect\\|gslc_PageRedrawCalc\\|gslc_PageEvent\\|gslc_ElemDrawByRef\\|gslc_PageFlipGo\\|gslc_ElemIsRedraw\" /workspace/repo/src/GUIslice.h /workspace/repo/src/elem/*.c 2>/dev/null | head -40", "timeout": 10}
+[29] toolResult: 756:    gslc_PageEvent(pGui,sEvent);
+1974:bool gslc_PageEvent(void* pvGui,gslc_tsEvent sEvent)
+2238:void gslc_PageRedrawCalc(gslc_tsGui* pGui)
+2317:  gslc_PageRedrawCalc(pGui);
+2341:    gslc_SetClipRect(pGui, &(pGui->rInvalidateRect));
+2346:    gslc_SetClipRect(pGui, NULL);
+2366:  // TODO: Handle GSLC_EVTSUB_DRAW_NEEDED
+2367:  uint32_t nSubType = (bPageRedraw)?GSLC_EVTSUB_DRAW_FORCE:GSLC_EVTSUB_DRAW_NEEDED;
+2396:    gslc_PageEvent(pGui,sEvent);
+2407:  gslc_SetClipRect(pGui, NULL);
+2415:  gslc_PageFlipGo(pGui);
+2445:void gslc_PageFlipGo(gslc_tsGui* pGui)
+2892:      if (sEvent.nSubType == GSLC_EVTSUB_DRAW_FORCE) {
+2896:        return gslc_ElemDrawByRef(pGui,pElemRef,GSLC_REDRAW_FULL);
+2901:        return gslc_ElemDrawByRef(pGui,pElemRef,eRedraw);
+2984:  gslc_tsEvent sEvent = gslc_EventCreate(pGui,GSLC_EVT_DRAW,GSLC_EVTSUB_DRAW_FORCE,(void*)pElemRef,NULL);
+3087:bool gslc_ElemDrawByRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawType eRedraw)
+4365:        gslc_PageEvent(pGui,sEventTmp);
+4877:        gslc_PageEvent(pGui,sEvent);
+4887:        gslc_PageEvent(pGui,sEvent);
+4902:        gslc_PageEvent(pGui,sEvent);
+4921:        gslc_PageEvent(pGui,sEvent);
+4938:        gslc_PageEvent(pGui,sEvent);
+5029:        gslc_PageEvent(pGui, sEvent);
+5556:bool gslc_SetClipRect(gslc_tsGui* pGui,gslc_tsRect* pRect)
+[30] toolResult: /workspace/repo/src/GUIslice.h:1081:bool gslc_SetClipRect(gslc_tsGui* pGui,gslc_tsRect* pRect);
+/workspace/repo/src/GUIslice.h:3592:bool gslc_ElemDrawByRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawType eRedraw);
+/workspace/repo/src/GUIslice.h:3671:bool gslc_PageEvent(void* pvGui,gslc_tsEvent sEvent);
+/workspace/repo/src/GUIslice.h:3731:void gslc_PageFlipGo(gslc_tsGui* pGui);
+/workspace/repo/src/GUIslice.h:3753:void gslc_PageRedrawCalc(gslc_tsGui* pGui);
+/workspace/repo/src/elem/XKeyPad.c:1336:   gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL);
+/workspace/repo/src/elem/XKeyPad.c:1385:    gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL);
+/workspace/repo/src/elem/XKeyPad.c:1420:    gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL);
+/workspace/repo/src/elem/XKeyPad.c:1431:    gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL);
+/workspace/repo/src/elem/XKeyPad.c:1442:    gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL);
+/workspace/repo/src/elem/XKeyPad.c:1508:  gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL);
+/workspace/repo/src/elem/XSpinner.c:240:   gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL);
+/workspace/repo/src/elem/XSpinner.c:302:  gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL);
+[31] assistant: [tool:read] {"limit": 120, "offset": 1974, "path": "/workspace/repo/src/GUIslice.c"}
+[tool:read] {"limit": 120, "offset": 5540, "path": "/workspace/repo/src/GUIslice.c"}
+[32] toolResult: bool gslc_PageEvent(void* pvGui,gslc_tsEvent sEvent)
+{
+  if (pvGui == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "PageEvent";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return false;
+  }
+  //gslc_tsGui*       pGui        = (gslc_tsGui*)(pvGui);
+  //void*             pvData      = sEvent.pvData;
+  gslc_tsPage*        pPage       = (gslc_tsPage*)(sEvent.pvScope);
+  gslc_tsCollect*     pCollect    = NULL;
+
+  if (pPage == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "PageEvent";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+  }
+
+  // Handle any page-level events first
+  // ...
+
+  // A Page only contains one Element Collection, so propagate
+
+  // Handle the event types
+  switch(sEvent.eType) {
+    case GSLC_EVT_DRAW:
+    case GSLC_EVT_TICK:
+    case GSLC_EVT_TOUCH:
+      pCollect  = &pPage->sCollect;
+      // Update scope reference & propagate
+      sEvent.pvScope = (void*)(pCollect);
+      gslc_CollectEvent(pvGui,sEvent);
+      break;
+
+    default:
+      break;
+  } // sEvent.eType
+
+  return true;
+}
+
+
+void gslc_PageAdd(gslc_tsGui* pGui,int16_t nPageId,gslc_tsElem* psElem,uint16_t nMaxElem,
+        gslc_tsElemRef* psElemRef,uint16_t nMaxElemRef)
+{
+  if (pGui->nPageCnt+1 > (pGui->nPageMax)) {
+    GSLC_DEBUG2_PRINT("ERROR: PageAdd(%s) added too many pages\n","");
+    return;
+  }
+
+  gslc_tsPage*  pPage = &pGui->asPage[pGui->nPageCnt];
+
+  //pPage->pfuncXEvent      = NULL; // UNUSED
+
+  // Initialize pPage->sCollect
+  gslc_CollectReset(&pPage->sCollect,psElem,nMaxElem,psElemRef,nMaxElemRef);
+
+  // Assign the requested Page ID
+  pPage->nPageId = nPageId;
+
+  // Initialize the page elements bounds to empty
+  pPage->rBounds = (gslc_tsRect) { 0, 0, 0, 0 };
+
+  // Increment the page count
+  pGui->nPageCnt++;
+
+  // Assign the first page added to be the current layer
+  // in the page stack. This can be overridden later
+  // with SetPageCur()
+  if (gslc_GetPageCur(pGui) == GSLC_PAGE_NONE) {
+    gslc_SetPageCur(pGui,nPageId);
+  }
+  // -----------------------
+
+[... 38 more characters truncated]
+[33] toolResult: // - This also handles the case with elements in FLASH
+  gslc_tsElem* pElemLocal = NULL;
+  pElemLocal = gslc_GetElemFromRef(pGui,pElemRefAdd);
+
+  // Update the page's bounding rect
+  gslc_UnionRect(&(pPage->rBounds), pElemLocal->rElem);
+
+  return pElemRefAdd;
+}
+
+gslc_tsRect gslc_GetClipRect(gslc_tsGui* pGui)
+{
+  gslc_tsDriver* pDriver = (gslc_tsDriver*)(pGui->pvDriver);
+  return pDriver->rClipRect;
+}
+
+bool gslc_SetClipRect(gslc_tsGui* pGui,gslc_tsRect* pRect)
+{
+  // Update the drawing clip rectangle
+  if (pRect == NULL) {
+    // Set to full size of screen
+    return gslc_DrvSetClipRect(pGui,NULL);
+  } else {
+    // Set to user-specified region
+    return gslc_DrvSetClipRect(pGui,pRect);
+  }
+}
+
+// Determine if an image has changed
+// - This could be useful to detect whether an image button
+//   needs to be redrawn.
+bool gslc_ImgRefEqual(gslc_tsImgRef* pImgRef1,gslc_tsImgRef* pImgRef2)
+{
+  bool bSame = true;
+  if (pImgRef1->pImgBuf != pImgRef2->pImgBuf) { bSame = false; }
+  if (strcmp(pImgRef1->pFname,pImgRef2->pFname)!=0) { bSame = false; }
+  if (pImgRef1->eImgFlags != pImgRef2->eImgFlags) { bSame = false; }
+  if (pImgRef1->pvImgRaw != pImgRef2->pvImgRaw) { bSame = false; }
+  return bSame;
+}
+
+void gslc_ElemSetImage(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_tsImgRef sImgRef,
+  gslc_tsImgRef sImgRefSel)
+{
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return;
+
+  // Determine if a redraw will be needed
+  #if (1) // Disable check for now
+    // Always perform a redraw
+    bool bImagesEqual = false;
+  #else
+    // Detect to see if a redraw is needed
+    bool bImagesEqual = true;
+    bImagesEqual &= gslc_ImgRefEqual(&(pElem->sImgRefNorm),&sImgRef);
+    bImagesEqual &= gslc_ImgRefEqual(&(pElem->sImgRefGlow),&sImgRefSel);
+  #endif
+  
+  // Update the normal and glowing images
+  gslc_DrvSetElemImageNorm(pGui,pElem,sImgRef);
+  gslc_DrvSetElemImageGlow(pGui,pElem,sImgRefSel);
+
+  // Mark as needing redraw only if the image has changed
+
+
+[... 38 more characters truncated]
+[34] assistant: [reasoning]
+Now let me look at `gslc_CollectEvent` and `gslc_ElemDrawByRef` to understand how elements are drawn and how the DRAW event propagates. Specifically the collection event handler around line 2892.
+[tool:read] {"limit": 120, "offset": 2830, "path": "/workspace/repo/src/GUIslice.c"}
+[35] toolResult: {
+  gslc_tsElem     sElem;
+  gslc_tsElemRef* pElemRef = NULL;
+  sElem = gslc_ElemCreate(pGui,nElemId,nPage,GSLC_TYPE_BOX,rElem,NULL,0,GSLC_FONT_NONE);
+  sElem.nFeatures      &= ~GSLC_ELEM_FEA_FRAME_EN;
+  sElem.nFeatures      |= GSLC_ELEM_FEA_FILL_EN;
+  sElem.nFeatures      &= ~GSLC_ELEM_FEA_CLICK_EN;
+  sElem.nFeatures      |= GSLC_ELEM_FEA_NOSHRINK; // Can't shrink due to image
+  // Update the normal and glowing images
+  gslc_DrvSetElemImageNorm(pGui,&sElem,sImgRef);
+  gslc_DrvSetElemImageGlow(pGui,&sElem,sImgRef);
+
+  if (nPage != GSLC_PAGE_NONE) {
+    pElemRef = gslc_ElemAdd(pGui,nPage,&sElem,GSLC_ELEMREF_DEFAULT);
+    return pElemRef;
+#if (GSLC_FEATURE_COMPOUND)
+  } else {
+    // Save as temporary element
+    pGui->sElemTmp = sElem;
+    pGui->sElemRefTmp.pElem = &(pGui->sElemTmp);
+    pGui->sElemRefTmp.eElemFlags = GSLC_ELEMREF_DEFAULT | GSLC_ELEMREF_REDRAW_FULL;
+    return &(pGui->sElemRefTmp);
+#endif
+  }
+  return NULL;
+}
+
+
+// ------------------------------------------------------------------------
+// Element Event Handlers
+// ------------------------------------------------------------------------
+
+// Common event handler
+bool gslc_ElemEvent(void* pvGui,gslc_tsEvent sEvent)
+{
+  if (pvGui == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "ElemEvent";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return false;
+  }
+  gslc_tsGui*         pGui              = (gslc_tsGui*)(pvGui);
+  void*               pvData            = sEvent.pvData;
+  void*               pvScope           = sEvent.pvScope;
+  gslc_tsElemRef*     pElemRef          = NULL;
+  gslc_tsElemRef*     pElemRefTracked   = NULL;
+  gslc_tsElem*        pElem             = NULL;
+  gslc_tsElem*        pElemTracked      = NULL;
+  gslc_tsEventTouch*  pTouchRec         = NULL;
+  int                 nRelX,nRelY;
+  gslc_teTouch        eTouch;
+  GSLC_CB_TOUCH       pfuncXTouch       = NULL;
+  GSLC_CB_TICK        pfuncXTick        = NULL;
+
+  switch(sEvent.eType) {
+    case GSLC_EVT_DRAW:
+      // Fetch the 
+
+[... 38 more characters truncated]
+[36] assistant: [reasoning]
+Now let me see `gslc_CollectEvent` in GUIslice.c... wait, it's probably in a separate file. Let me check.
+[tool:bash] {"command": "grep -rn \"gslc_CollectEvent\" /workspace/repo/src/*.c /workspace/repo/src/*.h | head; ls /workspace/repo/src/elem", "timeout": 10}
+[tool:bash] {"command": "grep -rn \"bRedrawPartialEn\" /workspace/repo/src | head -30", "timeout": 10}
+[37] toolResult: /workspace/repo/src/GUIslice.c:2004:      gslc_CollectEvent(pvGui,sEvent);
+/workspace/repo/src/GUIslice.c:5300:bool gslc_CollectEvent(void* pvGui,gslc_tsEvent sEvent)
+/workspace/repo/src/GUIslice.h:3965:bool gslc_CollectEvent(void* pvGui,gslc_tsEvent sEvent);
+XCheckbox.c
+XCheckbox.h
+XGauge.c
+XGauge.h
+XGlowball.c
+XGlowball.h
+XGraph.c
+XGraph.h
+XKeyPad.c
+XKeyPad.h
+XKeyPad_Alpha-setup.h
+XKeyPad_Alpha.c
+XKeyPad_Alpha.h
+XKeyPad_Num-setup.h
+XKeyPad_Num.c
+XKeyPad_Num.h
+XListbox.c
+XListbox.h
+XProgress.c
+XProgress.h
+XRadial.c
+XRadial.h
+XRamp.c
+XRamp.h
+XRingGauge.c
+XRingGauge.h
+XSeekbar.c
+XSeekbar.h
+XSelNum.c
+XSelNum.h
+XSlider.c
+XSlider.h
+XSpinner.c
+XSpinner.h
+XTemplate.c
+XTemplate.h
+XTextbox.c
+XTextbox.h
+XToggleImgbtn.c
+XToggleImgbtn.h
+XTogglebtn.c
+XTogglebtn.h
+[38] toolResult: /workspace/repo/src/GUIslice.c:255:  pGui->bRedrawPartialEn = false;
+/workspace/repo/src/GUIslice.c:2276:        if (pGui->bRedrawPartialEn) {
+/workspace/repo/src/GUIslice.h:815:  bool                bRedrawPartialEn; ///< Driver supports partial page redraw.
+/workspace/repo/src/GUIslice_drv_adagfx.cpp:615:    pGui->bRedrawPartialEn = true;
+/workspace/repo/src/GUIslice_drv_m5stack.cpp:88:    pGui->bRedrawPartialEn = true;
+/workspace/repo/src/GUIslice_drv_sdl.c:100:    pGui->bRedrawPartialEn = true;
+/workspace/repo/src/GUIslice_drv_sdl.c:108:    pGui->bRedrawPartialEn = false;
+/workspace/repo/src/GUIslice_drv_tft_espi.cpp:211:    pGui->bRedrawPartialEn = true;
+/workspace/repo/src/GUIslice_drv_utft.cpp:134:    pGui->bRedrawPartialEn = true;
+[39] assistant: [tool:read] {"limit": 130, "offset": 5290, "path": "/workspace/repo/src/GUIslice.c"}
+[40] toolResult: return sElem;
+}
+
+// ------------------------------------------------------------------------
+// Collect Event Handlers
+// ------------------------------------------------------------------------
+
+
+// Common event handler
+bool gslc_CollectEvent(void* pvGui,gslc_tsEvent sEvent)
+{
+  if (pvGui == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "CollectEvent";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return false;
+  }
+  void*           pvScope   = sEvent.pvScope;
+  gslc_tsCollect* pCollect  = (gslc_tsCollect*)(pvScope);
+
+  unsigned        nInd;
+  gslc_tsElemRef* pElemRef = NULL;
+
+  if (pCollect == NULL) {
+    return false; //xxx
+  }
+
+  // Handle any collection-based events first
+  // ...
+  if (sEvent.eType == GSLC_EVT_TOUCH) {
+
+    #if defined(DRV_TOUCH_NONE)
+    return false;
+    #else
+    gslc_tsGui*     pGui      = (gslc_tsGui*)(pvGui);
+    void*           pvData    = sEvent.pvData;
+    // TOUCH is passed to CollectTouch which determines the element
+    // in the collection that should receive the event
+    gslc_tsEventTouch*  pEventTouch = (gslc_tsEventTouch*)(pvData);
+    gslc_teTouch        eTouch      = pEventTouch->eTouch;
+
+    if (pvData == NULL) {
+      return false;
+    }
+
+    if ((eTouch & GSLC_TOUCH_TYPE_MASK) == GSLC_TOUCH_COORD) {
+      gslc_CollectTouch(pGui,pCollect,pEventTouch);
+    } else if ((eTouch & GSLC_TOUCH_TYPE_MASK) == GSLC_TOUCH_DIRECT) {
+      gslc_CollectInput(pGui,pCollect,pEventTouch);
+    } else {
+      // FAIL
+    }
+    return true;
+    #endif  // !DRV_TOUCH_NONE
+
+  } else if ( (sEvent.eType == GSLC_EVT_DRAW) || (sEvent.eType == GSLC_EVT_TICK) ) {
+    // DRAW and TICK are propagated down to all elements in collection
+
+    for (nInd=0;nInd<pCollect->nElemRefCnt;nInd++) {
+      pElemRef = &(pCollect->asElemRef[nInd]);
+
+      // Copy event so we can modify it in the loop
+      gslc_tsEvent sEventNew = sEvent;
+      sEventNew.pvScope = (void*)(pElemRef);
+
+      // Propagate the event to the element
+      gslc_ElemEvent(pv
+
+[... 38 more characters truncated]
+[41] assistant: [reasoning]
+Now I understand the redraw flow:
+
+1. `gslc_Update()` → if `bRedrawNeeded` → `gslc_PageRedrawGo(pGui)`
+2. `gslc_PageRedrawGo`:
+   - `gslc_PageRedrawCalc(pGui)` — handles semi-transparent elements etc.
+   - `bPageRedraw = gslc_PageRedrawGet(pGui)` — full page redraw flag
+   - Sets clipping to invalidated region (or full display if not enabled)
+   - If `bPageRedraw`: draws background, sets `gslc_PageFlipSet(pGui,true)`
+   - Sends `GSLC_EVT_DRAW` events to all pages in stack with subtype FORCE (full) or NEEDED (partial) — elements with pending redraw draw themselves
+   - `gslc_PageRedrawSet(pGui,false)` — clears redraw flag
+   - `gslc_InvalidateRgnReset(pGui)` — reset invalidated regions
+   - `gslc_SetClipRect(pGui, NULL)` — restore clipping
+   - `pGui->bRedrawNeeded = false`
+   - `gslc_PageFlipGo(pGui)` — flips the screen
+
+So for multi-region: I need to restructure `gslc_PageRedrawGo` so that:
+- When invalidation is active (bInvalidateEn): loop over each active region, set clip rect to that region, then draw the background (if bPageRedraw) and issue draw events for that region... wait, but "each active region must be drawn independently, with the clipping rectangle set to that region before its background and element rendering".
+
+So for each region: set clip, draw background (if full redraw needed), then send draw events to all elements (they will be clipped to the region). Elements that don't intersect the region will be drawn but clipped out — that's fine since clipping handles it. Actually, drawing elements that are clipped out entirely is wasteful but correct. Hmm, but is it? With clipping set, `gslc_DrvSetClipRect` sets driver clip rect. Elements drawn outside the clip region are simply not drawn. So correctness is maintained.
+
+But wait — there's a subtlety: an element drawn with GSLC_REDRAW_FULL might call `gslc_InvalidateRgnAdd` or other functions? Let me check `gslc_ElemDrawByRef` around line 3087.
+
+Also important: drawing the same element in multiple regions — when an element's redraw flag is cleared after drawing... let me check. In `gslc_ElemDrawByRef`, does it clear the redraw flag? Let me look.
+[tool:read] {"limit": 110, "offset": 3087, "path": "/workspace/repo/src/GUIslice.c"}
+[tool:bash] {"command": "grep -n \"gslc_ElemSetRedraw\\|GSLC_REDRAW_NONE\" /workspace/repo/src/GUIslice.c | head -30", "timeout": 10}
+[42] toolResult: bool gslc_ElemDrawByRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawType eRedraw)
+{
+  if (eRedraw == GSLC_REDRAW_NONE) {
+    // No redraw to do
+    return true;
+  }
+
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return false;
+
+  bool bOk = true;
+
+  // --------------------------------------------------------------------------
+  // Handle visibility
+  // --------------------------------------------------------------------------
+  bool bVisible = gslc_ElemGetVisible(pGui, pElemRef);
+  if (!bVisible) {
+    // The element is hidden, so no drawing required.
+    // Clear the redraw-pending flag.
+    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE);
+    return true;
+  }
+
+  // --------------------------------------------------------------------------
+  // Init for default drawing
+  // --------------------------------------------------------------------------
+
+  int16_t   nElemX,nElemY;
+  uint16_t  nElemW,nElemH;
+
+  // --------------------------------------------------------------------------
+  // Calculate the style
+  // --------------------------------------------------------------------------
+
+  bool bFillEn   = pElem->nFeatures & GSLC_ELEM_FEA_FILL_EN;
+  bool bRoundEn  = pElem->nFeatures & GSLC_ELEM_FEA_ROUND_EN;
+  bool bFrameEn  = pElem->nFeatures & GSLC_ELEM_FEA_FRAME_EN;
+  bool bGlowEn   = pElem->nFeatures & GSLC_ELEM_FEA_GLOW_EN; // Does the element support glow state?
+  bool bGlowing  = bGlowEn && gslc_ElemGetGlow(pGui,pElemRef); // Element should be glowing (if enabled)
+  bool bFocusEn  = pElem->nFeatures & GSLC_ELEM_FEA_FOCUS_EN; // Does the element support focus state?
+  //bool bFocused  = bFocusEn && gslc_ElemGetFocus(pGui,pElemRef); // Element should be focused (if enabled)
+
+  // Determine the regions and colors based on element state
+  gslc_tsRectState sState;
+  gslc_ElemCalcRectState(pGui,pElemRef,&sState);
+
+  // Extract common fields
+  nElemX    = sState.rInner.x;
+  nElemY    = sState.rInner.y;
+  nElemW    =
+
+[... 38 more characters truncated]
+[43] toolResult: 2897:      } else if (eRedraw != GSLC_REDRAW_NONE) {
+3089:  if (eRedraw == GSLC_REDRAW_NONE) {
+3106:    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE);
+3152:    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE);
+3251:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE);
+3271:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3295:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3309:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3324:    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3339:    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3368:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3374:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3392:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3402:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3412:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3449:    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_INC);
+3470:    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3507:  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+3511:void gslc_ElemSetRedraw(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawType eRedraw)
+3529:  if (eRedraw == GSLC_REDRAW_NONE) {
+3530:    // If a GSLC_REDRAW_NONE is assigned, override any existing
+3561:      case GSLC_REDRAW_NONE:
+3585:    gslc_ElemSetRedraw(pGui,pElem->pElemRefParent,eRedraw);
+3596:    return GSLC_REDRAW_NONE;
+3601:      return GSLC_REDRAW_NONE;
+3610:  return GSLC_REDRAW_NONE;
+3626:      gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_INC);
+3660:      gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_FOCUS);
+3715:    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_INC);
+3758:    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+[44] assistant: [tool:read] {"limit": 130, "offset": 3197, "path": "/workspace/repo/src/GUIslice.c"}
+[tool:read] {"limit": 120, "offset": 3511, "path": "/workspace/repo/src/GUIslice.c"}
+[45] toolResult: // Image overlays
+  // --------------------------------------------------------------------------
+
+  // Draw any images associated with element
+  if (pElem->sImgRefNorm.eImgFlags != GSLC_IMGREF_NONE) {
+    if ((bGlowing) && (pElem->sImgRefGlow.eImgFlags != GSLC_IMGREF_NONE)) {
+      bOk = gslc_DrvDrawImage(pGui,nElemX,nElemY,pElem->sImgRefGlow);
+    } else {
+      // Note that when we are focused we are highlighting the frame
+      // so we just draw the normal image.
+      bOk = gslc_DrvDrawImage(pGui,nElemX,nElemY,pElem->sImgRefNorm);
+    }
+    if (!bOk) {
+      GSLC_DEBUG2_PRINT("ERROR: DrvDrawImage failed\n","");
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // Frame
+  // --------------------------------------------------------------------------
+
+  // Frame the region
+  #ifdef DBG_FRAME
+  // For debug purposes, draw a frame around every element
+  gslc_DrawFrameRect(pGui,sState.rFull,GSLC_COL_GRAY_DK1);
+  #else
+
+  if (bFrameEn) {
+    if (bRoundEn) {
+      gslc_DrawFrameRoundRect(pGui, sState.rFull, pGui->nRoundRadius, sState.colFrm);
+    } else {
+      gslc_DrawFrameRect(pGui, sState.rFull, sState.colFrm);
+    }
+  }
+  #endif
+
+  // --------------------------------------------------------------------------
+  // Text overlays
+  // --------------------------------------------------------------------------
+
+  // Draw text string if defined
+  if (pElem->pStrBuf) {
+    int8_t        nMarginX  = pElem->nTxtMarginX;
+    int8_t        nMarginY  = pElem->nTxtMarginY;
+
+    // Note that we use the "inner" region for text placement to
+    // avoid overlapping any frame
+    gslc_DrawTxtBase(pGui, pElem->pStrBuf, sState.rInner, pElem->pTxtFont, pElem->eTxtFlags,
+      pElem->eTxtAlign, sState.colTxtFore, sState.colTxtBack, nMarginX, nMarginY);
+  }
+
+  // --------------------------------------------------------------------------
+
+  // Mark the element as no longer requiring redraw
+  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE)
+
+[... 38 more characters truncated]
+[46] toolResult: void gslc_ElemSetRedraw(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawType eRedraw)
+{
+  if (pElemRef == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "ElemSetRedraw";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return;
+  }
+
+  // Update the redraw flag
+  gslc_teElemRefFlags eFlags = pElemRef->eElemFlags;
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+
+  // Current redraw state in element flags
+  gslc_teElemRefFlags eFlagsRedrawOld = (eFlags & GSLC_ELEMREF_REDRAW_MASK);
+
+  // Current element flags with redraw state cleared
+  gslc_teElemRefFlags eFlagsWoRedraw = (eFlags & ~GSLC_ELEMREF_REDRAW_MASK);
+
+  if (eRedraw == GSLC_REDRAW_NONE) {
+    // If a GSLC_REDRAW_NONE is assigned, override any existing
+    // redraw state. This is often used to clear a redraw state
+    // once a redraw has been completed.
+    eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_NONE;
+  } else {
+
+    // Indicate that at least one element requires redraw
+    pGui->bRedrawNeeded = true;
+
+    // For all cases where a new redraw has been requested,
+    // only update the redraw state if we are increasing
+    // the level of redraw.
+    switch (eRedraw) {
+      case GSLC_REDRAW_FULL:
+        eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_FULL;
+        break;
+      case GSLC_REDRAW_INC:
+        if (eFlagsRedrawOld == GSLC_ELEMREF_REDRAW_FULL) {
+          // Skip the update as a larger redraw was already requested
+        } else {
+          eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_INC;
+        }
+        break;
+      case GSLC_REDRAW_FOCUS:
+        if ((eFlagsRedrawOld == GSLC_ELEMREF_REDRAW_FULL) ||
+            (eFlagsRedrawOld == GSLC_ELEMREF_REDRAW_INC)) {
+          // Skip the update as a larger redraw was already requested
+        } else {
+          eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_FOCUS;
+        }
+        break;
+      case GSLC_REDRAW_NONE:
+        // Will not enter this case as it is trapped earlier
+        break;
+    }
+    // Mark 
+
+[... 38 more characters truncated]
+[47] assistant: [reasoning]
+This is a key challenge. `gslc_ElemDrawByRef` clears the element's redraw flag when it's drawn (line 3251: `gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE);`). So if I simply loop over regions and send DRAW events per region, the first region's pass would clear the redraw flags, and subsequent regions wouldn't redraw the element.
+
+The requirement says: "On a partial redraw every element that is pending redraw must still end up rendered in each active region it intersects, including an element that reaches into more than one of them."
+
+So I need to make the redraw per-region work. Options:
+
+1. Save the redraw state of all elements before the loop, restore before each region pass. That's complex — elements are in pages' collections.
+
+2. Draw each element into each region: For each region, iterate over all elements with pending redraw and draw them (with clipping set to the region), but don't clear the redraw flags until all regions are done. This means I can't use `gslc_ElemDrawByRef` directly since it clears flags.
+
+Hmm. Let me think about the cleanest approach that fits the library structure:
+
+In `gslc_PageRedrawGo`, the draw events are issued via `gslc_PageEvent` → `gslc_CollectEvent` → `gslc_ElemEvent` → `gslc_ElemDrawByRef`. The flags get cleared in `gslc_ElemDrawByRef`.
+
+Approach: for each active region:
+- set clip rect to region
+- if bPageRedraw: draw background
+- send draw events to all pages in stack
+
+The problem is flags cleared after first region. To avoid this, I could snapshot the redraw flags of all elements in all pages before starting the region loop, and re-apply before each subsequent region pass. But how do I iterate all elements? `gslc_PageRedrawCalc` iterates over pages and elements. Let me look at it.
+
+Actually, wait. Let me reconsider. What about a different loop structure: for each element pending redraw... no, the drawing is driven by events through the collect. Let me look at `gslc_PageRedrawCalc`:
+[tool:read] {"limit": 100, "offset": 2238, "path": "/workspace/repo/src/GUIslice.c"}
+[48] toolResult: void gslc_PageRedrawCalc(gslc_tsGui* pGui)
+{
+  uint16_t          nInd;
+  int               nStackPage;
+  gslc_tsElem*      pElem = NULL;
+  gslc_tsElemRef*   pElemRef = NULL;
+  gslc_tsCollect*   pCollect = NULL;
+
+  bool  bRedrawFullPage = false;  // Does entire page require redraw?
+  gslc_tsPage*  pPage = NULL;
+
+  // Work on each enabled page in the stack
+  for (nStackPage=0;nStackPage<GSLC_STACK__MAX;nStackPage++) {
+    // Select the page collection to process
+    pPage = pGui->apPageStack[nStackPage];
+    if (!pPage) {
+      // If this stack page is not enabled, skip to next stack page
+      continue;
+    }
+    if (!pGui->abPageStackDoDraw[nStackPage]) {
+      // If this stack page has redraw disabled, skip full-page redraw check
+      continue;
+    }
+    pCollect = &pPage->sCollect;
+
+    for (nInd=0;nInd<pCollect->nElemRefCnt;nInd++) {
+      pElemRef = &pCollect->asElemRef[nInd];
+      gslc_teElemRefFlags eFlags = pElemRef->eElemFlags;
+      pElem = gslc_GetElemFromRef(pGui,pElemRef);
+      //GSLC_DEBUG2_PRINT("PageRedrawCalc: Ind=%u ID=%u redraw=%u flags_old=%u fea=%u\n",nInd,pElem->nId,
+      //        (eFlags & GSLC_ELEMREF_REDRAW_MASK),eFlags,pElem->nFeatures);
+      if ((eFlags & GSLC_ELEMREF_REDRAW_MASK) != GSLC_ELEMREF_REDRAW_NONE) {
+
+        // We found at least one item requiring redraw
+
+        // If partial redraw is supported, then we
+        // look out for transparent elements which may
+        // still warrant full page redraw.
+        if (pGui->bRedrawPartialEn) {
+          // Is the element transparent?
+          // FIXME: Instead of forcing full page redraw, consider
+          // using clipping region for partial redraw
+          if (!(pElem->nFeatures & GSLC_ELEM_FEA_FILL_EN)) {
+            bRedrawFullPage = true;
+          }
+        } else {
+          bRedrawFullPage = true;
+        }
+
+        if (bRedrawFullPage) {
+          // Determined that full page needs redraw
+          // so no need to check any more elements
+          break;
+        }
+
+
+[... 38 more characters truncated]
+[49] assistant: [reasoning]
+Now, an important consideration about the multi-region redraw: how do we make each element pending redraw be rendered in *each* region it intersects? The redraw flags get cleared during the first region's pass.
+
+Approach A: Snapshot-and-restore redraw flags per region pass.
+- Before the region loop, iterate over all pages/stack pages' collections and record each element ref's redraw flag state (the `eElemFlags & GSLC_ELEMREF_REDRAW_MASK`).
+- For each region (except the first... or for each), set the clip rect, and before drawing, restore the pending redraw flags to the snapshot, then issue draw events. Since `gslc_ElemDrawByRef` sets flags to NONE when drawn, we need to re-set them before each region pass.
+
+But there's a subtlety with the event-based approach: `GSLC_EVT_DRAW` with subtype `GSLC_EVTSUB_DRAW_NEEDED` will cause `gslc_ElemDrawByRef` only for elements with pending redraw. But also `pfuncXDraw` callbacks (extended elements) — they get the draw event and are responsible for clearing the redraw flag... Let me check what extended element draw callbacks do — e.g. XCheckbox's draw function. They typically call `gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE)` at the end. So restoring flags before each region pass handles that too, as long as we snapshot before any drawing.
+
+But there's another problem: elements with `pfuncXDraw` — the drawing is done through the event. So the event flow is fine.
+
+However, wait — there's an issue with elements that are drawn with `GSLC_EVTSUB_DRAW_FORCE`: for full page redraw, all elements are drawn (forced). That works per-region too.
+
+Approach A details:
+- The snapshot would need a fixed-size buffer without dynamic allocation. Elements per page can be large. Hmm, we'd need an array of `GSLC_ELEMREF_REDRAW_MASK` states per element ref. The number of element refs across all stack pages is `pCollect->nElemRefCnt` — dynamic per page. We can't allocate. But we could store a bitmask... too complex.
+
+Approach B: Restructure the drawing loop so that the flag clearing is deferred. Instead of snapshot/restore, we could:
+1. For each region: set clip, draw background (if full redraw), and issue draw events, but pass a flag telling element drawing not to clear redraw flags... The clearing is inside `gslc_ElemDrawByRef` — a public API. Modifying it with a "don't clear" parameter would change its signature (public API). Could add an internal flag in pGui, e.g. `pGui->bRedrawMultiRgn` or a counter — when non-zero, `gslc_ElemSetRedraw` with GSLC_REDRAW_NONE doesn't clear? That's hacky and could affect user callbacks that call ElemSetRedraw directly.
+
+Hmm. Actually, wait. Let me reconsider: maybe simpler — after each region pass, re-issue the draw events? No, flags already cleared.
+
+Approach C: Instead of restoring flags, we can save the "redraw needed" state as a bitmask in a temporary fixed array. Number of element refs per page is `pCollect->nElemRefCnt` (uint16_t). We can't know the max across all pages at compile time. But we can iterate: for each stack page, for each element ref, we need to remember whether it had a pending redraw. We could do the per-region loop at a different level:
+
+For each region:
+  For each stack page:
+    For each element ref in page:
+      If element redraw pending OR full page redraw:
+        Draw it (gslc_ElemDrawByRef or event)
+
+And the flag clearing happens at the end... but `gslc_ElemDrawByRef` clears the flag itself at the end of the drawing.
+
+Alternative: use a temporary override. Let me look at what `gslc_ElemSetRedraw` does with `GSLC_REDRAW_NONE`: it sets `eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_NONE`. 
+
+Hmm, what if instead of fighting the flag clearing, I do this: draw region-by-region, and after each region pass except the last, re-set the redraw flags for elements that were pending. To know which elements were pending, I'd need the snapshot.
+
+Actually — wait. Let me reconsider. Maybe simpler: the loop over regions should re-issue "redraw pending" marks before each region. Since drawing an element clears its flag, and the pending-redraw information is lost, we need to capture it once.
+
+What about capturing it into a small per-page bitmap allocated... no dynamic allocation allowed.
+
+Alternative simpler approach: instead of snapshot-restore of flags, process the region loop *inside* the element loop? I.e., for each element pending redraw (or all elements on full redraw): for each active region: set clip to region, draw element. But the drawing is event-driven through `gslc_PageEvent`, which draws all elements in the collection. Restructuring would be a major deviation.
+
+Hmm, actually, wait. Let me re-read the requirement:
+
+"When invalidation is active, each active region must be drawn independently, with the clipping rectangle set to that region before its background and element rendering, so that nothing outside the active regions is repainted. On a partial redraw every element that is pending redraw must still end up rendered in each active region it intersects, including an element that reaches into more than one of them."
+
+So the requirement is on observable behavior: every element pending redraw is rendered in each active region it intersects. The simplest robust way: for each region, before issuing the DRAW events, restore the pending-redraw snapshot.
+
+Let me think about how to take a snapshot without dynamic allocation. Options:
+
+1. Use a fixed static buffer in GUIslice.c sized to some max? No — can't know element count.
+
+2. Don't snapshot; instead, defer clearing. Add an internal mode flag to the GUI: while in multi-region redraw, `gslc_ElemSetRedraw(..., GSLC_REDRAW_NONE)` doesn't clear the pending state. Then after all regions are drawn, do a final pass that clears all pending flags. But clearing all elements' redraw flags unconditionally would lose redraws that were requested *during* the draw callbacks (e.g. a timer-updating element may set redraw during drawing... actually elements' pfuncXDraw callbacks might set text updates during draw? Typically the redraw flag is set by update functions called between frames, but callbacks like tick handlers can mark redraw during gslc_Update's tick event pass, which happens before PageRedrawGo. During the drawing pass itself, would anything set a new redraw? XSpinner? Let me not assume; risk is low but clearing unconditionally could lose a redraw requested during the draw pass).
+
+Hmm, this is getting complicated. Let me look at how the flags-clearing works in `gslc_ElemDrawByRef` more carefully — actually, also `gslc_ElemEvent` for GSLC_EVTSUB_DRAW_FORCE calls `gslc_ElemDrawByRef(pGui,pElemRef,GSLC_REDRAW_FULL)` which clears. So on a full page redraw pass, all flags get cleared too.
+
+OK here's another thought — what about taking the snapshot per-page as a bitmask using a *dynamically-sized on-stack* array? VLA? Not standard C for embedded, and "no dynamic memory allocation" — VLA isn't malloc but it's still stack allocation of runtime size; C89 doesn't support VLA. This codebase targets C89/C++ (it compiles as .cpp too). VLA is a no-go.
+
+What about: since the redraw flags are per-element-ref, and we iterate over all stack pages anyway, we could store the snapshot in the element refs themselves! E.g., use one of the spare flag bits in `eElemFlags` as a "pending snapshot" bit. Let me look at the flags definition.
+
+Actually, hold on. Let me reconsider the problem. What if instead we clear the invalidation set only at the very end (as required: "The active region set must remain fully populated during that presentation step, and must only be emptied after the redraw and presentation pass completes"), and structure the redraw like:
+
+```
+for each region:
+    set clip to region
+    if bPageRedraw: draw background
+    issue draw events (GSLC_EVTSUB_DRAW_NEEDED or FORCE) to all stack pages
+    // flags get cleared during this pass
+```
+
+The issue remains: second region pass won't redraw elements.
+
+Alternative: save/restore using a bit in eElemFlags. Let me check the elem ref flags enum.
+[tool:bash] {"command": "grep -n \"GSLC_ELEMREF_\" /workspace/repo/src/GUIslice.h | head -40", "timeout": 10}
+[tool:bash] {"command": "grep -n \"GSLC_ELEMREF_REDRAW_MASK\\|GSLC_ELEMREF_REDRAW_NONE\\|eElemFlags\" /workspace/repo/src/GUIslice.h | head -30; grep -rn \"GSLC_ELEMREF_REDRAW\" /workspace/repo/src/*.h | head -20", "timeout": 10}
+[50] toolResult: 432:  GSLC_ELEMREF_NONE        = 0,       ///< No element defined
+434:  GSLC_ELEMREF_SRC_RAM     = (1<<0),  ///< Element is read/write
+437:  GSLC_ELEMREF_SRC_PROG    = (2<<0),  ///< Element is read-only / const
+440:  GSLC_ELEMREF_SRC_CONST   = (3<<0),  ///< Element is read-only / const
+444:  GSLC_ELEMREF_REDRAW_NONE = (0<<4),  ///< No redraw requested
+445:  GSLC_ELEMREF_REDRAW_FULL = (1<<4),  ///< Full redraw of element requested
+446:  GSLC_ELEMREF_REDRAW_INC  = (2<<4),  ///< Incremental redraw of element requested
+447:  GSLC_ELEMREF_REDRAW_FOCUS= (3<<4),  ///< Focus-only redraw of element requested
+449:  GSLC_ELEMREF_EDITING     = (1<<2),  ///< Element is in edit state (1=edit, 0=navigate)
+450:  GSLC_ELEMREF_FOCUSED     = (1<<3),  ///< Element state is focused
+451:  GSLC_ELEMREF_GLOWING     = (1<<6),  ///< Element state is glowing
+452:  GSLC_ELEMREF_VISIBLE     = (1<<7),  ///< Element is currently shown (ie. visible)
+455:  GSLC_ELEMREF_SRC            = (3<<0),   ///< Mask for Source flags [bits 1,0]
+456:  GSLC_ELEMREF_REDRAW_MASK    = (3<<4),   ///< Mask for Redraw flags [bits 5,4]
+461:#define GSLC_ELEMREF_DEFAULT  (GSLC_ELEMREF_SRC_RAM | GSLC_ELEMREF_VISIBLE)
+3041:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+3073:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+3104:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+3137:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+3167:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+3200:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+3232:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+3268:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_CONST | GSLC_ELEMREF_VISIBLE |
+
+[... 37 more characters truncated]
+[51] toolResult: 444:  GSLC_ELEMREF_REDRAW_NONE = (0<<4),  ///< No redraw requested
+456:  GSLC_ELEMREF_REDRAW_MASK    = (3<<4),   ///< Mask for Redraw flags [bits 5,4]
+627:  gslc_teElemRefFlags   eElemFlags; ///< Element reference flags
+/workspace/repo/src/GUIslice.h:444:  GSLC_ELEMREF_REDRAW_NONE = (0<<4),  ///< No redraw requested
+/workspace/repo/src/GUIslice.h:445:  GSLC_ELEMREF_REDRAW_FULL = (1<<4),  ///< Full redraw of element requested
+/workspace/repo/src/GUIslice.h:446:  GSLC_ELEMREF_REDRAW_INC  = (2<<4),  ///< Incremental redraw of element requested
+/workspace/repo/src/GUIslice.h:447:  GSLC_ELEMREF_REDRAW_FOCUS= (3<<4),  ///< Focus-only redraw of element requested
+/workspace/repo/src/GUIslice.h:456:  GSLC_ELEMREF_REDRAW_MASK    = (3<<4),   ///< Mask for Redraw flags [bits 5,4]
+/workspace/repo/src/GUIslice.h:3041:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+/workspace/repo/src/GUIslice.h:3073:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+/workspace/repo/src/GUIslice.h:3104:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+/workspace/repo/src/GUIslice.h:3137:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+/workspace/repo/src/GUIslice.h:3167:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+/workspace/repo/src/GUIslice.h:3200:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+/workspace/repo/src/GUIslice.h:3232:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_PROG | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+/workspace/repo/src/GUIslice.h:3268:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_CONST | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_REDRAW_FULL));
+/workspace/repo/src/GUIslice.h:3300:    (gslc_teElemRefFlags)(GSLC_ELEMREF_SRC_CONST | GSLC_ELEMREF_VISIBLE | GSLC_ELEMREF_R
+
+[... 37 more characters truncated]
+[52] assistant: [reasoning]
+Let me look at the `gslc_tsElemRef` struct and `gslc_teElemRefFlags` fully:
+
+```
+GSLC_ELEMREF_SRC_RAM     = (1<<0)
+GSLC_ELEMREF_SRC_PROG    = (2<<0)
+GSLC_ELEMREF_SRC_CONST   = (3<<0)
+GSLC_ELEMREF_EDITING     = (1<<2)
+GSLC_ELEMREF_FOCUSED     = (1<<3)
+GSLC_ELEMREF_REDRAW_*    = (x<<4)  bits 4,5
+GSLC_ELEMREF_GLOWING     = (1<<6)
+GSLC_ELEMREF_VISIBLE     = (1<<7)
+```
+
+What's the underlying type of `gslc_teElemRefFlags`? Let me check. If it's uint16_t, bits 8-15 are free. Let me check.
+[tool:read] {"limit": 60, "offset": 420, "path": "/workspace/repo/src/GUIslice.h"}
+[53] toolResult: /// - The encoding between the different modes is driver-specific.
+typedef enum {
+  GSLC_FONTREF_MODE_DEFAULT, ///< Default font mode
+  GSLC_FONTREF_MODE_1,       ///< Font mode 1
+  GSLC_FONTREF_MODE_2,       ///< Font mode 2
+  GSLC_FONTREF_MODE_3        ///< Font mode 3
+} gslc_teFontRefMode;
+
+
+/// Element reference flags: Describes characteristics of an element
+/// - Primarily used to support relocation of elements to Flash memory (PROGMEM)
+typedef enum {
+  GSLC_ELEMREF_NONE        = 0,       ///< No element defined
+  // Define element sources
+  GSLC_ELEMREF_SRC_RAM     = (1<<0),  ///< Element is read/write
+                                      ///< Stored in RAM (internal element array))
+                                      ///< Access directly
+  GSLC_ELEMREF_SRC_PROG    = (2<<0),  ///< Element is read-only / const
+                                      ///< Stored in FLASH (external to element array)
+                                      ///< Access via PROGMEM
+  GSLC_ELEMREF_SRC_CONST   = (3<<0),  ///< Element is read-only / const
+                                      ///< Stored in FLASH (external to element array)
+                                      ///< Access directly
+  // Element State
+  GSLC_ELEMREF_REDRAW_NONE = (0<<4),  ///< No redraw requested
+  GSLC_ELEMREF_REDRAW_FULL = (1<<4),  ///< Full redraw of element requested
+  GSLC_ELEMREF_REDRAW_INC  = (2<<4),  ///< Incremental redraw of element requested
+  GSLC_ELEMREF_REDRAW_FOCUS= (3<<4),  ///< Focus-only redraw of element requested
+
+  GSLC_ELEMREF_EDITING     = (1<<2),  ///< Element is in edit state (1=edit, 0=navigate)
+  GSLC_ELEMREF_FOCUSED     = (1<<3),  ///< Element state is focused
+  GSLC_ELEMREF_GLOWING     = (1<<6),  ///< Element state is glowing
+  GSLC_ELEMREF_VISIBLE     = (1<<7),  ///< Element is currently shown (ie. visible)
+
+  // Mask values for bitfield comparisons
+  GSLC_ELEMREF_SRC            = (3<<0),   ///< Mask for Source flags [bits 1,0]
+  GSLC_ELEMREF_REDRAW_MASK    = (3<<4),   ///< 
+
+[... 38 more characters truncated]
+[54] assistant: [reasoning]
+The `gslc_teElemRefFlags` enum values fit in 8 bits (max is `GSLC_ELEMREF_VISIBLE` = 1<<7). An enum's type in C is implementation-defined but at least int. Writing extra bits into `eElemFlags` is risky if it's used as enum elsewhere... but `eElemFlags` is a bitfield-ish storage. Adding a new flag bit (1<<8) would work on all platforms since enum storage is int (16-bit+). But modifying the public flags might be intrusive.
+
+Actually, let me step back and think about a much simpler approach that satisfies the requirement.
+
+Requirement: "On a partial redraw every element that is pending redraw must still end up rendered in each active region it intersects, including an element that reaches into more than one of them."
+
+Alternative approach: draw each region with all elements pending redraw, using the *existing* event mechanism, but prevent the flag clearing during the multi-region pass and instead clear at the end. The flag clearing happens in:
+- `gslc_ElemDrawByRef` (via `gslc_ElemSetRedraw(..., GSLC_REDRAW_NONE)`) — line 3106 (invisible), 3152 (focus-only), 3251 (end).
+- Extended element draw callbacks (`pfuncXDraw`) — they call `gslc_ElemSetRedraw(..., GSLC_REDRAW_NONE)` at their end.
+
+So both go through `gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_NONE)`. What if I add an internal GUI state: `nRedrawHoldCnt` (or similar internal counter)? When non-zero, `gslc_ElemSetRedraw` with `GSLC_REDRAW_NONE` *defers* the clearing by recording... hmm, but we still need to know which to clear at the end.
+
+Simplest correct approach: in `gslc_ElemSetRedraw`, when `eRedraw == GSLC_REDRAW_NONE` and the multi-region redraw hold is active, skip clearing (leave flag as-is). Then after all regions are drawn, do one final "clear pending redraw flags" pass over all elements in all stack pages' collections.
+
+The concern: clearing flags unconditionally at the end could clobber redraw requests made *during* the draw pass (e.g., an element's draw callback that triggers another element's redraw, or a redraw set by the focus handling). Let me check: during `gslc_ElemDrawByRef`, `gslc_ElemCalcRectState` — does it set redraw? Probably not. During draw callbacks like XGauge's draw — they just draw. Hmm, but there's the `GSLC_EVT_TICK` handling which happens before `gslc_PageRedrawGo` in `gslc_Update`. Tick callbacks (user's `pfuncXTick`) may call `gslc_ElemSetRedraw` or update functions — those happen before PageRedrawGo, fine.
+
+Actually wait, there IS something: in `gslc_ElemEvent` → `GSLC_EVT_DRAW` → `gslc_ElemDrawByRef` → draw callbacks. If a draw callback sets another element's redraw (e.g., XTextbox draws and marks itself?), it would be clobbered by the unconditional clear. Let me check XTextbox's draw:
+
+Actually, let's check what happens in the current single-region flow: element draws clear their own flag at the end. If a draw callback sets another element's redraw flag during the pass, that element would be drawn later in the same pass (if it comes after in iteration order) or remain pending for the next frame. With unconditional clear at end of multi-region pass, that pending redraw would be lost — a behavior change, and potentially causing flicker/missed updates.
+
+To be safe: instead of unconditional clearing, capture *which* elements were pending before the pass, and after all regions complete, clear only those elements' flags (i.e., re-clear the snapshot set). Combined with the "hold" mechanism: during the multi-region pass, `gslc_ElemSetRedraw(NONE)` doesn't clear. But then any *new* redraw requested during the pass stays pending — good. And at the end, we clear only the originally-pending ones.
+
+But we can't record "which" without storage... wait, we can! We don't need to record: we can re-run the same detection pass. Here's the trick: the "hold" makes flags survive. At the end, we iterate over all element refs and clear any that are still pending *if they were pending at snapshot time*... no, we can't distinguish new ones.
+
+Hmm, OK. What about the simpler two-phase approach:
+
+Phase 1 (per region loop): draw with hold active so flags survive across regions.
+Phase 2 (final): iterate all stack pages' element refs and clear pending redraw flags... but only for those that were originally pending.
+
+Alternatively — accept clearing all pending flags at end? What does the current code do? After the draw pass, `gslc_PageRedrawSet(pGui,false)` clears the full-page redraw flag and `pGui->bRedrawNeeded = false`. Any element that got marked for redraw during the draw pass (by a callback) would keep its flag pending in the current code (its `bRedrawNeeded=true` stays until next Update → PageRedrawGo). Actually `bRedrawNeeded = false` is reset, but element flags remain pending; next `gslc_Update` won't redraw since `bRedrawNeeded` false... hmm interesting. Actually `gslc_ElemSetRedraw` sets `pGui->bRedrawNeeded = true`, so if a callback sets redraw during the pass, `bRedrawNeeded` becomes true again, and at the end of `gslc_PageRedrawGo` it's set to false — wait, `pGui->bRedrawNeeded = false` happens after the draw pass, so a redraw requested during the pass would be lost until something else triggers `bRedrawNeeded`. Hmm, that's the existing behavior anyway.
+
+OK let me now think about what's actually the cleanest minimal-risk implementation:
+
+**Snapshot approach with per-element storage inside the redraw pass:**
+
+Actually — wait. Let me reconsider. What about restructuring so the clearing happens naturally: for each region, we need each pending element drawn. What if we do the snapshot *inline* using the existing `pElemRef->eElemFlags` — i.e., before each region pass (except the first), re-mark the elements that were pending. To re-mark, we need the snapshot.
+
+**Using a single spare flag bit as "was pending" marker:**
+
+1. Pass 0: iterate all stack-page element refs; if redraw pending, set marker bit (e.g. `GSLC_ELEMREF_REDRAW_SAVE` = (1<<8)) in eElemFlags.
+2. For each region: set clip; if bPageRedraw draw background; issue DRAW events (NEEDED/FORCE).
+   - During drawing, `gslc_ElemSetRedraw(NONE)` clears the pending redraw bits — fine, marker bit untouched.
+   - After the region pass (or before the next), for each element ref: if marker set, restore pending redraw bits (re-copy from... wait, we need the actual redraw *type* (FULL/INC/FOCUS), not just that it was pending).
+
+So marker bit alone isn't enough; we need the 2-bit redraw type saved. Use two spare bits (1<<8, 1<<9) to store a copy of the redraw type? That's exactly a copy. Then before each region pass, restore redraw bits from save bits. After the final region pass, clear save bits and clear redraw bits (those that had save bits).
+
+But wait — using enum bit values beyond bit 7 in `gslc_teElemRefFlags`: `eElemFlags` is declared as `gslc_teElemRefFlags` type. Let me check how eElemFlags is used — it's assigned enum expressions. In C, enum constants are ints; the variable `gslc_teElemRefFlags eElemFlags` is an enum type whose size is implementation-defined (typically int = 16/32 bits). Setting bit 8/9 is fine as long as we cast properly. But this modifies the public header's enum... The task says "Add three net-new public query functions" — it doesn't prohibit internal changes. But adding flags to a public enum used for element refs... elements in FLASH are const; writing to their eElemFlags is done through... hmm wait, `pElemRef->eElemFlags` — the ElemRef array is in RAM (writable) even for PROG elements (the ElemRef is in RAM, pointing to FLASH elem). Let me verify: `gslc_CollectElemAdd` with SRC_PROG: "Save the element pointer into the element reference array" — asElemRef is in RAM. Yes, eElemFlags is in the RAM-resident ElemRef struct.
+
+Hmm wait, but is it? Let me check `gslc_ElemSetRedraw`: it writes `pElemRef->eElemFlags = eFlags;` — yes, ElemRef is writable (in RAM).
+
+OK so the two spare bits approach could work. But honestly, this seems overly clever. Let me think about yet another approach:
+
+**Approach: iterate regions inside the element-draw event handling.**
+
+What if instead of looping regions at the `gslc_PageRedrawGo` level, we loop at the element level? I.e. `gslc_ElemDrawByRef` draws the element once per intersecting region... no wait, the drawing is clipped anyway; drawing an element with clip set to region A only paints region A. To paint the element in both regions, you'd draw twice with different clips. But background drawing also needs to happen per region.
+
+Hmm, but the requirement says "each active region must be drawn independently, with the clipping rectangle set to that region before its background and element rendering". So the loop structure is: per region: set clip → draw background → draw elements. This is the natural structure.
+
+**Approach: hold-clearing via GUI state flag (simplest).**
+
+Add to `gslc_tsGui` an internal counter `nRedrawHoldRgn` or a bool `bRedrawMultiRgn` (internal, not necessarily public API). In `gslc_ElemSetRedraw`:
+
+```c
+if (eRedraw == GSLC_REDRAW_NONE) {
+  if (pGui->bRedrawRgnHold) {
+    // During multi-region redraw pass, defer clearing of pending redraw
+    return; // but careful: still need flag update logic? 
+  }
+  ...
+}
+```
+
+Wait, but `gslc_ElemSetRedraw` also propagates to parent (compound). With hold, we simply skip the clear.
+
+Then, after the region loop, we need to clear the pending redraw flags. For the "clear" pass, we iterate over all stack pages and all element refs and clear any pending redraw flag... but only those that were pending at the start (to preserve newly-requested ones).
+
+Hmm, hold on. Actually, let me reconsider: is it really that bad to clear ALL pending redraw flags at the end of the multi-region pass? Which flags would be pending at that point?
+
+- The originally-pending ones (which we want to clear — they've been drawn).
+- New redraws requested during the drawing pass (rare).
+
+In the current single-region code, the originally-pending ones get cleared during the pass anyway (ElemDrawByRef clears each as drawn), and new ones during the pass survive. So to match existing behavior exactly, we'd clear only the originally-pending ones.
+
+To track "originally pending" without dynamic memory and without extra flag bits: we could do the "save bits" approach with 2 bits... OR we could leverage: during the hold pass, flags ARE the original pending ones (they're never cleared). At the end, we need to clear them but not the new ones. New ones can't be distinguished. 
+
+BUT actually — can new redraws even be requested during the draw pass? Let's audit: draw callbacks (`pfuncXDraw`) in elem/X*.c — do any call `gslc_ElemSetRedraw` or update functions? Let me check. Also `gslc_ElemDrawByRef` itself. And focus draw etc.
+
+Let me grep the elem directory for SetRedraw within draw functions.
+
+Actually, you know what — let me look at this from a completely different angle. Let me check the actual upstream GUIslice repo: this "bounded multi-region dirty-rectangle" feature... GUIslice 0.17+ doesn't have this. This appears to be a synthetic task (SWE-style) built on GUIslice. So I should design it myself following the requirements precisely.
+
+Requirements recap for the redraw path:
+
+1. `GSLC_INVALIDATE_RGN_MAX` config: default 8, configurable 1..32 via config header or compiler define.
+2. Three new public functions: `gslc_InvalidateRgnCount`, `gslc_InvalidateRgnGet`, `gslc_InvalidateRgnIsDirty`.
+3. Region set: at most GSLC_INVALIDATE_RGN_MAX pairwise non-overlapping regions, no dynamic allocation.
+4. Add function: clamp to display bounds, drop empty/offscreen. Coalesce transitively on positive-area overlap. Non-overlapping invalidations stay separate.
+5. Overflow: merge pair minimizing wasted area (union area minus sum of individual areas); tie-break canonically. Re-run transitive coalescing after each forced merge.
+6. Screen invalidation: exactly one region covering full display. Reset: empty set + disable invalidation.
+7. Redraw: per active region: clip set to region, background + elements rendered per region. Elements pending redraw rendered in each intersecting region.
+8. SDL1 driver flip: update only individual active regions, one update per region (SDL_UpdateRect per region); even if single region covers whole display (no SDL_Flip then); with no active regions, refresh whole display as before (SDL_Flip).
+9. Region set stays populated during presentation; emptied only after redraw+presentation completes; then clipping restored to full display.
+
+Now for the redraw mechanics — "every element that is pending redraw must still end up rendered in each active region it intersects". 
+
+Let me look at how the drawing actually flows again, and think about the save-bits approach more concretely. Actually, here's yet another thought:
+
+**Do the region loop around the whole event dispatch, and re-issue the redraw marks by snapshotting the redraw state into the *elements' own* spare flag bits.**
+
+Concretely in `gslc_PageRedrawGo`:
+
+```c
+uint8_t nRgnCnt = gslc_InvalidateRgnCount(pGui);
+if (nRgnCnt > 0) {
+  // snapshot pending redraw state into save bits
+  ... for each stack page, for each elem ref: if pending, set GSLC_ELEMREF_REDRAW_SAVE bits = redraw bits
+}
+for each region i:
+  set clip to region
+  if bPageRedraw: draw bkgnd; PageFlipSet(true)
+  // before dispatch (for i>0): restore redraw bits from save bits
+  dispatch DRAW events
+after loop:
+  // final clear: for each elem ref with save bits set: clear redraw bits and save bits
+  set clip NULL
+  InvalidateRgnReset
+  ...
+  PageFlipGo
+```
+
+Hmm wait, but there's an issue: the save-bit restore must happen between regions, and the "hold" isn't needed if we restore flags before each region pass — because flags get cleared during the pass, we restore them at the start of each region pass (except the first, where they're still original).
+
+But WAIT — there's a subtlety with the FORCE subtype (full page redraw): all elements are drawn regardless of pending flags, and `gslc_ElemDrawByRef(..., GSLC_REDRAW_FULL)` is called, clearing flags. That's fine with restore-before-each-pass.
+
+But another subtlety: `gslc_ElemEvent` GSLC_EVT_DRAW with subtype NEEDED: `eRedraw = gslc_ElemGetRedraw(pGui,pElemRef)` — if pending, draw with that type. OK.
+
+Now — the extended draw callbacks (`pfuncXDraw`): e.g. XCheckbox draw. Let me check if they handle redraw types... They're called with eRedraw and expected to clear the flag. Fine.
+
+So the save-bits approach works. But it requires 2 spare bits in eElemFlags (to store the redraw type: 2 bits). We could use (1<<8) and (1<<9) as a second copy of the redraw state: `GSLC_ELEMREF_REDRAW_SAVE_FULL = (1<<8)`, `GSLC_ELEMREF_REDRAW_SAVE_INC = (2<<8)`, `GSLC_ELEMREF_REDRAW_SAVE_FOCUS = (3<<8)`, mask `GSLC_ELEMREF_REDRAW_SAVE_MASK = (3<<8)`.
+
+Hmm, wait — is `gslc_teElemRefFlags` guaranteed to hold bit 9? The enum type in C is int-compatible (at least 16 bits on AVR). On AVR, int is 16 bits, so bits 8-9 fit. On 32-bit platforms, 32 bits. C++ (the .cpp drivers) — enum type there would also be at least int. Writing `pElemRef->eElemFlags = (gslc_teElemRefFlags)(eFlags | GSLC_ELEMREF_REDRAW_SAVE_FULL)` — fine.
+
+Hmm, but actually — hold on. Since these flags are written by the core library only during the redraw pass, and read nowhere else, maybe I don't even need to touch the public enum. I could define internal macros in GUIslice.c:
+
+```c
+#define GSLC_ELEMREF_REDRAW_SAVE_MASK ((gslc_teElemRefFlags)(3<<8))
+```
+
+But `eElemFlags` is used elsewhere: `gslc_SetElemRefFlag` etc. Let me check those don't clobber bits 8-9. `gslc_SetElemRefFlag(pGui,pElemRef,eFlag,bSet)`:
+
+Let me look at it. Also `gslc_ElemGetVisible` uses `& GSLC_ELEMREF_VISIBLE` — mask-based, fine.
+
+Also careful: `gslc_ElemSetRedraw` does `eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_NONE` — preserves other bits including save bits. Good.
+
+But hmm, wait. There's a problem with PROG elements: are `eElemFlags` updates persisted? `gslc_ElemSetRedraw` writes `pElemRef->eElemFlags = eFlags;` — ElemRef structs are in RAM (asElemRef array). For SRC_PROG elements, the ElemRef is still in the RAM asElemRef array (only the pointed-to gslc_tsElem is in flash). Let me double check `gslc_CollectElemAdd`... Yes: "If the element is stored in FLASH: Save the element pointer (pElem) into the element reference array (asElemRef)." So asElemRef entries are RAM-resident gslc_tsElemRef structs. eElemFlags is part of gslc_tsElemRef. Good.
+
+But wait, is there a case where pElemRef points to a flash-resident ElemRef? `pGui->sElemRefTmp` is in RAM. XKeyPad uses `sElemRef` local... `(gslc_tsElemRef*)&sElemRef`? Let me not worry — those are RAM too.
+
+Hmm, hold on. Let me reconsider whether we even need the save-flags mechanism. What if the multi-region drawing is done differently: **for each region, we dispatch the draw events, and we simply don't let the flags be cleared until the last region.** I.e., hold-clear during all but the last region pass. On the last pass, clearing happens naturally (existing behavior). Then no snapshot needed at all!
+
+But the problem: on the last pass, clearing happens as each element is drawn — same as existing single-region behavior. New redraws requested during the last pass survive, matching existing behavior. Redraws requested during earlier passes get cleared on the last pass (if the element is drawn again — with FORCE subtype all elements drawn; with NEEDED subtype, only pending ones — a redraw requested during an earlier region pass would set the element pending, so on the last pass it would be drawn (pending) and then cleared). 
+
+Wait, but during a NEEDED (partial redraw) pass, an element whose redraw was requested *during* the pass: `gslc_ElemSetRedraw` sets `pGui->bRedrawNeeded = true` — but that gets cleared at the end (`pGui->bRedrawNeeded = false` after the loop). Same as existing behavior (existing: requested during pass → flag set on element, cleared at end of this same pass if the element comes later in iteration, else pending with bRedrawNeeded=false until next trigger... hmm actually no: bRedrawNeeded=false at end of PageRedrawGo means next Update() won't call PageRedrawGo unless something re-triggers. That's existing behavior quirk, not mine to fix).
+
+So the "hold clearing until the last region pass" approach preserves existing semantics exactly for the last pass. 
+
+How to implement the hold? In `gslc_ElemSetRedraw`:
+
+```c
+if (eRedraw == GSLC_REDRAW_NONE) {
+#if ... 
+  if (pGui->bRedrawRgnHold) {  // internal flag during multi-region pass
+    return;  // defer clearing
+  }
+  ...
+}
+```
+
+Wait, careful: `gslc_ElemSetRedraw` with NONE also happens elsewhere — e.g., `gslc_ElemDrawByRef` for invisible elements (line 3106), and focus redraw (3152). And in `gslc_ElemSetRedraw`, the NONE branch also propagates to parent (compound) at the end. If we `return` early, the parent propagation is skipped — for NONE clears that's OK-ish (parent redraw state unchanged; the parent gets drawn per its own flags...). Hmm, compound elements: sub-elements have pElemRefParent pointing to parent. When we defer clearing a sub-element, the parent propagation of NONE-clear is skipped — parent's flag remains whatever it was. Actually in the hold scenario, we defer ALL NONE-clears, so no clears happen at all during the pass — parents keep their pending state, get drawn (clipped) per region, and on the final pass everything clears naturally. 
+
+Also `gslc_ElemSetRedraw(NONE)` is called from `gslc_ElemDrawByRef` for `eRedraw == GSLC_REDRAW_NONE` at the top (no-op anyway) and from event handlers elsewhere? Let me grep for other GSLC_REDRAW_NONE setters: line 3106 (invisible), 3152 (focus done), 3251 (end of draw). Plus user code might call `gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE)`? It's public... but during the draw pass, user draw callbacks calling it to clear their own flag — deferred to the last pass, which is correct.
+
+Hmm wait, there's one more consideration: on the final region pass, the elements drawn are those pending (NEEDED) — all the originally-pending ones are still pending (holds kept them). Good. FORCE subtype: all drawn. Good.
+
+But hmm — "hold" state: what if there's only 1 active region? Then no hold needed (single pass = final pass). Actually with hold=only-during-passes-before-last, a single region means zero hold passes. So hold flag never set. Equivalent to existing behavior. 
+
+But WAIT — there's a subtle issue with holding + `gslc_ElemDrawByRef`'s invisible-element path (line 3106): if an element is invisible, it clears its redraw flag and returns. With hold on an earlier pass, the flag stays pending → on the last pass, it clears again. Fine.
+
+Another subtlety: the hold flag needs to be per-GUI state, set/cleared around the region loop in `gslc_PageRedrawGo`. But `gslc_ElemSetRedraw` receives pGui — yes, can check `pGui->...`. I'll add an internal member to gslc_tsGui. Since gslc_tsGui is a public struct in GUIslice.h, adding a member is fine (users allocate gslc_tsGui instances — adding a member changes struct size — ABI break for precompiled user code, but this library is source-distributed; also we're already changing the struct for the region array anyway).
+
+Now the region storage: `gslc_tsGui` needs `gslc_tsRect asInvalidateRgn[GSLC_INVALIDATE_RGN_MAX]` + `uint8_t nInvalidateRgnCnt`. We're replacing `rInvalidateRect` with the array. Keep `bInvalidateEn` as the "invalidation active" flag (set when regions active). Hmm, but semantics: "reset function empties the set and disables invalidation". So `bInvalidateEn=false` + count=0. `gslc_InvalidateRgnCount` returns "count of active tracked regions, or 0 if invalidation is disabled". So count = (bInvalidateEn ? nInvalidateRgnCnt : 0)? Or just nInvalidateRgnCnt with bInvalidateEn=false whenever count==0? Let me design: maintain invariant `bInvalidateEn == (nInvalidateRgnCnt > 0)`. Then `gslc_InvalidateRgnCount` returns `bInvalidateEn ? nCnt : 0`. Actually simpler: return nCnt if bInvalidateEn else 0. Both equivalent under the invariant.
+
+Hmm wait, but there's the existing field `rInvalidateRect` — used in `gslc_PageRedrawGo` for DBG_REDRAW and clip. I'll remove it and update usages. Should I keep backwards compat? The struct is internal-ish; users don't touch rInvalidateRect directly. I'll replace both fields with the new ones but keep `bInvalidateEn` name for the enable flag.
+
+Now `GSLC_INVALIDATE_RGN_MAX` config handling: where do config defaults live? `GUIslice_config.h` in src/. Let me examine it.
+
+Then the core algorithm — the region set management in GUIslice.c:
+
+```c
+// Canonical comparison: ascending by y, then x, then h, then w
+static int8_t gslc_InvalidateRgnCmp(gslc_tsRect a, gslc_tsRect b);  // returns -1/0/1
+
+static bool gslc_InvalidateRgnOverlap(a, b);  // positive-area intersection
+
+static gslc_tsRect gslc_InvalidateRgnUnion(a, b);  // bounding box union
+
+// Transitive coalescing:
+static void gslc_InvalidateRgnCoalesce(gslc_tsGui* pGui);
+```
+
+Data: `pGui->asInvalidateRgn[]`, `pGui->nInvalidateRgnCnt`.
+
+**gslc_InvalidateRgnAdd(pGui, rAddRect):**
+1. Clamp rAddRect to display bounds [0,0,nDispW,nDispH]. If empty or fully offscreen → drop (return without enabling).
+   - Careful: display dims are uint16_t nDispW/nDispH? Let me check: `pGui->nDispW` type — uint16_t I think. The rect uses int16_t x,y and uint16_t w,h. "As elsewhere in the library, the right and bottom edges of a rectangle are assumed to fit in the signed 16-bit coordinate range." So we can compute edges as int16_t safely.
+2. If invalidation disabled (count==0/en==false): set region[0]=clamped rect, count=1, en=true. Done.
+3. Else: add the new rect to the set (append), then transitive-coalesce: repeatedly find any pair with positive-area overlap and merge into union, until pairwise disjoint. Then if count > MAX: forced merges: find pair minimizing wasted area (with tie-break), merge, re-coalesce transitively, repeat until count <= MAX.
+
+Wait, order of operations: "Any added rectangle with positive-area overlap must transitively coalesce with the existing active regions into their bounding-box union until every region is pairwise disjoint. Two areas invalidated in the course of a single element operation therefore remain separate active regions when they do not overlap."
+
+So: append new rect (count+1 possibly exceeding MAX temporarily), coalesce transitively, then while count > MAX: merge-best-pair + re-coalesce.
+
+Hmm, but wait: should the forced merge happen only if count > MAX after adding? Yes: "If the region count exceeds GSLC_INVALIDATE_RGN_MAX, repeatedly merge the pair that minimizes wasted area."
+
+The new rect could overlap multiple existing regions — transitive coalescing handles it (merge new with any overlapping, then resulting union may overlap others, etc., until fixpoint).
+
+Implementation of transitive coalescing: 
+
+```c
+static void gslc_InvalidateRgnCoalesce(gslc_tsGui* pGui) {
+  bool bMerged = true;
+  while (bMerged) {
+    bMerged = false;
+    for (i=0; i<nCnt && !bMerged; i++)
+      for (j=i+1; j<nCnt && !bMerged; j++)
+        if (overlap(rgn[i], rgn[j])) {
+          rgn[i] = union(rgn[i], rgn[j]);
+          remove rgn[j] (shift down);
+          nCnt--;
+          bMerged = true;
+        }
+  }
+}
+```
+
+That's O(n^3) worst case but n ≤ 32, fine. Deterministic.
+
+**Forced merge pair selection:**
+
+"If the region count exceeds GSLC_INVALIDATE_RGN_MAX, repeatedly merge the pair that minimizes wasted area (union area minus the two individual areas). Break ties independently of the order in which the regions were added: put the canonically smaller region of each pair first, then take the pair whose first region is canonically smallest, or whose second region is canonically smallest when the first regions are equal, comparing regions ascending by y, then x, then h, then w."
+
+So for each unordered pair {A, B}: canonical order (A,B) with A canonically ≤ B (compare y, then x, then h, then w; if A > B, swap so first is smaller). Wasted area = unionArea(A,B) - area(A) - area(B). Note: for overlapping pairs, union area here means bounding-box union area? "merge the pair that minimizes wasted area (union area minus the two individual areas)" — union bounding box area. Since after coalescing all pairs are disjoint, wasted = bbox union area - areaA - areaB ≥ 0 (equals 0 only if one contains... actually for disjoint rects, bbox union ≥ sum, with equality iff they tile perfectly without gap... anyway).
+
+Tie-break: among pairs with equal minimal wasted area, choose the pair whose canonically-first region is canonically smallest; if two pairs have equal first regions, the one whose second region is canonically smallest. So we need a lexicographic comparison of pairs: (first, second) — compare first regions canonically; if equal, compare second.
+
+"canonically smaller region of each pair first" — for pair {A,B}, if cmp(A,B) > 0 then pair is (B,A) else (A,A)... I mean (A,B). Then compare pairs by (first, then second).
+
+Implementation:
+
+```c
+static void gslc_InvalidateRgnForceMerge(gslc_tsGui* pGui) {
+  while (pGui->nInvalidateRgnCnt > GSLC_INVALIDATE_RGN_MAX) {
+    // find best pair
+    int nBestI=-1, nBestJ=-1;
+    uint32_t nBestWaste = 0; bool bBestInit=false;
+    for (i...) for (j=i+1...) {
+      waste = bboxArea(union) - area(i) - area(j);
+      pair ordering: a=rgn[i], b=rgn[j]; if cmp(a,b)>0 swap;
+      if (!bBestInit || waste < nBestWaste) { take }
+      else if (waste == nBestWaste) {
+        // tie-break: compare (a,b) vs (bestA,bestB)
+        c = cmpPair; if (a,b) < (best) take
+      }
+    }
+    merge best pair into union; remove one, replace other with union;
+    gslc_InvalidateRgnCoalesce(pGui);
+  }
+}
+```
+
+Careful with areas: rect area = w*h. w,h are uint16_t; w*h up to 65535*65535 — need uint32_t. `(uint32_t)w * h`. Edges fit in int16 range per the note, so w,h ≤ 32767ish, area ≤ ~1G — fits in uint32_t. Union bbox area similar.
+
+Wait — "the right and bottom edges of a rectangle are assumed to fit in the signed 16-bit coordinate range" — so x+w-1 ≤ 32767. Fine.
+
+**gslc_InvalidateRgnScreen(pGui):** en=true, rgn[0] = full display {0,0,nDispW,nDispH}, count=1. Exactly one region.
+
+**gslc_InvalidateRgnReset(pGui):** en=false, count=0.
+
+**gslc_InvalidateRgnPage(pGui, pPage):** calls gslc_InvalidateRgnAdd(pGui, pPage->rBounds) and then en=true (as before). Hmm, the original code calls Add then sets `pGui->bInvalidateEn = true;` — but Add already sets en=true when adding. The original set it explicitly presumably to handle the case where Add dropped the rect (empty)... Actually in original code, Add with en=false would set en=true and copy the rect even if empty. The new Add drops empty/offscreen rects and only enables if a valid rect remains. For Page: `pPage->rBounds` is the union of element rects — could be empty (w=0). Original code: `gslc_InvalidateRgnAdd(pGui, pPage->rBounds)` → en was maybe false → en=true, rect = empty bounds. Then `pGui->bInvalidateEn = true;` — so it force-enabled even with empty rect. Hmm. To preserve behavior, `gslc_InvalidateRgnPage` should call Add and then force-en=true? But then we'd have a region set with count possibly 0 but en=true → inconsistent with my invariant.
+
+Hmm, wait. Let me reconsider the invariant. What does en=false mean vs count=0? Let me re-read the requirements: "gslc_InvalidateRgnCount takes the GUI context and returns a uint8_t count of active tracked regions, or 0 if invalidation is disabled." — implies "disabled" is a distinct state where regions aren't tracked/counted. And "the reset function empties the set and disables invalidation" — so reset: en=false AND set empty.
+
+I think cleanest: en=true ⟺ count ≥ 1. When en=false, count=0. `gslc_InvalidateRgnPage`: Add the page bounds (which clamps/drops). If dropped (empty), there are no active regions — but original code force-enabled with a 1x1... wait no — original: `pGui->rInvalidateRect = rAddRect` — if rBounds={0,0,0,0}, rect = {0,0,0,0} (not {0,0,1,1}). Then clip = {0,0,0,0} — clips everything out? `gslc_SetClipRect(pGui, &rInvalidateRect)` → clip rect with w=0,h=0 — nothing drawn?! Hmm, but `abPageStackDoDraw` pages get drawn... with a zero-size clip rect. Hmm, what does DrvSetClipRect do with zero-size? Probably clips out all drawing. That seems like a potential existing bug, but in practice rBounds is set by element additions and page redraws... Actually wait, when would InvalidateRgnPage be called with empty bounds? `gslc_SetStackPage` → invalidate old page + new pages in stack. A page with no elements? Possible in theory. Edge case; the old behavior would enable invalidation with an empty rect → all drawing clipped out → blank screen until next reset. Actually since `gslc_PageRedrawGo` resets invalidation after the pass, it self-heals next pass... but the current pass draws nothing! Hmm wait, really? Let me check DrvSetClipRect for SDL: sets pDriver->rClipRect = *pRect; drawing primitives check `gslc_ClipPt` etc. A {0,0,0,0} clip → x0=0, y0=0, x1=-1, y1=-1 → nothing visible. So old behavior: blank until next redraw. Probably an unnoticed edge case. With my change (drop empty), behavior: no active regions → full display clip → elements drawn normally. That's *better* and I'd argue intended ("drops any that come out empty").
+
+So for `gslc_InvalidateRgnPage`, I'll keep the call to Add and then... the original `pGui->bInvalidateEn = true;` line. If Add dropped the rect, should we force en=true with count 0? That creates a weird state. I think the sensible interpretation of the refactor: InvalidateRgnPage adds the page bounds region (clamped), and invalidation is thereby active. The trailing `bInvalidateEn = true` in the original was redundant safety. I'll drop the rect if empty — meaning no active region. Actually hmm, wait — let me keep semantics tight: I'll just call Add; Add enables when a region is actually added. But should InvalidateRgnPage force-enable even when empty? The spec for the new model says the Add function "clamps each input rectangle to the display bounds and drops any that come out empty or fall entirely offscreen" — no mention of Page behavior change; Page's semantics = "include entire page in invalidation region". If page bounds empty → nothing to include → but "invalidate the page" conceptually means the page area changed and needs redraw...
+
+Practically: `gslc_SetStackPage` invalidates old + new pages so the redraw covers both areas. If new page has empty bounds (no elements), then after page switch, there's nothing to draw for it. But other invalidated regions (old page's bounds) still exist. The union covers what needs redraw. So dropping empty is fine and consistent.
+
+Actually hold on, let me re-check the original more carefully:
+
+```c
+void gslc_InvalidateRgnPage(gslc_tsGui* pGui, gslc_tsPage* pPage)
+{
+  if (pPage == NULL) return;
+  gslc_InvalidateRgnAdd(pGui, pPage->rBounds);
+  pGui->bInvalidateEn = true;
+}
+```
+
+With old Add: if en was false → en=true, rect=rBounds (possibly empty). If en true → union. So the force-enable was for the case where Add was a no-op... Add was never a no-op in old code (en=false branch always sets en=true). So `bInvalidateEn=true` was truly redundant. OK — I'll simply call Add in the new version. 
+
+Hmm, but wait: what if rBounds is empty AND we want the whole screen redrawn because we switched pages? Look at `gslc_SetPageCur` / stack changes: `gslc_SetStackPage` invalidates old page and new page; also there's `gslc_PageRedrawSet`? Let me check line 2101-2111 context: SetStackPage invalidates pages in stack. If page switching leaves no active regions but elements need redraw... `bPageRedraw` (gslc_PageRedrawSet(true)) is also set on page change? Let me check. `gslc_SetPageCur` calls `gslc_SetStackPage`... let me look at that code near line 2094-2120.
+
+Actually — since the page's elements will have pending redraw flags (GSLC_ELEMREF_REDRAW_FULL set on page add? no...). Hmm, on page switch, does the new page's content get drawn? Via invalidation of its bounds + the redraw pass draws elements with pending redraw... wait, no: on page switch, elements of the new page don't have pending redraw flags; the invalidation region causes the *background* redraw? Only if bPageRedraw (full page redraw). Hmm, `gslc_SetStackPage` — let me look at what sets full redraw on page change. I saw at line 2101-2111: invalidates old page, then new page and above. There must be a `gslc_PageRedrawSet(pGui,true)` somewhere. Let me check.
+
+Let me now also check `gslc_ElemMoveTo`, `gslc_ElemSetVisible` etc. that call InvalidateRgnAdd — with multi-region, two areas invalidated in a single element operation remain separate (old + new positions) — that's the natural behavior now (they don't overlap).
+
+Now the redraw restructure. Let me now write the new `gslc_PageRedrawGo`:
+
+```c
+void gslc_PageRedrawGo(gslc_tsGui* pGui)
+{
+  gslc_PageRedrawCalc(pGui);
+  bool bPageRedraw = gslc_PageRedrawGet(pGui);
+
+  uint32_t nSubType = (bPageRedraw)?GSLC_EVTSUB_DRAW_FORCE:GSLC_EVTSUB_DRAW_NEEDED;
+
+  uint8_t nRgnCnt = gslc_InvalidateRgnCount(pGui);
+  uint8_t nRgnInd;
+
+  #if defined(DBG_REDRAW)
+  ... debug prints ...
+  #endif
+
+  if (nRgnCnt > 0) {
+    gslc_tsRect asRgn[GSLC_INVALIDATE_RGN_MAX];
+    nRgnCnt = gslc_InvalidateRgnGet(pGui, asRgn, GSLC_INVALIDATE_RGN_MAX);
+    // hmm — GSLC_INVALIDATE_RGN_MAX could be up to 32; stack array of 32 rects = 128 bytes; fine.
+    for (nRgnInd = 0; nRgnInd < nRgnCnt; nRgnInd++) {
+      // Draw each region independently
+      gslc_SetClipRect(pGui, &(asRgn[nRgnInd]));
+      // Defer redraw-flag clearing until the final region pass
+      pGui->bRedrawRgnHold = (nRgnInd+1 < nRgnCnt)? true : false;  // hold except last
+      if (bPageRedraw) {
+        gslc_DrvDrawBkgnd(pGui);
+        gslc_PageFlipSet(pGui,true);
+      }
+      ... dispatch draw events to stack pages ...
+    }
+  } else {
+    // no active regions: full display clip
+    gslc_SetClipRect(pGui, NULL);
+    pGui->bRedrawRgnHold = false;
+    if (bPageRedraw) {
+      gslc_DrvDrawBkgnd(pGui);
+      gslc_PageFlipSet(pGui,true);
+    }
+    ... dispatch ...
+  }
+  pGui->bRedrawRgnHold = false;
+
+  gslc_PageRedrawSet(pGui,false);
+  gslc_InvalidateRgnReset(pGui);
+  gslc_SetClipRect(pGui, NULL);
+  pGui->bRedrawNeeded = false;
+  gslc_PageFlipGo(pGui);
+}
+```
+
+Wait, but hold on: with the hold active during non-final passes, and FORCE subtype (full redraw): `gslc_ElemDrawByRef(pGui,pElemRef,GSLC_REDRAW_FULL)` — clears at end → deferred. OK.
+
+Hmm wait, actually there's a problem: `gslc_ElemSetRedraw` NONE-clear is also how flags get cleared in the "invisible" path... all deferred fine.
+
+But hmm, actually — do I even need the hold mechanism? Alternative: keep the flags untouched by re-marking... no wait, the hold IS the mechanism. Let me double check `gslc_ElemSetRedraw`'s NONE branch with hold:
+
+```c
+if (eRedraw == GSLC_REDRAW_NONE) {
+  if (pGui->bRedrawRgnHold) {
+    // During multi-region partial redraw, defer the clearing
+    // of the pending redraw state until the final region pass
+    return;
+  }
+  eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_NONE;
+}
+```
+
+Wait, but careful — the parent propagation at the end: `if (pElem->pElemRefParent != NULL) gslc_ElemSetRedraw(pGui,pElem->pElemRefParent,eRedraw);` — with early return, parent propagation skipped during hold. Parent's flag stays pending → parent redrawn on each region pass (good, since clipping per region means parent must be drawn per region) → cleared on final pass. Correct.
+
+Hmm, wait — but there's a subtlety: for the DRAW_FORCE subtype with hold, elements drawn during earlier passes don't get cleared until last pass. On the last pass they're redrawn (force) and cleared. Fine.
+
+Another subtlety — `gslc_PageRedrawCalc` is called once at the start (as before). Then during region passes, elements' pending state persists (hold). Good — `gslc_ElemEvent` NEEDED checks `gslc_ElemGetRedraw` — pending → draw. Good.
+
+Now — the "hold" member name. Since I'm adding internal state to gslc_tsGui, maybe name it `bRedrawRgnHold` hmm... but wait, is there an issue with nested PageRedrawGo? No, not reentrant realistically.
+
+Hmm, actually, wait. Let me reconsider: is the hold even needed when there are ≥2 regions and bPageRedraw (FORCE)? With FORCE, all elements drawn regardless of flags; flags cleared per draw. With hold on earlier passes: flags survive → last pass draws all again (force anyway) and clears. Without hold: earlier passes clear flags as they draw — but since FORCE redraws everything anyway, the last pass still draws everything. So for FORCE, hold isn't needed. For NEEDED (partial), hold IS needed (else second region wouldn't draw pending elements).
+
+But simplest: apply hold uniformly for all but the last region pass. With FORCE, the flags would be cleared on the last pass identically. Fine.
+
+Wait, one more consideration on hold: `gslc_ElemDrawByRef` line 3106 — invisible element → clears redraw → deferred. Then on last pass, cleared. Fine.
+
+And `XKeyPad` etc. call `gslc_ElemDrawByRef(pGui,&sElemRef,GSLC_REDRAW_FULL)` directly (not through events) — inside touch handlers (not during redraw pass). Not affected.
+
+Alright. But hmm, one more thing — during the region passes, elements call drawing primitives which call `gslc_PageFlipSet(pGui,true)` etc. Also — critically — do any draw callbacks call `gslc_InvalidateRgnAdd` (thus mutating the region set during iteration)? Let me grep for InvalidateRgnAdd callers: lines 1484 (Page), 3365-3366 (ElemMove?), 3568 (ElemSetRedraw!), 3763 (ElemSetVisible?). Line 3568 is inside `gslc_ElemSetRedraw` itself: "if (gslc_ElemGetOnScreen(pGui,pElemRef)) gslc_InvalidateRgnAdd(pGui, pElem->rElem);" — and that's in the non-NONE branch. During the hold pass, could a draw callback set a new redraw (thus calling InvalidateRgnAdd)? E.g., a draw callback that updates text? Uncommon but possible (XTextbox redraw adds rows?). If the region set mutates during my region loop, my local `asRgn[]` snapshot stays consistent (I copied it), but the gui's set would have extra regions that then get... hmm, they'd be coalesced into the gui set, and after the pass, InvalidateRgnReset clears everything — the newly invalidated region would be lost! 
+
+Wait, is that also true in the current code? Current: during PageRedrawGo draw pass, if a callback calls ElemSetRedraw (adding to rInvalidateRect), then after the pass `gslc_InvalidateRgnReset(pGui)` — yes, current code also drops it (with bRedrawNeeded=false). So existing behavior already discards redraws triggered during the pass. OK, no regression. Moving on.
+
+Also: `gslc_ElemSetRedraw` during hold pass sets `pGui->bRedrawNeeded = true` — then cleared at end. Same as current.
+
+Now, the SDL1 flip requirement:
+
+"the screen presentation step of the SDL1 display driver must update only the individual active regions, exactly one update per region, instead of refreshing the entire display, and this holds even when a single active region covers the whole display; with no active region it refreshes the whole display as before."
+
+So in `gslc_DrvPageFlipNow` (SDL1 branch):
+
+```c
+#if defined(DRV_DISP_SDL1)
+  SDL_Surface* pScreen = pDriver->pSurfScreen;
+  uint8_t nRgnCnt = gslc_InvalidateRgnCount(pGui);
+  if (nRgnCnt > 0) {
+    gslc_tsRect asRgn[GSLC_INVALIDATE_RGN_MAX];
+    nRgnCnt = gslc_InvalidateRgnGet(pGui, asRgn, GSLC_INVALIDATE_RGN_MAX);
+    for (i...) {
+      SDL_Rect rUpd = {asRgn[i].x, asRgn[i].y, asRgn[i].w, asRgn[i].h};
+      SDL_UpdateRect(pScreen, rUpd.x, rUpd.y, rUpd.w, rUpd.h);
+    }
+  } else {
+    SDL_Flip(pScreen);
+  }
+#endif
+```
+
+Wait — SDL1.2: `SDL_UpdateRect(SDL_Surface* screen, Sint32 x, Sint32 y, Uint32 w, Uint32 h)`. If the surface was created with SDL_DOUBLEBUF, SDL_UpdateRect won't flip... The driver uses `SDL_SetVideoMode(..., SDL_SWSURFACE | SDL_FULLSCREEN)` — software surface, no double buffer. SDL_Flip on a non-double-buffered surface is equivalent to SDL_UpdateRect(screen, 0,0,0,0). So using SDL_UpdateRect per region is the right partial-update call. 
+
+Hmm wait, one thing: does SDL1's `SDL_Flip` on software surface do a full update? Yes. And requirement: with regions → one SDL_UpdateRect per region (exactly one update per region), even if a region covers the whole display. With no regions → SDL_Flip as before. 
+
+But note: `gslc_DrvPageFlipNow` is called from `gslc_PageFlipGo` (which is called at the end of PageRedrawGo — after InvalidateRgnReset!). Requirement: "The active region set must remain fully populated during that presentation step, and must only be emptied after the redraw and presentation pass completes". So I must reorder in `gslc_PageRedrawGo`: do `gslc_PageFlipGo(pGui)` BEFORE `gslc_InvalidateRgnReset(pGui)`. Let me re-read the current order:
+
+```c
+  gslc_PageRedrawSet(pGui,false);
+  gslc_InvalidateRgnReset(pGui);   // <- currently resets before flip
+  gslc_SetClipRect(pGui, NULL);
+  pGui->bRedrawNeeded = false;
+  gslc_PageFlipGo(pGui);          // <- flip after reset: would see no regions!
+```
+
+So I need to move the reset to after the flip. New order:
+
+```c
+  gslc_PageRedrawSet(pGui,false);
+  gslc_SetClipRect(pGui, NULL);   // restore clipping to full display... 
+```
+
+Hmm wait — requirement: "must only be emptied after the redraw and presentation pass completes, at which point clipping is restored to the full display." So order: flip (presentation) → then reset (empty set) → clipping restored. Where exactly does clipping restore go? "at which point clipping is restored to the full display" — the point when the set is emptied. Hmm, or clipping restored at the same time. Let me structure:
+
+```c
+  // Clear the page redraw flag
+  gslc_PageRedrawSet(pGui,false);
+
+  // Restore the clipping region to the entire display
+  gslc_SetClipRect(pGui, NULL);
+
+  // Clear the "need redraw" flag
+  pGui->bRedrawNeeded = false;
+
+  // Page flip (present) the screen
+  // - Note that the invalidation regions must remain active
+  //   during the flip so that the display driver can limit
+  //   the screen update to the invalidated regions.
+  gslc_PageFlipGo(pGui);
+
+  // Empty the invalidation region set now that the redraw
+  // and presentation pass has completed.
+  gslc_InvalidateRgnReset(pGui);
+```
+
+Wait, but should clipping be restored before or after the flip? Does the flip use the clip rect? SDL flip doesn't use clip. Restoring before flip is what the requirement says: "must only be emptied after the redraw and presentation pass completes, at which point clipping is restored to the full display". Hmm, this sentence: emptied after redraw+presentation completes; at that point (i.e., after the set is emptied? or after the pass completes?) clipping is restored. Ambiguous but both readings end with: reset after flip, clipping restored to full display at the end. I'll restore clip before the flip and empty the set after the flip. Hmm, wait — but restoring clipping before flip: the flip doesn't care. Or restore after reset. Either satisfies "clipping is restored to the full display" eventually. Let me think about which is safer: if `gslc_PageFlipGo` did any drawing (it doesn't - it just calls DrvPageFlipNow)... Also DBG_DRAW_IMM in PageFlipSet calls DrvPageFlipNow immediately at draw time (while regions active, clip active) — that's during drawing, regions active — fine.
+
+Hmm, actually there's a subtle issue: `gslc_PageFlipGo`:
+
+```c
+void gslc_PageFlipGo(gslc_tsGui* pGui)
+{
+  if (pGui == NULL) return;
+  if (pGui->bScreenNeedFlip) {
+    // Enable the screen flip
+    gslc_DrvPageFlipNow(pGui);
+    pGui->bScreenNeedFlip = false;
+  }
+}
+```
+
+Let me verify by reading lines 2445+.
+
+Also — what about `gslc_Update`'s other flip call... `gslc_PageFlipSet` → DBG_DRAW_IMM → DrvPageFlipNow during drawing (regions active — would update only regions — fine).
+
+Now — an important question: does anything else call `gslc_PageFlipGo` outside `gslc_PageRedrawGo`? grep showed only 2415/2432/2452. Let me check 2432: that's inside PageFlipGo? No — 2445 is PageFlipGo start... 2432 is `gslc_DrvPageFlipNow(pGui)` inside... let me look. Line 2432 is inside gslc_PageRedrawGo? No wait, 2415 was `gslc_PageFlipGo(pGui)` at end of PageRedrawGo, 2432 `gslc_DrvPageFlipNow` — probably inside PageFlipGo. Let me read.
+
+Also `gslc_DrvPageFlipNow` is called directly from drivers? The SDL driver's rotation? Let me check where DrvPageFlipNow is called in drv_sdl.c — maybe in DrvRotate. Let me look.
+
+Now, the other drivers (SDL2 etc.): "Display drivers that can only present the whole display, such as SDL2, keep doing so." — SDL2's `SDL_RenderPresent` presents whole display — no change needed there. Adafruit etc. drivers' DrvPageFlipNow are no-ops (direct drawing). So only SDL1 changes.
+
+Now — `gslc_InvalidateRgnGet` signature: "takes the GUI context, a rectangle array, and a uint8_t maximum count, writes the active regions sorted canonically (ascending by y, then x, then h, then w) into that array when it is non-null and up to that maximum, and returns the uint8_t total count of active tracked regions."
+
+```c
+uint8_t gslc_InvalidateRgnGet(gslc_tsGui* pGui, gslc_tsRect* paRects, uint8_t nMax)
+```
+
+Hmm — should it be `gslc_tsRect* paRects` — pointer to array. "when it is non-null and up to that maximum" — writes up to nMax entries; returns total count (which may exceed nMax).
+
+Sorting canonically: the internal set — should I keep it sorted canonically at all times, or sort on query? Simpler: keep the set sorted canonically whenever it changes (insert in sorted position). Then Get just copies. Hmm, but "writes the active regions sorted canonically ... into that array" — as long as output is sorted. If internal set is maintained sorted, Get copies in order. But simpler still: sort on Get into the user array? But Get writes into user array up to nMax — if total > nMax, which subset? "writes the active regions sorted canonically into that array ... up to that maximum" — presumably the first nMax in canonical order (i.e., the canonically smallest nMax regions? or the array's first nMax slots after full sort?). I'd say: copy all (or up to nMax) in canonical order. If I maintain the internal set canonically sorted at all times, then Get = copy first min(nMax, count). That gives "the canonically smallest" ones first — reasonable interpretation.
+
+Alternatively, sort within Get: make a local copy of the whole set (GSLC_INVALIDATE_RGN_MAX ≤ 32 rects = 128 bytes on stack), insertion-sort it, then copy up to nMax. Since I plan to maintain the set sorted anyway (for deterministic merge tie-breaks it doesn't matter — tie-break is computed from pairs directly), let me decide: maintain sorted insertion in Add (insert at canonical position). Coalescing merges: replace pair with union, re-sort (or remove both, insert union at sorted position). Force-merge similar. Keeping the array canonically sorted at all times makes Get trivial and deterministic.
+
+Actually, you know, keeping it sorted adds complexity to every mutation. Alternative: keep unsorted, and in Get, copy to local buffer, insertion-sort, then write up to nMax to user array. This is clean: sorting logic in one place. The internal order doesn't matter for correctness elsewhere (drawing order of regions — does it matter? Each region is drawn independently; order of drawing regions doesn't affect final image since they're disjoint. So no).
+
+But hmm — "writes the active regions sorted canonically (ascending by y, then x, then h, then w) into that array when it is non-null and up to that maximum" — also implies if paRects is NULL, nothing written, still returns total count. OK.
+
+Let me now define the canonical comparison:
+
+```c
+// Compare two rects canonically: ascending by y, then x, then h, then w
+static int gslc_InvalidateRgnCmp(const gslc_tsRect r1, const gslc_tsRect r2)
+{
+  if (r1.y != r2.y) return (r1.y < r2.y) ? -1 : 1;
+  if (r1.x != r2.x) return (r1.x < r2.x) ? -1 : 1;
+  if (r1.h != r2.h) return (r1.h < r2.h) ? -1 : 1;
+  if (r1.w != r2.w) return (r1.w < r2.w) ? -1 : 1;
+  return 0;
+}
+```
+
+gslc_tsRect: `int16_t x,y; uint16_t w,h;` — let me verify.
+
+Now — the header declarations for the three new public functions. Also `GSLC_INVALIDATE_RGN_MAX` — "a user configuration header (one of the stock configs/ files or a project's own) or a compiler define can set it to any value from 1 to 32". So in `GUIslice_config.h` (the central config), define:
+
+```c
+#ifndef GSLC_INVALIDATE_RGN_MAX
+  #define GSLC_INVALIDATE_RGN_MAX 8
+#endif
+```
+
+And validate range 1..32: 
+
+```c
+#if (GSLC_INVALIDATE_RGN_MAX < 1) || (GSLC_INVALIDATE_RGN_MAX > 32)
+  #error "..."
+#endif
+```
+
+Hmm — but "can set it to any value from 1 to 32" — if out of range, error or clamp? I'd emit #error. Or should out-of-range just be clamped? An #error is standard practice for config validation in this library? Let me check how GUIslice_config.h handles other params. Let me read it.
+
+Also "one of the stock configs/ files" — meaning users copy a configs/*.h as their GUIslice_config.h; the stock files might want to not define it (default 8). Should I add `#define GSLC_INVALIDATE_RGN_MAX 8` to each stock config? That's 80+ files... The requirement says a user config header *can* set it — capability, not that stock files must. But maybe I should add it to the SDL configs (linux-sdl1-default-mouse.h, rpi-*) since those are relevant for testing? Hmm. Let me think: the central `src/GUIslice_config.h` provides the default with #ifndef guard — that covers "a project's own config or compiler define". For "one of the stock configs/ files" — those are alternative config headers that REPLACE GUIslice_config.h entirely (they define everything themselves). If a stock config doesn't define GSLC_INVALIDATE_RGN_MAX, then... the core GUIslice.h would use... hmm.
+
+How does it work? Let me look at GUIslice_config.h and a stock config to understand the mechanism. In Arduino builds, `GUIslice_config.h` includes... let me read it.
+
+Let me now read the config setup and check the examples build (there might be a test setup — platformio.ini). Also check if there are existing tests. Let me explore the repo structure more (docs/, examples/, builder/).
+
+Then I'll plan:
+1. `src/GUIslice_config.h`: add `GSLC_INVALIDATE_RGN_MAX` default + validation.
+2. `src/GUIslice.h`: add struct members (`asInvalidateRgn[GSLC_INVALIDATE_RGN_MAX]`, `nInvalidateRgnCnt`, keep `bInvalidateEn`, remove `rInvalidateRect`; add `bRedrawRgnHold` internal flag... hmm where to put it — near the invalidation members); declare 3 new functions; document.
+3. `src/GUIslice.c`: implement region set management (static helpers + public functions), restructure `gslc_PageRedrawGo` (multi-region redraw + flip before reset), update `gslc_InvalidateRgnReset/Screen/Page/Add`, update `gslc_ElemSetRedraw` hold behavior, update any other uses of `rInvalidateRect` (DBG_REDRAW prints).
+4. `src/GUIslice_drv_sdl.c`: SDL1 partial flip via SDL_UpdateRect per region.
+5. Stock configs: hmm — decide whether to add the define. Let me look at how stock configs are structured first.
+
+Let me also check `gslc_PageFlipGo` body and `gslc_SetPageCur` for the full-redraw path. And check for tests: is there a CI? Let me look at the repo root files (platformio.ini, builder). Let me explore.
+Let me look at the config setup, page flip code, and remaining key areas.
+[tool:bash] {"command": "sed -n '1,120p' /workspace/repo/src/GUIslice_config.h", "timeout": 10}
+[tool:read] {"limit": 60, "offset": 2445, "path": "/workspace/repo/src/GUIslice.c"}
+[55] toolResult: #ifndef _GUISLICE_CONFIG_H_
+#define _GUISLICE_CONFIG_H_
+
+// =======================================================================
+// GUIslice library (user configuration) selection by device
+// - Calvin Hass
+// - https://www.impulseadventure.com/elec/guislice-gui.html
+// - https://github.com/ImpulseAdventure/GUIslice
+// =======================================================================
+//
+// The MIT License
+//
+// Copyright 2016-2020 Calvin Hass
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+// =======================================================================
+// \file GUIslice_config.h
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
+// Support the loading of config settings through compiler flags
+// - This is used to support environments such as PlatformIO
+#ifdef USER_CONFIG_LOADED
+  // If a config file has been specified, the following will load it
+  // Otherwise, all settings must be provided via build flags
+  #ifdef USER_CONFIG_INC
+
+[... 38 more characters truncated]
+[56] toolResult: void gslc_PageFlipGo(gslc_tsGui* pGui)
+{
+  if (pGui == NULL) {
+    return;
+  }
+
+  if (pGui->bScreenNeedFlip) {
+    gslc_DrvPageFlipNow(pGui);
+
+    // Indicate that page flip is no longer required
+    gslc_PageFlipSet(pGui,false);
+  }
+}
+
+
+gslc_tsPage* gslc_PageFindById(gslc_tsGui* pGui,int16_t nPageId)
+{
+  int8_t nInd;
+
+  // Loop through list of pages
+  // Return pointer to page
+  gslc_tsPage*  pFoundPage = NULL;
+  for (nInd=0;nInd<pGui->nPageMax;nInd++) {
+    if (pGui->asPage[nInd].nPageId == nPageId) {
+      pFoundPage = &pGui->asPage[nInd];
+      break;
+    }
+  }
+
+  // Error handling: if not found, make this a fatal error
+  // as it shows a serious config error and continued operation
+  // is not viable.
+  if (pFoundPage == NULL) {
+    GSLC_DEBUG2_PRINT("ERROR: PageFindById() can't find page (ID=%d)\n",nPageId);
+    return NULL;
+  }
+
+  return pFoundPage;
+}
+
+gslc_tsElemRef* gslc_PageFindElemById(gslc_tsGui* pGui,int16_t nPageId,int16_t nElemId)
+{
+  gslc_tsPage*    pPage = NULL;
+  gslc_tsElemRef* pElemRef = NULL;
+
+  // Get the page
+  pPage = gslc_PageFindById(pGui,nPageId);
+  if (pPage == NULL) {
+    GSLC_DEBUG2_PRINT("ERROR: PageFindElemById() can't find page (ID=%d)\n",nPageId);
+    return NULL;
+  }
+  // Find the element reference in the page's element collection
+  pElemRef = gslc_CollectFindElemById(pGui,&pPage->sCollect,nElemId);
+  return pElemRef;
+}
+
+/* UNUSED
+void gslc_PageSetEventFunc(gslc_tsGui* pGui,gslc_tsPage* pPage,GSLC_CB_EVENT funcCb)
+{
+  if ((pPage == NULL) || (funcCb == NULL)) {
+
+[3555 more lines in file. Use offset=2505 to continue.]
+[57] assistant: [tool:bash] {"command": "sed -n '120,260p' /workspace/repo/src/GUIslice_config.h", "timeout": 10}
+[tool:bash] {"command": "sed -n '1,80p' /workspace/repo/configs/linux-sdl1-default-mouse.h; echo ====; grep -n \"GSLC_\" /workspace/repo/configs/linux-sdl1-default-mouse.h | head -40", "timeout": 10}
+[58] toolResult: //#include "../configs/due-adagfx-ili9341-urtouch.h"
+  //#include "../configs/due-adagfx-ra8875-urtouch.h"
+
+  // ESP8266, ESP32, M5stack, WIO Terminal, TTGO:
+  // ------------------------------------------------------
+  //#include "../configs/esp-shld-m5stack.h"
+  //#include "../configs/esp-shld-wio-notouch.h"
+  //#include "../configs/esp-shld-wio-input.h"
+  //#include "../configs/esp-shld-ttgo_btc_ticker.h"
+  //#include "../configs/esp-tftespi-default-ft6206.h"
+  //#include "../configs/esp-tftespi-default-notouch.h"
+  //#include "../configs/esp-tftespi-default-simple.h"
+  //#include "../configs/esp-tftespi-default-stmpe610.h"
+  //#include "../configs/esp-tftespi-default-tsc2007.h"
+  //#include "../configs/esp-tftespi-default-xpt2046.h"
+  //#include "../configs/esp-tftespi-default-xpt2046_int.h"
+
+  // Teensy:
+  // ------------------------------------------------------
+  //#include "../configs/teensy-adagfx-ili9341-xpt2046.h"
+  //#include "../configs/teensy-adagfx-ili9341-xpt2046-audio.h"
+  //#include "../configs/teensy-adagfx-ili9341_t3-xpt2046.h"
+  //#include "../configs/teensy-adagfx-ili9341_t3-xpt2046-spi1.h"
+  //#include "../configs/teensy-adagfx-ili9341_t3-notouch-audio.h"
+  //#include "../configs/teensy-adagfx-ili9341_t3-xpt2046-audio.h"
+
+  // STM32:
+  // ------------------------------------------------------
+  //#include "../configs/stm32-adagfx-mcufriend-notouch.h"
+  //#include "../configs/stm32-adagfx-mcufriend-simple.h"
+
+  // Multi-device shields:
+  // ------------------------------------------------------
+  //#include "../configs/mult-shld-adafruit_24_feather_touch.h"
+  //#include "../configs/mult-shld-adafruit_35_feather_touch.h"
+  //#include "../configs/mult-shld-adafruit_35_feather_tsc2007.h"
+
+  // Raspberry Pi / LINUX:
+  // ------------------------------------------------------
+  //#include "../configs/rpi-sdl1-default-tslib.h"
+  //#include "../configs/rpi-sdl1-default-sdl.h"
+  //#include "../configs/linux-sdl1-default-mouse.h"
+
+#endif // USER_CONFI
+
+[... 38 more characters truncated]
+[59] toolResult: #ifndef _GUISLICE_CONFIG_LINUX_H_
+#define _GUISLICE_CONFIG_LINUX_H_
+
+// =============================================================================
+// GUIslice library (example user configuration) for:
+//   - CPU:     LINUX Virtual Machine (VM)
+//   - Display: Built-in via SDL1.2
+//   - Touch:   Mouse via SDL1.2
+//   - Wiring:  None
+//
+// DIRECTIONS:
+// - To use this example configuration, include in "GUIslice_config.h"
+//
+// WIRING:
+// - None
+//
+// =============================================================================
+// - Calvin Hass
+// - https://github.com/ImpulseAdventure/GUIslice
+// =============================================================================
+//
+// The MIT License
+//
+// Copyright 2016-2020 Calvin Hass
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+// =============================================================================
+// \file GUIslice_config_linux.h
+
+// ==============================================================
+
+[... 38 more characters truncated]
+[60] assistant: [reasoning]
+Now let me see where GUIslice.h defines its tunable parameters with defaults (like GSLC_STACK__MAX, GSLC_TOUCH_MAX_EVT, etc.) so I can add GSLC_INVALIDATE_RGN_MAX in the same style. Let me find those in GUIslice.h.
+[tool:bash] {"command": "grep -n \"GSLC_STACK__MAX\\|ifndef GSLC_\\|define GSLC_\" /workspace/repo/src/GUIslice.h | head -60", "timeout": 10}
+[61] toolResult: 61:  #define GSLC_PMEM PROGMEM
+63:  #define GSLC_PMEM
+68:  #define GSLC_FEATURE_FOCUS_ON_TOUCH 1
+95:#define GSLC_2PI  6.28318530718
+141:    GSLC_STACK__MAX                    ///< Defines maximum number of pages in stack
+190:#define GSLC_ELEM_FEA_NOSHRINK  0x0100      ///< Element can't be shrunk (eg. contains image)
+191:#define GSLC_ELEM_FEA_VALID     0x0080      ///< Element record is valid
+192:#define GSLC_ELEM_FEA_FOCUS_EN  0x0040      ///< Element can accept focus
+193:#define GSLC_ELEM_FEA_EDIT_EN   0x0020      ///< Element supports edit
+194:#define GSLC_ELEM_FEA_ROUND_EN  0x0010      ///< Element is drawn with a rounded profile
+195:#define GSLC_ELEM_FEA_CLICK_EN  0x0008      ///< Element accepts touch presses
+196:#define GSLC_ELEM_FEA_GLOW_EN   0x0004      ///< Element supports glowing state
+197:#define GSLC_ELEM_FEA_FRAME_EN  0x0002      ///< Element is drawn with a frame
+198:#define GSLC_ELEM_FEA_FILL_EN   0x0001      ///< Element is drawn with a fill
+199:#define GSLC_ELEM_FEA_NONE      0x0000      ///< Element default (no features set))
+203:#define GSLC_ALIGNV_TOP       0x10                                ///< Vertical align to top
+204:#define GSLC_ALIGNV_MID       0x20                                ///< Vertical align to middle
+205:#define GSLC_ALIGNV_BOT       0x40                                ///< Vertical align to bottom
+206:#define GSLC_ALIGNH_LEFT      0x01                                ///< Horizontal align to left
+207:#define GSLC_ALIGNH_MID       0x02                                ///< Horizontal align to middle
+208:#define GSLC_ALIGNH_RIGHT     0x04                                ///< Horizontal align to right
+209:#define GSLC_ALIGN_TOP_LEFT   GSLC_ALIGNH_LEFT  | GSLC_ALIGNV_TOP ///< Align to top-left
+210:#define GSLC_ALIGN_TOP_MID    GSLC_ALIGNH_MID   | GSLC_ALIGNV_TOP ///< Align to middle of top
+211:#define GSLC_ALIGN_TOP_RIGHT  GSLC_ALIGNH_RIGHT | GSLC_ALIGNV_TOP ///< Align to top-right
+212:#define GSLC_ALIGN_MID_LEFT   GSLC_ALIGNH_LEFT  |
+
+[... 38 more characters truncated]
+[62] assistant: [tool:read] {"limit": 120, "offset": 95, "path": "/workspace/repo/src/GUIslice.h"}
+[63] toolResult: #define GSLC_2PI  6.28318530718
+
+// -----------------------------------------------------------------------
+// Enumerations
+// -----------------------------------------------------------------------
+
+  /// Element ID enumerations
+  /// - The Element ID is the primary means for user code to
+  ///   reference a graphic element.
+  /// - Application code can assign arbitrary Element ID values
+  ///   in the range of 0...16383
+  /// - Specifying GSLC_ID_AUTO to ElemCreate() requests that
+  ///   GUIslice auto-assign an ID value for the Element. These
+  ///   auto-assigned values will begin at GSLC_ID_AUTO_BASE.
+  /// - Negative Element ID values are reserved
+  typedef enum {
+    // Public usage
+    GSLC_ID_USER_BASE       = 0,      ///< Starting Element ID for user assignments
+    GSLC_ID_NONE            = -1999,  ///< No Element ID has been assigned
+    GSLC_ID_AUTO,                     ///< Auto-assigned Element ID requested
+    GSLC_ID_TEMP,                     ///< ID for Temporary Element
+    // Internal usage
+    GSLC_ID_AUTO_BASE       = 16384,  ///< Starting Element ID to start auto-assignment
+                                      ///< (when GSLC_ID_AUTO is specified)
+  } gslc_teElemId;
+
+
+  /// Page ID enumerations
+  /// - The Page ID is the primary means for user code to
+  ///   reference a specific page of elements.
+  /// - Application code can assign arbitrary Page ID values
+  ///   in the range of 0...16383
+  /// - Negative Page ID values are reserved
+  typedef enum {
+    // Public usage
+    GSLC_PAGE_USER_BASE     = 0,      ///< Starting Page ID for user assignments
+    // Internal usage
+    GSLC_PAGE_NONE          = -2999,  ///< No Page ID has been assigned
+  } gslc_tePageId;
+
+  /// Define page stack
+  typedef enum {
+    GSLC_STACK_BASE = 0,               ///< Base page
+    GSLC_STACK_CUR,                    ///< Current page
+    GSLC_STACK_OVERLAY,                ///< Overlay page (eg. popups)
+
+    GSLC_STACK__MAX                    ///< Defines maximum nu
+
+[... 38 more characters truncated]
+[64] assistant: [reasoning]
+Let me find where the config defaults like `GSLC_STACK__MAX` value and `GSLC_TOUCH_MAX_EVT` defaults are defined — grep in GUIslice.h for "#ifndef".
+[tool:bash] {"command": "grep -n \"#ifndef\\|#if defined\\|#error\" /workspace/repo/src/GUIslice.h | head -60", "timeout": 10}
+[65] toolResult: 1:#ifndef _GUISLICE_H_
+74:#if defined(DRV_TOUCH_NONE) && (GSLC_FEATURE_INPUT)
+75:  #error "CONFIG: DRV_TOUCH_NONE is not compatible with FEATURE_INPUT. Consider selecting DRV_TOUCH_INPUT in GUIslice config"
+[66] assistant: [tool:bash] {"command": "grep -rn \"GSLC_TOUCH_MAX_EVT\\|GSLC_LOCAL_STR_LEN\\|GSLC_SD_EN\" /workspace/repo/src/GUIslice.h | head; grep -rn \"ifndef\" /workspace/repo/src/elem/*.h | head -10; grep -n \"GSLC_STACK__MAX\" /workspace/repo/src/*.h /workspace/repo/src/*.c | head", "timeout": 10}
+[67] toolResult: 670:  char                pStrBuf[GSLC_LOCAL_STR_LEN];  ///< Text string to overlay
+/workspace/repo/src/elem/XCheckbox.h:1:#ifndef _GUISLICE_EX_XCHECKBOX_H_
+/workspace/repo/src/elem/XGauge.h:1:#ifndef _GUISLICE_EX_XGAUGE_H_
+/workspace/repo/src/elem/XGlowball.h:1:#ifndef _GUISLICE_EX_XGLOWBALL_H_
+/workspace/repo/src/elem/XGraph.h:1:#ifndef _GUISLICE_EX_XGRAPH_H_
+/workspace/repo/src/elem/XKeyPad.h:1:#ifndef _GUISLICE_EX_XKEYPAD_H_
+/workspace/repo/src/elem/XKeyPad_Alpha-setup.h:1:#ifndef _GUISLICE_EX_XKEYPAD_ALPHA_SETUP_H_
+/workspace/repo/src/elem/XKeyPad_Alpha.h:1:#ifndef _GUISLICE_EX_XKEYPAD_ALPHA_H_
+/workspace/repo/src/elem/XKeyPad_Num-setup.h:1:#ifndef _GUISLICE_EX_XKEYPAD_NUM_SETUP_H_
+/workspace/repo/src/elem/XKeyPad_Num.h:1:#ifndef _GUISLICE_EX_XKEYPAD_NUM_H_
+/workspace/repo/src/elem/XListbox.h:1:#ifndef _GUISLICE_EX_XLISTBOX_H_
+/workspace/repo/src/GUIslice.h:141:    GSLC_STACK__MAX                    ///< Defines maximum number of pages in stack
+/workspace/repo/src/GUIslice.h:839:  gslc_tsPage*        apPageStack[GSLC_STACK__MAX];       ///< Stack of pages
+/workspace/repo/src/GUIslice.h:840:  bool                abPageStackActive[GSLC_STACK__MAX]; ///< Whether page in stack can receive touch events
+/workspace/repo/src/GUIslice.h:841:  bool                abPageStackDoDraw[GSLC_STACK__MAX]; ///< Whether page in stack is still actively drawn
+/workspace/repo/src/GUIslice.h:1722:/// \param[in]  nStackPos:   Position to update in the page stack (0..GSLC_STACK__MAX-1)
+/workspace/repo/src/GUIslice.h:1734:/// \param[in]  nStackPos:   Position to update in the page stack (0..GSLC_STACK__MAX-1)
+/workspace/repo/src/GUIslice.c:177:  for (nInd = 0; nInd < GSLC_STACK__MAX; nInd++) {
+/workspace/repo/src/GUIslice.c:2107:  for (uint8_t nStackPage = nStackPos; nStackPage < GSLC_STACK__MAX; nStackPage++) {
+/workspace/repo/src/GUIslice.c:2250:  for (nStackPage=0;nStackPage<GSLC_STACK__MAX;nStackPage++) {
+/workspace/repo/src/GUIslice.c:2376:  for (int nStackPage = 0; nStackPage < GS
+
+[... 36 more characters truncated]
+[68] assistant: [reasoning]
+I see — `GSLC_STACK__MAX` is an enum constant (GSLC_STACK_OVERLAY+1 = 3). Config parameters like `GSLC_TOUCH_MAX_EVT`, `GSLC_LOCAL_STR_LEN` are defined in the config headers (stock configs define them, e.g. `#define GSLC_TOUCH_MAX_EVT 1`).
+
+So where should `GSLC_INVALIDATE_RGN_MAX` default live? The requirement: "It defaults to 8, and a user configuration header (one of the stock configs/ files or a project's own) or a compiler define can set it to any value from 1 to 32."
+
+So GUIslice.h (or config) should have:
+
+```c
+#ifndef GSLC_INVALIDATE_RGN_MAX
+  #define GSLC_INVALIDATE_RGN_MAX 8
+#endif
+```
+
+Since stock configs don't define it (and I shouldn't necessarily edit 80 files), the `#ifndef` default in the core header handles it: "a user configuration header ... or a compiler define can set it" — if the config header defines it before including GUIslice.h... wait, but the include order: GUIslice_config.h is included by GUIslice.c first, then GUIslice.h. And GUIslice.h includes GUIslice_config.h? Let me check the top of GUIslice.h. Also the driver files include GUIslice_config.h then GUIslice_drv_*.h which includes GUIslice.h? Let me check how GUIslice.h gets the config. Let me look at line 1-95 of GUIslice.h.
+[tool:read] {"limit": 95, "offset": 1, "path": "/workspace/repo/src/GUIslice.h"}
+[tool:bash] {"command": "sed -n '1,60p' /workspace/repo/src/GUIslice_drv_sdl.h | head -60; grep -n \"include\" /workspace/repo/src/GUIslice_drv_sdl.h | head", "timeout": 10}
+[69] toolResult: #ifndef _GUISLICE_H_
+#define _GUISLICE_H_
+
+// =======================================================================
+// GUIslice library
+// - Calvin Hass
+// - https://www.impulseadventure.com/elec/guislice-gui.html
+// - https://github.com/ImpulseAdventure/GUIslice
+//
+// - Version 0.17.0
+// =======================================================================
+//
+// The MIT License
+//
+// Copyright 2016-2021 Calvin Hass
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+// =======================================================================
+/// \file GUIslice.h
+
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
+#include <inttypes.h>
+
+
+// -----------------------------------------------------------------------
+// Configuration
+// -----------------------------------------------------------------------
+
+// Import configuration ( which will import a sub-config depending on dev
+
+[... 38 more characters truncated]
+[70] toolResult: #ifndef _GUISLICE_DRV_SDL_H_
+#define _GUISLICE_DRV_SDL_H_
+
+// =======================================================================
+// GUIslice library (driver layer for SDL 1.2 & 2.0)
+// - Calvin Hass
+// - https://www.impulseadventure.com/elec/guislice-gui.html
+// - https://github.com/ImpulseAdventure/GUIslice
+// =======================================================================
+//
+// The MIT License
+//
+// Copyright 2016-2020 Calvin Hass
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+// THE SOFTWARE.
+//
+// =======================================================================
+/// \file GUIslice_drv_sdl.h
+/// \brief GUIslice library (driver layer for LINUX / SDL)
+
+
+// =======================================================================
+// Driver Layer for SDL
+// =======================================================================
+
+#ifdef __cplusplus
+extern "C" {
+#endif // __cplusplus
+
+#include "GUIslice.h"
+
+#include <stdio.h>
+
+#if defined(DRV_DISP_SDL1)
+  #incl
+
+[... 37 more characters truncated]
+[71] assistant: [reasoning]
+Good. `GUIslice.h` includes `GUIslice_config.h`, which includes the stock config (e.g. `linux-sdl1-default-mouse.h`). So the place for the `GSLC_INVALIDATE_RGN_MAX` default is in `GUIslice.h` right after including the config:
+
+```c
+// Maximum number of invalidation regions tracked simultaneously
+// - Can be overridden by the user configuration or compiler define
+#ifndef GSLC_INVALIDATE_RGN_MAX
+  #define GSLC_INVALIDATE_RGN_MAX 8
+#endif
+#if (GSLC_INVALIDATE_RGN_MAX < 1) || (GSLC_INVALIDATE_RGN_MAX > 32)
+  #error "CONFIG: GSLC_INVALIDATE_RGN_MAX must be between 1 and 32"
+#endif
+```
+
+Hmm, wait — but `#if (GSLC_INVALIDATE_RGN_MAX < 1)` — if a config defines it with `#define GSLC_INVALIDATE_RGN_MAX 4` — preprocessor arithmetic handles it fine.
+
+But hold on — where to put this so that both GUIslice.h users and the drivers see it. Since GUIslice_drv_sdl.h includes GUIslice.h, all good. But GUIslice_drv.h — let me check. All drivers include GUIslice.h transitively? GUIslice.c includes GUIslice.h. drv_sdl.c includes GUIslice_drv_sdl.h → GUIslice.h. OK.
+
+Now, alternatively the default could go into GUIslice_config.h at the end (after the config include). Both work. But "a compiler define" — the `#ifndef` guard handles -DGSLC_INVALIDATE_RGN_MAX=4 on the command line. And "one of the stock configs/ files or a project's own [config header]" — the stock config is included from GUIslice_config.h, which is included at the top of GUIslice.h — before my `#ifndef` block. 
+
+I'll put the default + validation in `GUIslice.h` right after `#include "GUIslice_config.h"` (near the FOCUS_ON_TOUCH default), since that's where similar defaults-with-override live. Hmm, actually wait: GUIslice_config.h has `#ifdef USER_CONFIG_LOADED` path that includes a user-specified file. All fine.
+
+Now let me check `gslc_tsRect` definition and the driver clip handling (`gslc_DrvSetClipRect` in SDL driver), and check `gslc_DrvDrawBkgnd`. Let me also check `gslc_DrvScreenLock/Unlock`.
+[tool:bash] {"command": "grep -n \"typedef struct\" -A 6 /workspace/repo/src/GUIslice.h | grep -B2 -A 6 \"gslc_tsRect;\" | head -20", "timeout": 10}
+[tool:bash] {"command": "grep -n \"rClipRect\\|DrvSetClipRect\" /workspace/repo/src/GUIslice_drv_sdl.c | head -20; echo ---; sed -n '85,120p' /workspace/repo/src/GUIslice_drv_sdl.c", "timeout": 10}
+[72] toolResult: 551-  uint16_t  w;    ///< Width of region
+552-  uint16_t  h;    ///< Height of region
+553-} gslc_tsRect;
+554-
+--
+557:typedef struct gslc_tsPt {
+558-  int16_t   x;        ///< X coordinate
+559-  int16_t   y;        ///< Y coordinate
+560-} gslc_tsPt;
+[73] toolResult: 505:bool gslc_DrvSetClipRect(gslc_tsGui* pGui,gslc_tsRect* pRect)
+---
+{
+  // Report any debug info (before init) if enabled
+  #if defined(DBG_DRIVER)
+  gslc_DrvReportInfoPre();
+  #endif
+
+  // Primary surface definitions
+  pGui->sImgRefBkgnd = gslc_ResetImage();
+
+  // Initialize any SDL version-specific members
+  if (pGui->pvDriver) {
+    gslc_tsDriver*  pDriver = (gslc_tsDriver*)(pGui->pvDriver);
+
+    #if defined(DRV_DISP_SDL1)
+    pDriver->pSurfScreen = NULL;
+    pGui->bRedrawPartialEn = true;
+    #endif
+
+    #if defined(DRV_DISP_SDL2)
+    pDriver->pWind       = NULL;
+    pDriver->pRender     = NULL;
+    // In SDL2, always need full page redraw since backbuffer
+    // is treated as invalidated after every RenderPresent()
+    pGui->bRedrawPartialEn = false;
+    #endif
+  }
+
+
+#if (DRV_SDL_FIX_START)
+  // Force a clean start to SDL to workaround any bad state
+  // left behind by a previous SDL application's failure to
+  // clean up.
+  // TODO: Allow compiler option to skip this workaround
+  // TODO: Allow determination of the TTY to use
+  gslc_DrvCleanStart(DRV_SDL_FIX_TTY);
+#endif
+[74] assistant: [tool:read] {"limit": 60, "offset": 495, "path": "/workspace/repo/src/GUIslice_drv_sdl.c"}
+[tool:bash] {"command": "grep -n \"nDispW\\|nDispH\" /workspace/repo/src/GUIslice.h | head -6; grep -n \"gslc_DrvDrawBkgnd\" /workspace/repo/src/GUIslice_drv_sdl.c | head -3", "timeout": 10}
+[75] toolResult: return;
+  }
+  #if defined(DRV_DISP_SDL1)
+  SDL_FreeSurface((SDL_Surface*)pvImg);
+  #endif
+  #if defined(DRV_DISP_SDL2)
+  SDL_DestroyTexture((SDL_Texture*)pvImg);
+  #endif
+}
+
+bool gslc_DrvSetClipRect(gslc_tsGui* pGui,gslc_tsRect* pRect)
+{
+  gslc_tsDriver* pDriver = (gslc_tsDriver*)(pGui->pvDriver);
+#if defined(DRV_DISP_SDL1)
+  SDL_Surface*  pScreen = pDriver->pSurfScreen;
+  if (pRect == NULL) {
+    SDL_SetClipRect(pScreen,NULL);
+  } else {
+    SDL_Rect  rSRect = gslc_DrvAdaptRect(*pRect);
+    SDL_SetClipRect(pScreen,&rSRect);
+  }
+  return true;
+#endif
+
+#if defined(DRV_DISP_SDL2)
+  SDL_Renderer*  pRender = pDriver->pRender;
+  if (pRect == NULL) {
+    SDL_RenderSetClipRect(pRender,NULL);
+  } else {
+    SDL_Rect  rSRect = gslc_DrvAdaptRect(*pRect);
+    SDL_RenderSetClipRect(pRender,&rSRect);
+  }
+  return true;
+#endif
+
+}
+
+
+
+// -----------------------------------------------------------------------
+// Font handling Functions
+// -----------------------------------------------------------------------
+
+const void* gslc_DrvFontAdd(gslc_teFontRefType eFontRefType,const void* pvFontRef,uint16_t nFontSz)
+{
+  // UNIX/SDL mode currently only supports font definitions from files
+  if (eFontRefType != GSLC_FONTREF_FNAME) {
+    GSLC_DEBUG_PRINT("ERROR: DrvFontAdd(%s) failed - SDL mode only supports file-based fonts\n","");
+    return NULL;
+  }
+  TTF_Font*   pFont;
+  // In the case of SDL, the pvFontRef is a string that defines the
+  // file path to the font file
+  pFont = TTF_OpenFont((const char*)pvFontRef,nFontSz);
+  if (pFont == NULL) {
+    GSLC_DEBUG_PRINT("ERROR: DrvFontAdd(%s) failed in TTF_OpenFont\n",pvFontRef);
+    return NULL;
+  }
+  return (const void*)pFont;
+}
+
+[923 more lines in file. Use offset=555 to continue.]
+[76] toolResult: 765:  uint16_t            nDispW;           ///< Width of the display (pixels)
+766:  uint16_t            nDispH;           ///< Height of the display (pixels)
+828:void gslc_DrvDrawBkgnd(gslc_tsGui* pGui)
+[77] assistant: [reasoning]
+Let me check `gslc_DrvDrawBkgnd` in the SDL driver and how it draws (full screen fill). Also `gslc_DrvAdaptRect`.
+
+Then let me look at the whole `gslc_PageRedrawGo` and `gslc_SetPageCur`/`gslc_SetStackPage` region again (lines 2090-2130), plus lines 3355-3380 (ElemMove) and 3550-3580, 3750-3770 for InvalidateRgnAdd callers.
+[tool:bash] {"command": "grep -n \"gslc_DrvDrawBkgnd\\|gslc_DrvAdaptRect\" -A 20 /workspace/repo/src/GUIslice_drv_sdl.c | sed -n '/828:/,/}/p' | head -40", "timeout": 10}
+[tool:read] {"limit": 50, "offset": 2085, "path": "/workspace/repo/src/GUIslice.c"}
+[78] toolResult: 828:void gslc_DrvDrawBkgnd(gslc_tsGui* pGui)
+829-{
+830-  if (pGui == NULL) {
+831-    GSLC_DEBUG2_PRINT("ERROR: DrvDrawBkgnd(%s) with NULL ptr\n","");
+832-    return;
+833-  }
+[79] toolResult: }
+
+  // Save a reference to the selected page
+  pGui->apPageStack[nStackPos] = pPage;
+
+  #if defined(DEBUG_LOG)
+  GSLC_DEBUG_PRINT("INFO: Changed PageStack[%u] to page %u\n",nStackPos,nPageId);
+  #endif
+
+  // A change of page should always force a future redraw
+  // TODO: Consider that showing a popup could potentially optimize out
+  // the forced redraw step.
+  if (nPageSaved != nPageId) {
+    gslc_PageRedrawSet(pGui,true);
+  }
+
+  // Invalidate the old page in the stack
+  if (pPageSaved != NULL) {
+    gslc_InvalidateRgnPage(pGui, pPageSaved);
+  }
+
+  // Invalidate the new page in the stack and any above
+  for (uint8_t nStackPage = nStackPos; nStackPage < GSLC_STACK__MAX; nStackPage++) {
+    // Select the page collection to process
+    pPage = pGui->apPageStack[nStackPage];
+    if (pPage != NULL) {
+      gslc_InvalidateRgnPage(pGui, pPage);
+    }
+  }
+}
+
+
+void gslc_SetStackState(gslc_tsGui* pGui, uint8_t nStackPos, bool bActive, bool bDoDraw)
+{
+  gslc_tsPage* pStackPage = pGui->apPageStack[nStackPos];
+  if (pStackPage == NULL) {
+    // TODO: Error
+    return;
+  }
+  pGui->abPageStackActive[nStackPos] = bActive;
+  pGui->abPageStackDoDraw[nStackPos] = bDoDraw;
+}
+
+void gslc_SetPageBase(gslc_tsGui* pGui, int16_t nPageId)
+{
+  gslc_SetStackPage(pGui, GSLC_STACK_BASE, nPageId);
+}
+
+void gslc_SetPageCur(gslc_tsGui* pGui,int16_t nPageId)
+{
+
+[3925 more lines in file. Use offset=2135 to continue.]
+[80] assistant: [tool:read] {"limit": 30, "offset": 826, "path": "/workspace/repo/src/GUIslice_drv_sdl.c"}
+[tool:read] {"limit": 40, "offset": 3350, "path": "/workspace/repo/src/GUIslice.c"}
+[81] toolResult: /// NOTE: Background image is stored in pGui->sImgRefBkgnd
+void gslc_DrvDrawBkgnd(gslc_tsGui* pGui)
+{
+  if (pGui == NULL) {
+    GSLC_DEBUG2_PRINT("ERROR: DrvDrawBkgnd(%s) with NULL ptr\n","");
+    return;
+  }
+  // GUIslice adapter library for SDL always pre-loads
+  // surfaces / textures before calling DrvDrawBkgnd(), so
+  // we just need to confirm that the raw image data is defined.
+  void* pImage = pGui->sImgRefBkgnd.pvImgRaw;
+  if (pImage == NULL) {
+    GSLC_DEBUG2_PRINT("ERROR: DrvDrawBkgnd(%s) with NULL pvImgRaw\n","");
+
+    // Since the image load failed, resort to black background
+    gslc_DrvSetBkgndColor(pGui,GSLC_COL_BLACK);
+    return;
+  }
+
+  gslc_tsDriver* pDriver = (gslc_tsDriver*)(pGui->pvDriver);
+
+#if defined(DRV_DISP_SDL1)
+  gslc_DrvPasteSurface(pGui,0,0,pGui->sImgRefBkgnd.pvImgRaw,pDriver->pSurfScreen);
+#endif
+
+#if defined(DRV_DISP_SDL2)
+  SDL_Renderer* pRender = pDriver->pRender;
+  SDL_Texture*  pTex    = (SDL_Texture*)(pGui->sImgRefBkgnd.pvImgRaw);
+
+
+[622 more lines in file. Use offset=856 to continue.]
+[82] toolResult: int gslc_ElemGetGroup(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+{
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return GSLC_GROUP_ID_NONE;
+
+  return pElem->nGroup;
+}
+
+void gslc_ElemSetRect(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_tsRect rElem)
+{
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return;
+
+  // Invalidate region including both rects from before & after
+  gslc_InvalidateRgnAdd(pGui, pElem->rElem); // Old region
+  gslc_InvalidateRgnAdd(pGui, rElem); // New region
+  // Force a page redraw within the scope defined by the invalidation region
+  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+  gslc_PageRedrawSet(pGui,true);
+
+  // Update element
+  pElem->rElem           = rElem;
+
+  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+}
+
+gslc_tsRect gslc_ElemGetRect(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+{
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return (gslc_tsRect){0,0,0,0};
+
+  return pElem->rElem;
+}
+
+
+void gslc_ElemSetTxtAlign(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,unsigned nAlign)
+{
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return;
+
+[2670 more lines in file. Use offset=3390 to continue.]
+[83] assistant: [reasoning]
+Good. Note `gslc_DrvDrawBkgnd` pastes the whole background surface — with clip rect set to region, SDL's blit honors the clip rect (`gslc_DrvPasteSurface` → SDL_BlitSurface which respects destination clip rect). Good — background drawing per region will be clipped correctly.
+
+Now let me look at the remaining pieces: `gslc_ElemSetVisible` (line ~3750-3770) and `gslc_ElemMoveTo` etc. Also check `gslc_TrackTouch` and elem glow updates calling InvalidateRgnAdd — line 3568 is in ElemSetRedraw. Line 3763 in ElemSetVisible? Let me check the exact code. Also line 5504/5613/5623/5639 — those are in SetBkgndImage/SetBkgndColor/GuiRotate (InvalidateRgnScreen). OK.
+
+Let me view line 3745-3775.
+[tool:read] {"limit": 40, "offset": 3740, "path": "/workspace/repo/src/GUIslice.c"}
+[tool:bash] {"command": "grep -rn \"rInvalidateRect\\|bInvalidateEn\" /workspace/repo/src /workspace/repo/examples /workspace/repo/builder /workspace/repo/docs 2>/dev/null | grep -v \"GUIslice.c\\|GUIslice.h:\" | head -20", "timeout": 10}
+[84] toolResult: GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return false;
+  }
+  return gslc_GetElemRefFlag(pGui,pElemRef,GSLC_ELEMREF_EDITING);
+#endif // GSLC_FEATURE_INPUT
+}
+
+
+void gslc_ElemSetVisible(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bVisible)
+{
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return;
+
+  bool bVisibleOld = gslc_ElemGetVisible(pGui,pElemRef);
+  gslc_SetElemRefFlag(pGui,pElemRef,GSLC_ELEMREF_VISIBLE,(bVisible)?GSLC_ELEMREF_VISIBLE:0);
+
+  // Mark the element as needing redraw if its visibility status changed
+  if (bVisible != bVisibleOld) {
+    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+    if (bVisible == false) {
+      // Since we are hiding an element, we need to invalidate
+      // the region underneath the element, so that it can
+      // be redrawn.
+      gslc_InvalidateRgnAdd(pGui, pElem->rElem);
+      // Mark the page as having a redraw pending
+      gslc_PageRedrawSet(pGui,true);
+     }
+  }
+
+}
+
+bool gslc_ElemGetVisible(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+{
+  if (pElemRef == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "ElemGetVisible";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return false;
+  }
+  return gslc_GetElemRefFlag(pGui,pElemRef,GSLC_ELEMREF_VISIBLE);
+}
+
+[2280 more lines in file. Use offset=3780 to continue.]
+[85] toolResult: (no output)
+[86] assistant: [reasoning]
+Good — `rInvalidateRect`/`bInvalidateEn` are only referenced in GUIslice.c and GUIslice.h. Let me double check nothing in examples/docs references them (the grep excluded GUIslice.c/h; it output nothing, so fine). Also check `gslc_SetElemRefFlag` and `gslc_GetElemRefFlag`:
+[tool:bash] {"command": "grep -n \"gslc_SetElemRefFlag\\|gslc_GetElemRefFlag\" -A 18 /workspace/repo/src/GUIslice.c | sed -n '1,50p'", "timeout": 10}
+[tool:bash] {"command": "grep -rn \"InvalidateRgn\" /workspace/repo/src/elem /workspace/repo/examples 2>/dev/null | head", "timeout": 10}
+[87] toolResult: 2529:uint8_t gslc_GetElemRefFlag(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,uint8_t nFlagMask)
+2530-{
+2531-  (void)pGui; // Unused
+2532-  if (!pElemRef) {
+2533-    static const char GSLC_PMEM FUNCSTR[] = "GetElemRefFlag";
+2534-    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+2535-    return 0;
+2536-  }
+2537-  return pElemRef->eElemFlags & nFlagMask;
+2538-}
+2539-
+2540-// Set a flag in an element reference
+2541-// Note that the nFlagVal must be aligned to the nFlagMask
+2542:void gslc_SetElemRefFlag(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,uint8_t nFlagMask,uint8_t nFlagVal)
+2543-{
+2544-  (void)pGui; // Unused
+2545-  if (!pElemRef) {
+2546-    static const char GSLC_PMEM FUNCSTR[] = "SetElemRefFlag";
+2547-    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+2548-    return;
+2549-  }
+2550-  uint8_t nCurFlags = pElemRef->eElemFlags;
+2551-  uint8_t nNewFlags = (nCurFlags & ~nFlagMask) | nFlagVal;
+2552-  pElemRef->eElemFlags = nNewFlags;
+2553-}
+2554-
+2555-// Returns a pointer to an element from an element reference
+2556-// - Handle caching from FLASH if element is accessed via PROGMEM
+2557-gslc_tsElem* gslc_GetElemFromRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+2558-{
+2559-  if (!pElemRef) {
+2560-    static const char GSLC_PMEM FUNCSTR[] = "GetElemFromRef";
+--
+3623:    gslc_SetElemRefFlag(pGui, pElemRef, GSLC_ELEMREF_GLOWING, (bGlowing) ? GSLC_ELEMREF_GLOWING : 0);
+3624-
+3625-    if (bGlowing != bGlowingOld) {
+3626-      gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_INC);
+3627-    }
+3628-  }
+3629-}
+3630-
+3631-bool gslc_ElemGetGlow(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+3632-{
+3633-  if (pElemRef == NULL) {
+3634-    static const char GSLC_PMEM FUNCSTR[] = "ElemGetGlow";
+3635-    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+3636-    return false;
+3637-  }
+3638:  return gslc_GetElemRefFlag(pGui,pElemRef,GSLC_ELEMREF_GLOWING);
+3639-}
+[88] toolResult: (no output)
+[89] assistant: [reasoning]
+Note: `gslc_SetElemRefFlag` uses `uint8_t nCurFlags = pElemRef->eElemFlags;` — truncates to 8 bits. So my earlier idea of using bits 8/9 of eElemFlags would get clobbered by `gslc_SetElemRefFlag` calls (GLOWING/VISIBLE/EDITING/FOCUSED updates). I've decided on the hold approach instead, so no new flag bits needed.
+
+Now, let me check how the repo is built/tested. Look at platformio.ini, builder dir, and check if there's a test setup for SDL builds.
+[tool:bash] {"command": "cat /workspace/repo/platformio.ini; ls /workspace/repo/builder /workspace/repo/docs; ls /workspace/repo/examples | head", "timeout": 10}
+[90] toolResult: ; * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+; PlatformIO Project Configuration file for GUIslice
+; - https://github.com/ImpulseAdventure/GUIslice
+;
+; - This file will be used to select the MCU, Display
+;   and Touch drivers to use with GUIslice
+;
+; * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
+
+; =========================================================
+; Section 1: PlatformIO GENERAL SETTINGS
+; =========================================================
+
+[platformio]
+
+; Source files to build:
+; - Path to main application code or
+;   one of the GUIslice examples to run
+;
+;src_dir = examples/arduino/ex01_ard_basic
+;src_dir = examples/arduino/ex02_ard_btn_txt
+src_dir = examples/arduino/ex04_ard_ctrls
+;src_dir = examples/arduino/ex07_ard_slider
+;src_dir = ...
+
+; Extra config:
+; - PlatformIO config to build from project root
+lib_dir = .
+
+; Default environments to load
+;default_envs =
+;	Arduino-ILI9341-STMPE610
+;	ESP32-TFT_eSPI-STMPE610
+
+[env]
+; GUIslice compilation more straightforward in "deep" LDF mode
+lib_ldf_mode = deep
+; To enable inspect/cppcheck w/o LTO1 error, disable LTO
+build_unflags =
+;	-flto
+
+; ---------------------------------------------------------
+[common]
+; Define any additional compilation flags here
+build_flags =
+;	-Wall
+;	-Wextra
+;	-Wunused-variable
+
+; =========================================================
+; Section 2: UPLOAD SETTINGS
+; =========================================================
+
+[upload-avrisp]
+; Board default is:
+; - upload_protocol = arduino
+upload_protocol = stk500v2
+upload_flags = 
+	-Pusb
+
+; =========================================================
+; Section 3: DISPLAY DRIVERS
+; =========================================================
+
+; ---------------------------------------------------------
+; Display: Adafruit/Adafruit_ILI9341
+; ---------------------------------------------------------
+; NOTE:
+; - Need to use lib_ldf_mode=deep otherwise the Adafruit
+;   libraries report "no such file" compilation 
+
+[... 39 more characters truncated]
+[91] assistant: [reasoning]
+The examples dir has linux examples. Let me check the linux examples — those build with SDL1. Is there a build script (e.g. `examples/linux/builder`?). Let me check `ls /workspace/repo/examples/linux`.
+[tool:bash] {"command": "ls /workspace/repo/examples/linux; echo ---; ls /workspace/repo/examples/linux/* | head -20", "timeout": 10}
+[92] toolResult: Makefile
+README.md
+ex01_lnx_basic.c
+ex02_lnx_btn_txt.c
+ex03_lnx_btn_img.c
+ex04_lnx_ctrls.c
+ex05_lnx_pages.c
+ex06_lnx_callback.c
+ex07_lnx_slider.c
+ex08_lnx_tuner.c
+ex09_lnx_radial.c
+ex10_lnx_textbox.c
+ex11_lnx_graph.c
+ex15_lnx_foreign.c
+ex18_lnx_compound.c
+ex22_lnx_input_key.c
+ex24_lnx_tabs.c
+ex27_lnx_alpha.c
+ex31_lnx_listbox.c
+ex42_lnx_ring.c
+ex43_lnx_glowball.c
+res
+test_sdl1.c
+test_sdl2.c
+---
+/workspace/repo/examples/linux/Makefile
+/workspace/repo/examples/linux/README.md
+/workspace/repo/examples/linux/ex01_lnx_basic.c
+/workspace/repo/examples/linux/ex02_lnx_btn_txt.c
+/workspace/repo/examples/linux/ex03_lnx_btn_img.c
+/workspace/repo/examples/linux/ex04_lnx_ctrls.c
+/workspace/repo/examples/linux/ex05_lnx_pages.c
+/workspace/repo/examples/linux/ex06_lnx_callback.c
+/workspace/repo/examples/linux/ex07_lnx_slider.c
+/workspace/repo/examples/linux/ex08_lnx_tuner.c
+/workspace/repo/examples/linux/ex09_lnx_radial.c
+/workspace/repo/examples/linux/ex10_lnx_textbox.c
+/workspace/repo/examples/linux/ex11_lnx_graph.c
+/workspace/repo/examples/linux/ex15_lnx_foreign.c
+/workspace/repo/examples/linux/ex18_lnx_compound.c
+/workspace/repo/examples/linux/ex22_lnx_input_key.c
+/workspace/repo/examples/linux/ex24_lnx_tabs.c
+/workspace/repo/examples/linux/ex27_lnx_alpha.c
+/workspace/repo/examples/linux/ex31_lnx_listbox.c
+/workspace/repo/examples/linux/ex42_lnx_ring.c
+[93] assistant: [tool:bash] {"command": "cat /workspace/repo/examples/linux/Makefile; echo ===; sed -n '1,60p' /workspace/repo/examples/linux/test_sdl1.c", "timeout": 10}
+[94] toolResult: ##
+## Makefile for GUIslice library - LINUX
+## - Calvin Hass
+## - https://www.impulseadventure.com/elec/guislice-gui.html
+## - https://github.com/ImpulseAdventure/GUIslice
+##
+## NOTE: This Makefile handles both SDL1.2 and SDL2 compilation.
+##       A simpler Makefile can be used if this flexibility is
+##       not required.
+
+# ---------------------------------------------------------------------------
+# Define compiler flags for GUIslice
+# - In some cases, the makefile compilation options must match
+#   settings in the GUIslice_config_linux.h configuration file.
+#
+# GRAPHICS DRIVER
+# - make parameter: GSLC_DRV=(SDL1,SDL2)
+# - On the makefile command-line, pass the GSLC_DRV parameter to select
+#   the graphics driver matching the #define DRV_DISP_* setting in
+#   GUIslice_config_linux.h, eg:
+#     GUIslice_config_linux.h:  #define DRV_DISP_SDL1
+#     Makefile:                 make <target> GSLC_DRV=SDL1
+#
+#
+# TOUCH DRIVER
+# - make parameter: GSLC_TOUCH=(TSLIB,SDL,NONE)
+# - On the makefile command-line, pass the GSLC_TOUCH parameter to
+#   indicate whether or not DRV_TOUCH_TSLIB is #defined in the
+#   GUIslice_config_linux.h, eg:
+#     GUIslice_config_linux.h:  #define DRV_TOUCH_TSLIB
+#     Makefile:                 make <target> GSLC_TOUCH=TSLIB
+#
+#     GUIslice_config_linux.h:  #define DRV_TOUCH_SDL (or DRV_TOUCH_NONE)
+#     Makefile:                 make <target> GSLC_TOUCH=NONE
+# - Note that the makefile only checks to see if DRV_TOUCH=TSLIB and
+#   will ignore any other values.
+#
+# NOTES:
+# - Note that multiple parameters may be passed, for example:
+#     make ex04_lnx_ctrls
+#     make ex06_lnx_callback GSLC_TOUCH=TSLIB GSLC_DRV=SDL2
+#     make all GSLC_TOUCH=TSLIB
+#
+
+
+DEBUG = -O3
+CC = gcc
+INCLUDE = -I/usr/local/include
+CFLAGS = $(DEBUG) -Wall $(INCLUDE) -Winline -pipe -g
+LDFLAGS = -L/usr/local/lib
+
+GSLC_CORE = ../../src/GUIslice.c ../../src/GUIslice_config.h ../../src/elem/*.c
+
+
+# Define default compiler flags which may be overridden by command line
+
+# Define gr
+
+[... 38 more characters truncated]
+[95] assistant: [reasoning]
+Good — there's a Linux Makefile that compiles with SDL1/SDL2. I can use this to verify compilation. Let me check if SDL dev libraries are installed in this environment:
+
+Let me check for SDL headers: `ls /usr/include/SDL` etc.
+
+Also, let me check the docs folder for API docs that may need updating (docs/README.md?). And `library.json`/`library.properties` for version bumps — probably not needed.
+
+Let me now check if SDL1.2 dev headers are available.
+[tool:bash] {"command": "ls /usr/include/SDL 2>/dev/null | head; ls /usr/include/SDL2 2>/dev/null | head -5; dpkg -l 2>/dev/null | grep -i sdl | head; which gcc g++; gcc --version | head -1", "timeout": 10}
+[96] toolResult: SDL.h
+SDL_active.h
+SDL_audio.h
+SDL_byteorder.h
+SDL_cdrom.h
+SDL_config.h
+SDL_cpuinfo.h
+SDL_endian.h
+SDL_error.h
+SDL_events.h
+SDL.h
+SDL_assert.h
+SDL_atomic.h
+SDL_audio.h
+SDL_bits.h
+ii  libsdl-ttf2.0-0:amd64         2.0.11-6                       amd64        TrueType Font library for Simple DirectMedia Layer 1.2, libraries
+ii  libsdl-ttf2.0-dev:amd64       2.0.11-6                       amd64        TrueType Font library for Simple DirectMedia Layer 1.2, development files
+ii  libsdl1.2-dev                 1.2.15+dfsg2-8                 amd64        Simple DirectMedia Layer development files
+ii  libsdl1.2debian:amd64         1.2.15+dfsg2-8                 amd64        Simple DirectMedia Layer
+ii  libsdl2-2.0-0:amd64           2.26.5+dfsg-1                  amd64        Simple DirectMedia Layer
+ii  libsdl2-dev:amd64             2.26.5+dfsg-1                  amd64        Simple DirectMedia Layer development files
+ii  libsdl2-ttf-2.0-0:amd64       2.20.1+dfsg-2                  amd64        TrueType Font library for Simple DirectMedia Layer 2, libraries
+ii  libsdl2-ttf-dev:amd64         2.20.1+dfsg-2                  amd64        TrueType Font library for Simple DirectMedia Layer 2, development files
+/usr/bin/gcc
+/usr/bin/g++
+gcc (Debian 12.2.0-14+deb12u1) 12.2.0
+[97] assistant: [reasoning]
+SDL1.2 dev and SDL2 dev are both available. I can compile to verify.
+
+Now let me look at a Linux example to see how it's structured (to potentially write a test program verifying the new behavior). But first, let me review the git history to understand the baseline (maybe there are hints about the expected API in recent commits).
+[tool:bash] {"command": "cd /workspace/repo && git log --oneline | head -10 && git status && git diff --stat | tail -3", "timeout": 10}
+[98] toolResult: 4568d6f Merge pull request #595 from 94xhn/fix/xgraph-setrange-scaling
+80b8d8c Fix XGraph: scale data values into pixel height using configured range
+605db3c Merge pull request #589 from goddade/master
+649e850 Use SCANCODE in SDL2
+c69453e Update GUIslice_version.h
+efd69b2 Merge pull request #588 from goddade/master
+8622112 Fix: sym is truncated to int16.
+3c1955c Enable touch input for SDL driver
+b09db7a Merge pull request #584 from Pconti31/pconti-font-example
+a9994e0 add example smoothfont in flash
+On branch master
+nothing to commit, working tree clean

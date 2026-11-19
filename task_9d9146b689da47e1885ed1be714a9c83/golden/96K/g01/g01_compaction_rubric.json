@@ -1,0 +1,164 @@
+{
+  "criteria": [
+    {
+      "criteria_id": "criteria_0",
+      "description": "States the goal of implementing per-request conditional branch execution (dynamic routing) in the Paddle Serving Python Pipeline DAG engine.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_1",
+      "description": "States the requirement that when routing leaves a request with no active path to the response, `DAGExecutor.call()` returns promptly with `err_no` set to `CustomExceptionCode.SKIPPED.value`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_2",
+      "description": "Records that the `pipeline` package resides at `/workspace/repo/python/pipeline` rather than `/app/pipeline`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_3",
+      "description": "Records that `/workspace/repo/python/sitecustomize.py` aliases `collections.Iterable` to `collections.abc.Iterable`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_4",
+      "description": "Records that `/workspace/repo/python/pipeline/operator.py` packages postprocess outputs into `ChannelData` objects keyed by `data_id` in `postped_data_dict`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_5",
+      "description": "Records that `/workspace/repo/python/pipeline/operator.py` defines `_auto_batching_generator` to merge up to `batch_size` requests per prediction using `timeout`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_6",
+      "description": "Records that `/workspace/repo/python/pipeline/channel.py` defines `ChannelDataType.ERROR = 2` on the `ChannelDataType` enum.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_7",
+      "description": "Records that `ChannelData` `__init__` in `/workspace/repo/python/pipeline/channel.py` accepts a `prod_error_code` parameter.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_8",
+      "description": "Records the agent's reasoning that running Python from `/app` with `PYTHONPATH=python` resolves to `/workspace/repo/python` via the `/app` symlink.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_9",
+      "description": "Records that `/workspace/repo/python/sitecustomize.py` has already been read in full.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_10",
+      "description": "Records that `/workspace/repo/python/pipeline/error_catch.py` has not yet been read.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_11",
+      "description": "Records that no code changes have been made to the repository yet.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_12",
+      "description": "Specifies inspecting `/workspace/repo/python/pipeline/dag.py` to locate `DAGExecutor.call()` as a pending step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_13",
+      "description": "Specifies reading the remaining unread body of `/workspace/repo/python/pipeline/operator.py` using offset reads as a pending step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_14",
+      "description": "Specifies inspecting `/workspace/repo/python/pipeline/pipeline_server.py` to locate `PipelineServer.set_response_op()` as a pending step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_15",
+      "description": "Keeps outstanding tasks grouped together so pending work is directly findable.",
+      "metadata": {
+        "category": "Structural clarity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_16",
+      "description": "Contains at most 17600 characters.",
+      "metadata": {
+        "category": "Compression efficiency",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_17",
+      "description": "States that `get_succ_op_names()` returns all transitive downstream `Op` names rather than only immediate successors.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_18",
+      "description": "States that `RequestOp` must be reported in the set returned by `get_pred_op_names()`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_19",
+      "description": "States that `Op`s constructed with `jump_to_ops` must be refactored to support `route`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "negative"
+      }
+    }
+  ]
+}
