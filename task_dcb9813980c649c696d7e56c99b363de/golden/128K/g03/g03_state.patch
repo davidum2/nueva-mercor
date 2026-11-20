@@ -1,0 +1,418 @@
+diff --git a/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java b/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java
+new file mode 100644
+index 0000000000..4a63d126c0
+--- /dev/null
++++ b/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java
+@@ -0,0 +1,284 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++
++package org.apache.druid.query.operator.window;
++
++import com.google.common.collect.ImmutableList;
++import org.apache.druid.error.DruidException;
++import org.apache.druid.query.rowsandcols.RowsAndColumns;
++import org.apache.druid.query.rowsandcols.column.Column;
++import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
++import org.apache.druid.query.rowsandcols.semantic.ClusteredGroupPartitioner;
++
++/**
++ * Resolves the frame boundaries of a value-based {@link WindowFrame.Range} frame.
++ * <p>
++ * The input must already be sorted, within each partition, by the ordering column of the frame.  Rows whose
++ * ordering value is null are expected to be clustered at the start (ascending) or end (descending) of the
++ * partition, as produced by the standard sort machinery.
++ * <p>
++ * Rows are grouped into peer groups (rows that share the same ordering value).  All rows of a peer group get
++ * the same frame: the contiguous run of rows whose value falls between the current row's value plus the
++ * lower offset and the current row's value plus the upper offset.  A row whose ordering value is null
++ * resolves any finite bound to the corresponding edge of the null run.
++ */
++public class RangeFrameResolver
++{
++  /**
++   * Boundary positions of the peer groups; group {@code g} covers rows [{@code groupBoundaries[g]},
++   * {@code groupBoundaries[g + 1]}).
++   */
++  private final int[] groupBoundaries;
++  /**
++   * Frame start (inclusive) of each peer group.
++   */
++  private final int[] frameStarts;
++  /**
++   * Frame end (exclusive, never smaller than the frame start) of each peer group.
++   */
++  private final int[] frameEnds;
++
++  public RangeFrameResolver(final RowsAndColumns rac, final WindowFrame.Range frame)
++  {
++    final String orderColumn = frame.getOrderBy().getColumn();
++    final Column orderColumnObj = rac.findColumn(orderColumn);
++    if (orderColumnObj == null) {
++      throw DruidException.defensive(
++          "Column [%s] specified in WindowFrame [%s] does not exist",
++          orderColumn,
++          frame
++      );
++    }
++    final ColumnAccessor accessor = orderColumnObj.toAccessor();
++    final int numRows = accessor.numRows();
++
++    final boolean hasFiniteBound = frame.getLowerOffset() != null || frame.getUpperOffset() != null;
++    if (hasFiniteBound && !accessor.getType().isNumeric()) {
++      throw DruidException.defensive(
++          "WindowFrame [%s] requires a numeric ordering column, found column [%s] of type [%s]",
++          frame,
++          orderColumn,
++          accessor.getType()
++      );
++    }
++
++    this.groupBoundaries = ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(ImmutableList.of(orderColumn));
++    final int numGroups = groupBoundaries.length == 0 ? 0 : groupBoundaries.length - 1;
++    this.frameStarts = new int[numGroups];
++    this.frameEnds = new int[numGroups];
++
++    final boolean ascending = frame.getOrderBy().getDirection()
++                                                     .getDirectionInt() > 0;
++    final Double lowerOffset = frame.getLowerOffset();
++    final Double upperOffset = frame.getUpperOffset();
++
++    // Null values sort before all non-null values when ascending and after all non-null values when
++    // descending, so the null run is a prefix (ascending) or suffix (descending) of the partition.
++    final int nullRunStart;
++    final int nullRunEnd;
++    if (ascending) {
++      nullRunStart = 0;
++      nullRunEnd = countLeadingNulls(accessor, numRows);
++    } else {
++      nullRunEnd = numRows;
++      nullRunStart = numRows - countTrailingNulls(accessor, numRows);
++    }
++
++    for (int g = 0; g < numGroups; g++) {
++      final int groupStart = groupBoundaries[g];
++      if (accessor.isNull(groupStart)) {
++        // The current row's value is null; finite bounds resolve to the edges of the null run.
++        frameStarts[g] = lowerOffset == null ? 0 : nullRunStart;
++        frameEnds[g] = upperOffset == null ? numRows : nullRunEnd;
++        continue;
++      }
++
++      final double value = accessor.getDouble(groupStart);
++      if (ascending) {
++        frameStarts[g] = lowerOffset == null
++                        ? 0
++                        : lowerBoundAscending(accessor, nullRunEnd, numRows, value + lowerOffset);
++        frameEnds[g] = upperOffset == null
++                        ? numRows
++                        : upperBoundAscending(accessor, nullRunEnd, numRows, value + upperOffset);
++      } else {
++        frameStarts[g] = lowerOffset == null
++                        ? 0
++                        : lowerBoundDescending(accessor, 0, nullRunStart, value - lowerOffset);
++        frameEnds[g] = upperOffset == null
++                        ? numRows
++                        : upperBoundDescending(accessor, 0, nullRunStart, value - upperOffset);
++      }
++      // The frame can be empty (and the bounds can even be inverted) if the offset interval does not
++      // contain any value; normalize so that the frame end is never before the frame start.
++      frameEnds[g] = Math.max(frameStarts[g], frameEnds[g]);
++    }
++  }
++
++  public int getNumGroups()
++  {
++    return groupBoundaries.length == 0 ? 0 : groupBoundaries.length - 1;
++  }
++
++  /**
++   * First row (inclusive) of peer group {@code group}.
++   */
++  public int getGroupStart(int group)
++  {
++    return groupBoundaries[group];
++  }
++
++  /**
++   * One past the last row (exclusive) of peer group {@code group}.
++   */
++  public int getGroupEnd(int group)
++  {
++    return groupBoundaries[group + 1];
++  }
++
++  /**
++   * First row (inclusive) of the frame of peer group {@code group}.
++   */
++  public int getFrameStart(int group)
++  {
++    return frameStarts[group];
++  }
++
++  /**
++   * One past the last row (exclusive) of the frame of peer group {@code group}.
++   */
++  public int getFrameEnd(int group)
++  {
++    return frameEnds[group];
++  }
++
++  private static int countLeadingNulls(final ColumnAccessor accessor, final int numRows)
++  {
++    int nulls = 0;
++    while (nulls < numRows && accessor.isNull(nulls)) {
++      nulls++;
++    }
++    return nulls;
++  }
++
++  private static int countTrailingNulls(final ColumnAccessor accessor, final int numRows)
++  {
++    int nulls = 0;
++    while (nulls < numRows && accessor.isNull(numRows - 1 - nulls)) {
++      nulls++;
++    }
++    return nulls;
++  }
++
++  /**
++   * First row in [{@code lo}, {@code hi}) whose value is at least {@code target}, assuming the region is
++   * sorted ascending.  Returns {@code hi} if there is no such row.
++   */
++  private static int lowerBoundAscending(
++      final ColumnAccessor accessor,
++      final int lo,
++      final int hi,
++      final double target
++  )
++  {
++    int low = lo;
++    int high = hi;
++    while (low < high) {
++      final int mid = (low + high) >>> 1;
++      if (accessor.getDouble(mid) < target) {
++        low = mid + 1;
++      } else {
++        high = mid;
++      }
++    }
++    return low;
++  }
++
++  /**
++   * First row in [{@code lo}, {@code hi}) whose value is greater than {@code target}, assuming the region is
++   * sorted ascending.  Returns {@code hi} if there is no such row.
++   */
++  private static int upperBoundAscending(
++      final ColumnAccessor accessor,
++      final int lo,
++      final int hi,
++      final double target
++  )
++  {
++    int low = lo;
++    int high = hi;
++    while (low < high) {
++      final int mid = (low + high) >>> 1;
++      if (accessor.getDouble(mid) <= target) {
++        low = mid + 1;
++      } else {
++        high = mid;
++      }
++    }
++    return low;
++  }
++
++  /**
++   * First row in [{@code lo}, {@code hi}) whose value is at most {@code target}, assuming the region is
++   * sorted descending.  Returns {@code hi} if there is no such row.
++   */
++  private static int lowerBoundDescending(
++      final ColumnAccessor accessor,
++      final int lo,
++      final int hi,
++      final double target
++  )
++  {
++    int low = lo;
++    int high = hi;
++    while (low < high) {
++      final int mid = (low + high) >>> 1;
++      if (accessor.getDouble(mid) > target) {
++        low = mid + 1;
++      } else {
++        high = mid;
++      }
++    }
++    return low;
++  }
++
++  /**
++   * First row in [{@code lo}, {@code hi}) whose value is less than {@code target}, assuming the region is
++   * sorted descending.  Returns {@code hi} if there is no such row.
++   */
++  private static int upperBoundDescending(
++      final ColumnAccessor accessor,
++      final int lo,
++      final int hi,
++      final double target
++  )
++  {
++    int low = lo;
++    int high = hi;
++    while (low < high) {
++      final int mid = (low + high) >>> 1;
++      if (accessor.getDouble(mid) >= target) {
++        low = mid + 1;
++      } else {
++        high = mid;
++      }
++    }
++    return low;
++  }
++}
+diff --git a/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java b/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
+index 2dd827d323..a97c22f5a4 100644
+--- a/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
++++ b/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
+@@ -26,6 +26,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Lists;
+ import org.apache.druid.annotations.SubclassesMustOverrideEqualsAndHashCode;
++import org.apache.druid.query.operator.ColumnWithDirection;
+ 
+ import javax.annotation.Nullable;
+ 
+@@ -36,6 +37,7 @@ import java.util.Objects;
+ @JsonSubTypes(value = {
+     @JsonSubTypes.Type(name = "rows", value = WindowFrame.Rows.class),
+     @JsonSubTypes.Type(name = "groups", value = WindowFrame.Groups.class),
++    @JsonSubTypes.Type(name = "range", value = WindowFrame.Range.class),
+ })
+ @SubclassesMustOverrideEqualsAndHashCode
+ public interface WindowFrame
+@@ -55,6 +57,22 @@ public interface WindowFrame
+     return new WindowFrame.Groups(lowerOffset, upperOffset, orderByColumns);
+   }
+ 
++  /**
++   * Creates a value-based RANGE frame.
++   *
++   * @param lowerOffset signed distance, in the value space of the ordering column, from the current row's
++   *                    value to the frame's lower edge; negative for PRECEDING, positive for FOLLOWING,
++   *                    null if the frame is unbounded on the lower side
++   * @param upperOffset signed distance, in the value space of the ordering column, from the current row's
++   *                    value to the frame's upper edge; negative for PRECEDING, positive for FOLLOWING,
++   *                    null if the frame is unbounded on the upper side
++   * @param orderBy     the single ordering column that the offsets apply to
++   */
++  static Range range(@Nullable Double lowerOffset, @Nullable Double upperOffset, ColumnWithDirection orderBy)
++  {
++    return new Range(lowerOffset, upperOffset, orderBy);
++  }
++
+   static WindowFrame forOrderBy(String... orderByColumns)
+   {
+     return groups(null, 0, Lists.newArrayList(orderByColumns));
+@@ -200,6 +218,84 @@ public interface WindowFrame
+     }
+   }
+ 
++  /**
++   * A value-based RANGE frame.  The frame of a row is the set of rows whose value in the single ordering
++   * column falls between the current row's value plus the lower offset and the current row's value plus the
++   * upper offset.  A null offset means the frame is unbounded (positionally) on that side.  Rows whose
++   * ordering value is null resolve finite bounds to the edges of the contiguous run of null values.
++   */
++  class Range implements WindowFrame
++  {
++    @JsonProperty
++    private final Double lowerOffset;
++    @JsonProperty
++    private final Double upperOffset;
++    @JsonProperty
++    private final ColumnWithDirection orderBy;
++
++    @JsonCreator
++    public Range(
++        @JsonProperty("lowerOffset") @Nullable Double lowerOffset,
++        @JsonProperty("upperOffset") @Nullable Double upperOffset,
++        @JsonProperty("orderBy") ColumnWithDirection orderBy
++    )
++    {
++      this.lowerOffset = lowerOffset;
++      this.upperOffset = upperOffset;
++      this.orderBy = orderBy;
++    }
++
++    @Nullable
++    public Double getLowerOffset()
++    {
++      return lowerOffset;
++    }
++
++    @Nullable
++    public Double getUpperOffset()
++    {
++      return upperOffset;
++    }
++
++    public ColumnWithDirection getOrderBy()
++    {
++      return orderBy;
++    }
++
++    @Override
++    public int hashCode()
++    {
++      return Objects.hash(lowerOffset, upperOffset, orderBy);
++    }
++
++    @Override
++    public boolean equals(Object obj)
++    {
++      if (this == obj) {
++        return true;
++      }
++      if (obj == null) {
++        return false;
++      }
++      if (getClass() != obj.getClass()) {
++        return false;
++      }
++      Range other = (Range) obj;
++      return Objects.equals(lowerOffset, other.lowerOffset)
++          && Objects.equals(upperOffset, other.upperOffset)
++          && Objects.equals(orderBy, other.orderBy);
++    }
++
++    @Override
++    public String toString()
++    {
++      return "WindowFrame.Range [" +
++          "lowerOffset=" + lowerOffset +
++          ", upperOffset=" + upperOffset +
++          ", orderBy=" + orderBy + "]";
++    }
++  }
++
+   @SuppressWarnings("unchecked")
+   @Nullable
+   default <T extends WindowFrame> T unwrap(Class<T> clazz)

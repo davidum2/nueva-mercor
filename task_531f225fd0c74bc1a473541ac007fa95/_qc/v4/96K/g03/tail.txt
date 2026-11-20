@@ -1,0 +1,877 @@
+[43] assistant: [reasoning]
+I now have a comprehensive understanding of the engine internals. Let me now examine the remaining pieces needed for design decisions:
+
+1. `DomainConstants.java` (full) — I read a truncated version. Let me read it fully.
+2. `StateMachineUtils.java` — validator graph traversal.
+3. `StateParserFactory.java` + `BaseStateParser` + `AbstractTaskStateParser` + an example parser like `ScriptTaskStateParser`/`ServiceTaskStateParser` (need full reads to model `WaitStateParser`).
+4. `StateMachineProcessRouter` — routes to TaskStateRouter.
+5. `LoopStartStateHandler` — model of a simple handler.
+6. `StateInstance`/`StateMachineInstance` interfaces.
+7. `State.java`, `BaseState`, `AbstractTaskState`.
+8. `ProcessContextBuilder`.
+9. `DefaultStateMachineConfig` — how event publishers are wired, how interceptors get attached (LoadLevel annotations - ServiceTaskHandlerInterceptor is loaded via enhanced service loader?).
+
+Actually wait — `ServiceTaskHandlerInterceptor` has `@LoadLevel(name = "ServiceTask", order = 100)` and a `match(Class)` method. Let me check how it's registered — probably in DefaultStateMachineConfig via EnhancedServiceLoader.
+
+Let me look at DefaultStateMachineConfig.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/DefaultStateMachineConfig.java"}
+[tool error]
+File not found: /workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/DefaultStateMachineConfig.java
+[44] assistant: [tool:bash] {"command": "find saga -name \"DefaultStateMachineConfig.java\" -o -name \"StateMachineProcessRouter.java\" -o -name \"StateParserFactory.java\" -o -name \"DomainConstants.java\" | grep -v target"}
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java
+saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/impl/DefaultStateMachineConfig.java
+saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/DomainConstants.java
+saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/StateParserFactory.java
+[45] assistant: [tool:read] {"filePath": "/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/impl/DefaultStateMachineConfig.java"}
+<path>/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/impl/DefaultStateMachineConfig.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.impl;
+18: 
+19: import org.apache.seata.saga.engine.config.AbstractStateMachineConfig;
+20: import org.apache.seata.saga.engine.expression.ExpressionFactoryManager;
+21: import org.apache.seata.saga.engine.expression.spel.SpringELExpressionFactory;
+22: import org.apache.seata.saga.engine.invoker.ServiceInvokerManager;
+23: import org.apache.seata.saga.engine.invoker.impl.SpringBeanServiceInvoker;
+24: import org.apache.seata.saga.engine.utils.ResourceUtil;
+25: import org.apache.seata.saga.statelang.domain.DomainConstants;
+26: import org.springframework.beans.factory.InitializingBean;
+27: import org.springframework.context.ApplicationContext;
+28: import org.springframework.context.ApplicationContextAware;
+29: import org.springframework.core.io.Resource;
+30: 
+31: import java.io.IOException;
+32: import java.io.InputStream;
+33: 
+34: /**
+35:  * State machine configuration base spring. In spring context,some uses will be combined with the spring framework.
+36:  * such as expression evaluation add spring el impl, serviceInvoker add spring bean Invoker impl, etc ...
+37:  *
+38:  */
+39: public class DefaultStateMachineConfig extends AbstractStateMachineConfig
+40:         implements ApplicationContextAware, InitializingBean {
+41: 
+42:     private ApplicationContext applicationContext;
+43: 
+44:     private String[] resources = new String[] {"classpath*:seata/saga/statelang/**/*.json"};
+45: 
+46:     @Override
+47:     public void afterPropertiesSet() throws Exception {
+48:         // super init
+49:         super.init();
+50: 
+51:         // register StateMachine def  after init
+52:         registerStateMachineDef();
+53: 
+54:         // register spring el ExpressionFactoryManager
+55:         registerSpringElExpressionFactoryManager();
+56: 
+57:         // register serviceInvoker as spring bean invoker after init
+58:         registerSpringBeanServiceInvoker();
+59:     }
+60: 
+61:     private void registerStateMachineDef() throws IOException {
+62:         Resource[] registerResources = ResourceUtil.getResources(this.resources);
+63:         InputStream[] resourceAsStreamArray = new InputStream[registerResources.length];
+64:         for (int i = 0; i < registerResources.length; i++) {
+65:             resourceAsStreamArray[i] = registerResources[i].getInputStream();
+66:         }
+67:         getStateMachineRepository().registerByResources(resourceAsStreamArray, getDefaultTenantId());
+68:     }
+69: 
+70:     private void registerSpringElExpressionFactoryManager() {
+71:         ExpressionFactoryManager expressionFactoryManager = getExpressionFactoryManager();
+72:         SpringELExpressionFactory springELExpressionFactory = new SpringELExpressionFactory(getApplicationContext());
+73:         expressionFactoryManager.putExpressionFactory(
+74:                 ExpressionFactoryManager.DEFAULT_EXPRESSION_TYPE, springELExpressionFactory);
+75:     }
+76: 
+77:     private void registerSpringBeanServiceInvoker() {
+78:         ServiceInvokerManager manager = getServiceInvokerManager();
+79:         SpringBeanServiceInvoker springBeanServiceInvoker = new SpringBeanServiceInvoker();
+80:         springBeanServiceInvoker.setSagaJsonParser(getSagaJsonParser());
+81:         springBeanServiceInvoker.setApplicationContext(getApplicationContext());
+82:         springBeanServiceInvoker.setThreadPoolExecutor(getThreadPoolExecutor());
+83:         manager.putServiceInvoker(DomainConstants.SERVICE_TYPE_SPRING_BEAN, springBeanServiceInvoker);
+84:     }
+85: 
+86:     public ApplicationContext getApplicationContext() {
+87:         return applicationContext;
+88:     }
+89: 
+90:     public void setResources(String[] resources) {
+91:         this.resources = resources;
+92:     }
+93: 
+94:     @Override
+95:     public void setApplicationContext(ApplicationContext applicationContext) {
+96:         this.applicationContext = applicationContext;
+97:     }
+98: }
+
+(End of file - total 98 lines)
+</content>
+[46] assistant: [reasoning]
+DefaultStateMachineConfig extends AbstractStateMachineConfig which is in the engine module. Let me find AbstractStateMachineConfig and the wiring of the process handler/router and interceptors (probably via EnhancedServiceLoader with the `@LoadLevel` annotations and SPI files). Let me search for the config file and how ServiceTaskHandlerInterceptor is loaded.
+[tool:bash] {"command": "find saga -name \"AbstractStateMachineConfig.java\" -o -name \"StateMachineConfig.java\" | grep -v target; echo ---; grep -rn \"EnhancedServiceLoader\\|initDefaultHandlers\\|initDefaultRouters\" saga/seata-saga-engine/src/main/java saga/seata-saga-spring/src/main/java --include=*.java | grep -i \"handler\\|router\\|interceptor\\|loader\" | head -30"}
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineConfig.java
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/AbstractStateMachineConfig.java
+---
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/AbstractStateMachineConfig.java:19:import org.apache.seata.common.loader.EnhancedServiceLoader;
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/AbstractStateMachineConfig.java:242:        stateMachineProcessHandler.initDefaultHandlers();
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/AbstractStateMachineConfig.java:266:                        EnhancedServiceLoader.loadAll(StateHandlerInterceptor.class);
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/AbstractStateMachineConfig.java:281:                        EnhancedServiceLoader.loadAll(StateRouterInterceptor.class);
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java:86:    public void initDefaultHandlers() {
+[47] assistant: [tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/AbstractStateMachineConfig.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/AbstractStateMachineConfig.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.config;
+18: 
+19: import org.apache.seata.common.loader.EnhancedServiceLoader;
+20: import org.apache.seata.saga.engine.StateMachineConfig;
+21: import org.apache.seata.saga.engine.expression.ExpressionFactoryManager;
+22: import org.apache.seata.saga.engine.expression.ExpressionResolver;
+23: import org.apache.seata.saga.engine.expression.exception.ExceptionMatchExpressionFactory;
+24: import org.apache.seata.saga.engine.expression.impl.DefaultExpressionResolver;
+25: import org.apache.seata.saga.engine.expression.seq.SequenceExpressionFactory;
+26: import org.apache.seata.saga.engine.invoker.ServiceInvokerManager;
+27: import org.apache.seata.saga.engine.pcext.InterceptableStateHandler;
+28: import org.apache.seata.saga.engine.pcext.InterceptableStateRouter;
+29: import org.apache.seata.saga.engine.pcext.StateHandler;
+30: import org.apache.seata.saga.engine.pcext.StateHandlerInterceptor;
+31: import org.apache.seata.saga.engine.pcext.StateMachineProcessHandler;
+32: import org.apache.seata.saga.engine.pcext.StateMachineProcessRouter;
+33: import org.apache.seata.saga.engine.pcext.StateRouter;
+34: import org.apache.seata.saga.engine.pcext.StateRouterInterceptor;
+35: import org.apache.seata.saga.engine.repo.StateLogRepository;
+36: import org.apache.seata.saga.engine.repo.StateMachineRepository;
+37: import org.apache.seata.saga.engine.repo.impl.StateLogRepositoryImpl;
+38: import org.apache.seata.saga.engine.repo.impl.StateMachineRepositoryImpl;
+39: import org.apache.seata.saga.engine.sequence.SeqGenerator;
+40: import org.apache.seata.saga.engine.sequence.UUIDSeqGenerator;
+41: import org.apache.seata.saga.engine.store.StateLangStore;
+42: import org.apache.seata.saga.engine.store.StateLogStore;
+43: import org.apache.seata.saga.engine.strategy.StatusDecisionStrategy;
+44: import org.apache.seata.saga.engine.strategy.impl.DefaultStatusDecisionStrategy;
+45: import org.apache.seata.saga.proctrl.ProcessRouter;
+46: import org.apache.seata.saga.proctrl.ProcessType;
+47: import org.apache.seata.saga.proctrl.eventing.impl.AsyncEventBus;
+48: import org.apache.seata.saga.proctrl.eventing.impl.DirectEventBus;
+49: import org.apache.seata.saga.proctrl.eventing.impl.ProcessCtrlEventConsumer;
+50: import org.apache.seata.saga.proctrl.eventing.impl.ProcessCtrlEventPublisher;
+51: import org.apache.seata.saga.proctrl.handler.DefaultRouterHandler;
+52: import org.apache.seata.saga.proctrl.handler.ProcessHandler;
+53: import org.apache.seata.saga.proctrl.handler.RouterHandler;
+54: import org.apache.seata.saga.proctrl.impl.ProcessControllerImpl;
+55: import org.apache.seata.saga.proctrl.process.impl.CustomizeBusinessProcessor;
+56: import org.apache.seata.saga.statelang.domain.DomainConstants;
+57: import org.apache.seata.saga.statelang.domain.StateType;
+58: 
+59: import javax.script.ScriptEngineManager;
+60: import java.io.InputStream;
+61: import java.util.HashMap;
+62: import java.util.List;
+63: import java.util.Map;
+64: import java.util.concurrent.ThreadPoolExecutor;
+65: 
+66: import static org.apache.seata.common.DefaultValues.DEFAULT_CLIENT_REPORT_SUCCESS_ENABLE;
+67: import static org.apache.seata.common.DefaultValues.DEFAULT_CLIENT_SAGA_BRANCH_REGISTER_ENABLE;
+68: import static org.apache.seata.common.DefaultValues.DEFAULT_CLIENT_SAGA_COMPENSATE_PERSIST_MODE_UPDATE;
+69: import static org.apache.seata.common.DefaultValues.DEFAULT_CLIENT_SAGA_RETRY_PERSIST_MODE_UPDATE;
+70: import static org.apache.seata.common.DefaultValues.DEFAULT_SAGA_JSON_PARSER;
+71: 
+72: /**
+73:  * Abstract StateMachineConfig
+74:  */
+75: public abstract class AbstractStateMachineConfig implements StateMachineConfig {
+76: 
+77:     public static final int DEFAULT_TRANS_OPERATION_TIMEOUT = 60000 * 30;
+78:     public static final int DEFAULT_SERVICE_INVOKE_TIMEOUT = 60000 * 5;
+79: 
+80:     private ExpressionFactoryManager expressionFactoryManager;
+81:     private ExpressionResolver expressionResolver;
+82: 
+83:     private StateLogRepository stateLogRepository;
+84:     /**
+85:      * NullAble
+86:      */
+87:     private StateLogStore stateLogStore;
+88: 
+89:     private StateMachineRepository stateMachineRepository;
+90:     /**
+91:      * NullAble
+92:      */
+93:     private StateLangStore stateLangStore;
+94: 
+95:     private StatusDecisionStrategy statusDecisionStrategy;
+96: 
+97:     private SeqGenerator seqGenerator = new UUIDSeqGenerator();
+98: 
+99:     private ProcessCtrlEventPublisher syncProcessCtrlEventPublisher;
+100:     private ProcessCtrlEventPublisher asyncProcessCtrlEventPublisher;
+101: 
+102:     private int transOperationTimeout = DEFAULT_TRANS_OPERATION_TIMEOUT;
+103:     private int serviceInvokeTimeout = DEFAULT_SERVICE_INVOKE_TIMEOUT;
+104: 
+105:     private boolean enableAsync = false;
+106:     private ThreadPoolExecutor threadPoolExecutor;
+107: 
+108:     private ServiceInvokerManager serviceInvokerManager;
+109:     private ScriptEngineManager scriptEngineManager;
+110: 
+111:     private String charset = "UTF-8";
+112:     private String defaultTenantId = "000001";
+113: 
+114:     private String sagaJsonParser = DEFAULT_SAGA_JSON_PARSER;
+115: 
+116:     private boolean autoRegisterResources = true;
+117: 
+118:     private InputStream[] stateMachineDefInputStreamArray;
+119: 
+120:     private boolean sagaRetryPersistModeUpdate = DEFAULT_CLIENT_SAGA_RETRY_PERSIST_MODE_UPDATE;
+121:     private boolean sagaCompensatePersistModeUpdate = DEFAULT_CLIENT_SAGA_COMPENSATE_PERSIST_MODE_UPDATE;
+122: 
+123:     private boolean rmReportSuccessEnable = DEFAULT_CLIENT_REPORT_SUCCESS_ENABLE;
+124:     private boolean sagaBranchRegisterEnable = DEFAULT_CLIENT_SAGA_BRANCH_REGISTER_ENABLE;
+125: 
+126:     public void init() throws Exception {
+127:         // init seqGenerator
+128:         if (seqGenerator == null) {
+129:             seqGenerator = new UUIDSeqGenerator();
+130:         }
+131: 
+132:         // init ExpressionFactoryManager
+133:         if (expressionFactoryManager == null) {
+134:             expressionFactoryManager = new ExpressionFactoryManager();
+135: 
+136:             SequenceExpressionFactory sequenceExpressionFactory = new SequenceExpressionFactory();
+137:             sequenceExpressionFactory.setSeqGenerator(seqGenerator);
+138:             expressionFactoryManager.putExpressionFactory(
+139:                     DomainConstants.EXPRESSION_TYPE_SEQUENCE, sequenceExpressionFactory);
+140: 
+141:             ExceptionMatchExpressionFactory exceptionMatchExpressionFactory = new ExceptionMatchExpressionFactory();
+142:             expressionFactoryManager.putExpressionFactory(
+143:                     DomainConstants.EXPRESSION_TYPE_EXCEPTION, exceptionMatchExpressionFactory);
+144:         }
+145: 
+146:         // init expressionResolver
+147:         if (expressionResolver == null) {
+148:             DefaultExpressionResolver defaultExpressionResolver = new DefaultExpressionResolver();
+149:             defaultExpressionResolver.setExpressionFactoryManager(expressionFactoryManager);
+150:             expressionResolver = defaultExpressionResolver;
+151:         }
+152: 
+153:         if (stateLogRepository == null) {
+154:             StateLogRepositoryImpl defaultStateLogRepository = new StateLogRepositoryImpl();
+155:             defaultStateLogRepository.setStateLogStore(stateLogStore);
+156:             this.stateLogRepository = defaultStateLogRepository;
+157:         }
+158: 
+159:         if (stateMachineRepository == null) {
+160:             StateMachineRepositoryImpl defaultStateMachineRepository = new StateMachineRepositoryImpl();
+161:             defaultStateMachineRepository.setCharset(charset);
+162:             defaultStateMachineRepository.setSeqGenerator(seqGenerator);
+163:             defaultStateMachineRepository.setDefaultTenantId(defaultTenantId);
+164:             defaultStateMachineRepository.setJsonParserName(sagaJsonParser);
+165:             defaultStateMachineRepository.setStateLangStore(stateLangStore);
+166:             this.stateMachineRepository = defaultStateMachineRepository;
+167:         }
+168: 
+169:         // auto register resources
+170:         if (autoRegisterResources && stateMachineDefInputStreamArray != null) {
+171:             stateMachineRepository.registerByResources(stateMachineDefInputStreamArray, defaultTenantId);
+172:         }
+173: 
+174:         if (statusDecisionStrategy == null) {
+175:             statusDecisionStrategy = new DefaultStatusDecisionStrategy();
+176:         }
+177: 
+178:         if (syncProcessCtrlEventPublisher == null) {
+179:             ProcessCtrlEventPublisher syncEventPublisher = new ProcessCtrlEventPublisher();
+180: 
+181:             ProcessControllerImpl processorController = createProcessorController(syncEventPublisher);
+182: 
+183:             ProcessCtrlEventConsumer processCtrlEventConsumer = new ProcessCtrlEventConsumer();
+184:             processCtrlEventConsumer.setProcessController(processorController);
+185: 
+186:             DirectEventBus directEventBus = new DirectEventBus();
+187:             syncEventPublisher.setEventBus(directEventBus);
+188: 
+189:             directEventBus.registerEventConsumer(processCtrlEventConsumer);
+190: 
+191:             syncProcessCtrlEventPublisher = syncEventPublisher;
+192:         }
+193: 
+194:         if (enableAsync && asyncProcessCtrlEventPublisher == null) {
+195:             ProcessCtrlEventPublisher asyncEventPublisher = new ProcessCtrlEventPublisher();
+196: 
+197:             ProcessControllerImpl processorController = createProcessorController(asyncEventPublisher);
+198: 
+199:             ProcessCtrlEventConsumer processCtrlEventConsumer = new ProcessCtrlEventConsumer();
+200:             processCtrlEventConsumer.setProcessController(processorController);
+201: 
+202:             AsyncEventBus asyncEventBus = new AsyncEventBus();
+203:             asyncEventBus.setThreadPoolExecutor(getThreadPoolExecutor());
+204:             asyncEventPublisher.setEventBus(asyncEventBus);
+205: 
+206:             asyncEventBus.registerEventConsumer(processCtrlEventConsumer);
+207: 
+208:             asyncProcessCtrlEventPublisher = asyncEventPublisher;
+209:         }
+210: 
+211:         if (this.serviceInvokerManager == null) {
+212:             this.serviceInvokerManager = new ServiceInvokerManager();
+213:         }
+214: 
+215:         if (this.scriptEngineManager == null) {
+216:             this.scriptEngineManager = new ScriptEngineManager();
+217:         }
+218:     }
+219: 
+220:     public ProcessControllerImpl createProcessorController(ProcessCtrlEventPublisher eventPublisher) throws Exception {
+221:         StateMachineProcessHandler stateMachineProcessHandler = buildStateMachineProcessHandler();
+222:         DefaultRouterHandler defaultRouterHandler = buildDefaultRouterHandler(eventPublisher);
+223: 
+224:         CustomizeBusinessProcessor customizeBusinessProcessor = new CustomizeBusinessProcessor();
+225: 
+226:         Map<String, ProcessHandler> processHandlerMap = new HashMap<>(1);
+227:         processHandlerMap.put(ProcessType.STATE_LANG.getCode(), stateMachineProcessHandler);
+228:         customizeBusinessProcessor.setProcessHandlers(processHandlerMap);
+229: 
+230:         Map<String, RouterHandler> routerHandlerMap = new HashMap<>(1);
+231:         routerHandlerMap.put(ProcessType.STATE_LANG.getCode(), defaultRouterHandler);
+232:         customizeBusinessProcessor.setRouterHandlers(routerHandlerMap);
+233: 
+234:         ProcessControllerImpl processorController = new ProcessControllerImpl();
+235:         processorController.setBusinessProcessor(customizeBusinessProcessor);
+236: 
+237:         return processorController;
+238:     }
+239: 
+240:     private StateMachineProcessHandler buildStateMachineProcessHandler() {
+241:         StateMachineProcessHandler stateMachineProcessHandler = new StateMachineProcessHandler();
+242:         stateMachineProcessHandler.initDefaultHandlers();
+243:         loadStateHandlerInterceptors(stateMachineProcessHandler.getStateHandlers());
+244:         return stateMachineProcessHandler;
+245:     }
+246: 
+247:     private DefaultRouterHandler buildDefaultRouterHandler(ProcessCtrlEventPublisher eventPublisher) {
+248:         DefaultRouterHandler defaultRouterHandler = new DefaultRouterHandler();
+249:         defaultRouterHandler.setEventPublisher(eventPublisher);
+250: 
+251:         StateMachineProcessRouter stateMachineProcessRouter = new StateMachineProcessRouter();
+252:         stateMachineProcessRouter.initDefaultStateRouters();
+253:         loadStateRouterInterceptors(stateMachineProcessRouter.getStateRouters());
+254: 
+255:         Map<String, ProcessRouter> processRouterMap = new HashMap<>(2);
+256:         processRouterMap.put(ProcessType.STATE_LANG.getCode(), stateMachineProcessRouter);
+257:         defaultRouterHandler.setProcessRouters(processRouterMap);
+258:         return defaultRouterHandler;
+259:     }
+260: 
+261:     public void loadStateHandlerInterceptors(Map<StateType, StateHandler> stateHandlerMap) {
+262:         for (StateHandler stateHandler : stateHandlerMap.values()) {
+263:             if (stateHandler instanceof InterceptableStateHandler) {
+264:                 InterceptableStateHandler interceptableStateHandler = (InterceptableStateHandler) stateHandler;
+265:                 List<StateHandlerInterceptor> interceptorList =
+266:                         EnhancedServiceLoader.loadAll(StateHandlerInterceptor.class);
+267:                 for (StateHandlerInterceptor interceptor : interceptorList) {
+268:                     if (interceptor.match(interceptableStateHandler.getClass())) {
+269:                         interceptableStateHandler.addInterceptor(interceptor);
+270:                     }
+271:                 }
+272:             }
+273:         }
+274:     }
+275: 
+276:     public void loadStateRouterInterceptors(Map<StateType, StateRouter> stateRouterMap) {
+277:         for (StateRouter stateRouter : stateRouterMap.values()) {
+278:             if (stateRouter instanceof InterceptableStateRouter) {
+279:                 InterceptableStateRouter interceptableStateRouter = (InterceptableStateRouter) stateRouter;
+280:                 List<StateRouterInterceptor> interceptorList =
+281:                         EnhancedServiceLoader.loadAll(StateRouterInterceptor.class);
+282:                 for (StateRouterInterceptor interceptor : interceptorList) {
+283:                     if (interceptor.match(interceptableStateRouter.getClass())) {
+284:                         interceptableStateRouter.addInterceptor(interceptor);
+285:                     }
+286:                 }
+287:             }
+288:         }
+289:     }
+290: 
+291:     @Override
+292:     public StateLogRepository getStateLogRepository() {
+293:         return stateLogRepository;
+294:     }
+295: 
+296:     @Override
+297:     public StateLogStore getStateLogStore() {
+298:         return stateLogStore;
+299:     }
+300: 
+301:     @Override
+302:     public StateLangStore getStateLangStore() {
+303:         return stateLangStore;
+304:     }
+305: 
+306:     @Override
+307:     public ExpressionFactoryManager getExpressionFactoryManager() {
+308:         return expressionFactoryManager;
+309:     }
+310: 
+311:     @Override
+312:     public ExpressionResolver getExpressionResolver() {
+313:         return expressionResolver;
+314:     }
+315: 
+316:     @Override
+317:     public String getCharset() {
+318:         return charset;
+319:     }
+320: 
+321:     @Override
+322:     public String getDefaultTenantId() {
+323:         return defaultTenantId;
+324:     }
+325: 
+326:     @Override
+327:     public StateMachineRepository getStateMachineRepository() {
+328:         return stateMachineRepository;
+329:     }
+330: 
+331:     @Override
+332:     public StatusDecisionStrategy getStatusDecisionStrategy() {
+333:         return statusDecisionStrategy;
+334:     }
+335: 
+336:     @Override
+337:     public SeqGenerator getSeqGenerator() {
+338:         return seqGenerator;
+339:     }
+340: 
+341:     @Override
+342:     public ProcessCtrlEventPublisher getProcessCtrlEventPublisher() {
+343:         return syncProcessCtrlEventPublisher;
+344:     }
+345: 
+346:     @Override
+347:     public ProcessCtrlEventPublisher getAsyncProcessCtrlEventPublisher() {
+348:         return asyncProcessCtrlEventPublisher;
+349:     }
+350: 
+351:     @Override
+352:     public ThreadPoolExecutor getThreadPoolExecutor() {
+353:         return threadPoolExecutor;
+354:     }
+355: 
+356:     @Override
+357:     public boolean isEnableAsync() {
+358:         return enableAsync;
+359:     }
+360: 
+361:     @Override
+362:     public ServiceInvokerManager getServiceInvokerManager() {
+363:         return serviceInvokerManager;
+364:     }
+365: 
+366:     @Override
+367:     public int getTransOperationTimeout() {
+368:         return transOperationTimeout;
+369:     }
+370: 
+371:     @Override
+372:     public int getServiceInvokeTimeout() {
+373:         return serviceInvokeTimeout;
+374:     }
+375: 
+376:     @Override
+377:     public ScriptEngineManager getScriptEngineManager() {
+378:         return scriptEngineManager;
+379:     }
+380: 
+381:     public void setExpressionFactoryManager(ExpressionFactoryManager expressionFactoryManager) {
+382:         this.expressionFactoryManager = expressionFactoryManager;
+383:     }
+384: 
+385:     public void setExpressionResolver(ExpressionResolver expressionResolver) {
+386:         this.expressionResolver = expressionResolver;
+387:     }
+388: 
+389:     public void setStateLogRepository(StateLogRepository stateLogRepository) {
+390:         this.stateLogRepository = stateLogRepository;
+391:     }
+392: 
+393:     public void setStateLogStore(StateLogStore stateLogStore) {
+394:         this.stateLogStore = stateLogStore;
+395:     }
+396: 
+397:     public void setStateMachineRepository(StateMachineRepository stateMachineRepository) {
+398:         this.stateMachineRepository = stateMachineRepository;
+399:     }
+400: 
+401:     public void setStateLangStore(StateLangStore stateLangStore) {
+402:         this.stateLangStore = stateLangStore;
+403:     }
+404: 
+405:     public void setStatusDecisionStrategy(StatusDecisionStrategy statusDecisionStrategy) {
+406:         this.statusDecisionStrategy = statusDecisionStrategy;
+407:     }
+408: 
+409:     public void setSeqGenerator(SeqGenerator seqGenerator) {
+410:         this.seqGenerator = seqGenerator;
+411:     }
+412: 
+413:     public void setSyncProcessCtrlEventPublisher(ProcessCtrlEventPublisher syncProcessCtrlEventPublisher) {
+414:         this.syncProcessCtrlEventPublisher = syncProcessCtrlEventPublisher;
+415:     }
+416: 
+417:     public void setAsyncProcessCtrlEventPublisher(ProcessCtrlEventPublisher asyncProcessCtrlEventPublisher) {
+418:         this.asyncProcessCtrlEventPublisher = asyncProcessCtrlEventPublisher;
+419:     }
+420: 
+421:     public void setTransOperationTimeout(int transOperationTimeout) {
+422:         this.transOperationTimeout = transOperationTimeout;
+423:     }
+424: 
+425:     public void setServiceInvokeTimeout(int serviceInvokeTimeout) {
+426:         this.serviceInvokeTimeout = serviceInvokeTimeout;
+427:     }
+428: 
+429:     public void setEnableAsync(boolean enableAsync) {
+430:         this.enableAsync = enableAsync;
+431:     }
+432: 
+433:     public void setThreadPoolExecutor(ThreadPoolExecutor threadPoolExecutor) {
+434:         this.threadPoolExecutor = threadPoolExecutor;
+435:     }
+436: 
+437:     public void setServiceInvokerManager(ServiceInvokerManager serviceInvokerManager) {
+438:         this.serviceInvokerManager = serviceInvokerManager;
+439:     }
+440: 
+441:     public void setScriptEngineManager(ScriptEngineManager scriptEngineManager) {
+442:         this.scriptEngineManager = scriptEngineManager;
+443:     }
+444: 
+445:     public void setCharset(String charset) {
+446:         this.charset = charset;
+447:     }
+448: 
+449:     public void setDefaultTenantId(String defaultTenantId) {
+450:         this.defaultTenantId = defaultTenantId;
+451:     }
+452: 
+453:     /**
+454:      * @deprecated JSON serialization is configured globally through {@code json.serializerType}.
+455:      */
+456:     @Deprecated
+457:     public void setSagaJsonParser(String sagaJsonParser) {
+458:         this.sagaJsonParser = sagaJsonParser;
+459:     }
+460: 
+461:     public void setAutoRegisterResources(boolean autoRegisterResources) {
+462:         this.autoRegisterResources = autoRegisterResources;
+463:     }
+464: 
+465:     public void setStateMachineDefInputStreamArray(InputStream[] stateMachineDefInputStreamArray) {
+466:         this.stateMachineDefInputStreamArray = stateMachineDefInputStreamArray;
+467:     }
+468: 
+469:     /**
+470:      * @deprecated JSON serialization is configured globally through {@code json.serializerType}.
+471:      */
+472:     @Deprecated
+473:     public String getSagaJsonParser() {
+474:         return sagaJsonParser;
+475:     }
+476: 
+477:     public boolean isAutoRegisterResources() {
+478:         return autoRegisterResources;
+479:     }
+480: 
+481:     public InputStream[] getStateMachineDefInputStreamArray() {
+482:         return stateMachineDefInputStreamArray;
+483:     }
+484: 
+485:     public boolean isSagaRetryPersistModeUpdate() {
+486:         return sagaRetryPersistModeUpdate;
+487:     }
+488: 
+489:     public void setSagaRetryPersistModeUpdate(boolean sagaRetryPersistModeUpdate) {
+490:         this.sagaRetryPersistModeUpdate = sagaRetryPersistModeUpdate;
+491:     }
+492: 
+493:     public boolean isSagaCompensatePersistModeUpdate() {
+494:         return sagaCompensatePersistModeUpdate;
+495:     }
+496: 
+497:     public void setSagaCompensatePersistModeUpdate(boolean sagaCompensatePersistModeUpdate) {
+498:         this.sagaCompensatePersistModeUpdate = sagaCompensatePersistModeUpdate;
+499:     }
+500: 
+501:     public boolean isRmReportSuccessEnable() {
+502:         return rmReportSuccessEnable;
+503:     }
+504: 
+505:     public void setRmReportSuccessEnable(boolean rmReportSuccessEnable) {
+506:         this.rmReportSuccessEnable = rmReportSuccessEnable;
+507:     }
+508: 
+509:     public boolean isSagaBranchRegisterEnable() {
+510:         return sagaBranchRegisterEnable;
+511:     }
+512: 
+513:     public void setSagaBranchRegisterEnable(boolean sagaBranchRegisterEnable) {
+514:         this.sagaBranchRegisterEnable = sagaBranchRegisterEnable;
+515:     }
+516: }
+
+(End of file - total 516 lines)
+</content>
+[48] assistant: [reasoning]
+Now let me look at the remaining key files:
+1. `StateMachineProcessRouter` — routes by state type.
+2. `DomainConstants` (full).
+3. `StateParserFactory`.
+4. `BaseStateParser` / `AbstractTaskStateParser` full.
+5. `StateMachineUtils` (validator).
+6. An example parser: `ScriptTaskStateParser` impl and `ServiceTaskStateParser`.
+7. `LoopStartStateHandler` (model for a simple handler).
+8. `StateInstruction` (full).
+
+Let me batch read StateMachineProcessRouter and StateParserFactory.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext;
+18: 
+19: import org.apache.seata.common.exception.FrameworkException;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.saga.engine.StateMachineConfig;
+22: import org.apache.seata.saga.engine.pcext.routers.EndStateRouter;
+23: import org.apache.seata.saga.engine.pcext.routers.TaskStateRouter;
+24: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+25: import org.apache.seata.saga.proctrl.Instruction;
+26: import org.apache.seata.saga.proctrl.ProcessContext;
+27: import org.apache.seata.saga.proctrl.ProcessRouter;
+28: import org.apache.seata.saga.statelang.domain.DomainConstants;
+29: import org.apache.seata.saga.statelang.domain.State;
+30: import org.apache.seata.saga.statelang.domain.StateMachine;
+31: import org.apache.seata.saga.statelang.domain.StateType;
+32: 
+33: import java.util.ArrayList;
+34: import java.util.List;
+35: import java.util.Map;
+36: import java.util.concurrent.ConcurrentHashMap;
+37: 
+38: /**
+39:  * StateMachine ProcessRouter
+40:  *
+41:  * @see ProcessRouter
+42:  */
+43: public class StateMachineProcessRouter implements ProcessRouter {
+44: 
+45:     private final Map<StateType, StateRouter> stateRouters = new ConcurrentHashMap<>();
+46: 
+47:     @Override
+48:     public Instruction route(ProcessContext context) throws FrameworkException {
+49: 
+50:         StateInstruction stateInstruction = context.getInstruction(StateInstruction.class);
+51: 
+52:         State state;
+53:         if (stateInstruction.getTemporaryState() != null) {
+54:             state = stateInstruction.getTemporaryState();
+55:             stateInstruction.setTemporaryState(null);
+56:         } else {
+57:             StateMachineConfig stateMachineConfig =
+58:                     (StateMachineConfig) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
+59:             StateMachine stateMachine = stateMachineConfig
+60:                     .getStateMachineRepository()
+61:                     .getStateMachine(stateInstruction.getStateMachineName(), stateInstruction.getTenantId());
+62:             state = stateMachine.getStates().get(stateInstruction.getStateName());
+63:         }
+64: 
+65:         StateType stateType = state.getType();
+66: 
+67:         StateRouter router = stateRouters.get(stateType);
+68: 
+69:         Instruction instruction = null;
+70: 
+71:         List<StateRouterInterceptor> interceptors = null;
+72:         if (router instanceof InterceptableStateRouter) {
+73:             interceptors = ((InterceptableStateRouter) router).getInterceptors();
+74:         }
+75: 
+76:         List<StateRouterInterceptor> executedInterceptors = null;
+77:         Exception exception = null;
+78:         try {
+79:             if (CollectionUtils.isNotEmpty(interceptors)) {
+80:                 executedInterceptors = new ArrayList<>(interceptors.size());
+81:                 for (StateRouterInterceptor interceptor : interceptors) {
+82:                     executedInterceptors.add(interceptor);
+83:                     interceptor.preRoute(context, state);
+84:                 }
+85:             }
+86: 
+87:             instruction = router.route(context, state);
+88: 
+89:         } catch (Exception e) {
+90:             exception = e;
+91:             throw e;
+92:         } finally {
+93:             if (CollectionUtils.isNotEmpty(executedInterceptors)) {
+94:                 for (int i = executedInterceptors.size() - 1; i >= 0; i--) {
+95:                     StateRouterInterceptor interceptor = executedInterceptors.get(i);
+96:                     interceptor.postRoute(context, state, instruction, exception);
+97:                 }
+98:             }
+99: 
+100:             // if 'Succeed' or 'Fail' State did not configured, we must end the state machine
+101:             if (instruction == null && !stateInstruction.isEnd()) {
+102:                 EngineUtils.endStateMachine(context);
+103:             }
+104:         }
+105: 
+106:         return instruction;
+107:     }
+108: 
+109:     public void initDefaultStateRouters() {
+110:         if (!stateRouters.isEmpty()) {
+111:             return;
+112:         }
+113: 
+114:         TaskStateRouter taskStateRouter = new TaskStateRouter();
+115:         stateRouters.put(StateType.SERVICE_TASK, taskStateRouter);
+116:         stateRouters.put(StateType.SCRIPT_TASK, taskStateRouter);
+117:         stateRouters.put(StateType.CHOICE, taskStateRouter);
+118:         stateRouters.put(StateType.COMPENSATION_TRIGGER, taskStateRouter);
+119:         stateRouters.put(StateType.SUB_STATE_MACHINE, taskStateRouter);
+120:         stateRouters.put(StateType.SUB_MACHINE_COMPENSATION, taskStateRouter);
+121:         stateRouters.put(StateType.LOOP_START, taskStateRouter);
+122: 
+123:         stateRouters.put(StateType.SUCCEED, new EndStateRouter());
+124:         stateRouters.put(StateType.FAIL, new EndStateRouter());
+125:     }
+126: 
+127:     public Map<StateType, StateRouter> getStateRouters() {
+128:         return stateRouters;
+129:     }
+130: 
+131:     public void setStateRouters(Map<StateType, StateRouter> stateRouters) {
+132:         this.stateRouters.putAll(stateRouters);
+133:     }
+134: }
+
+(End of file - total 134 lines)
+</content>
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/StateParserFactory.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/StateParserFactory.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.parser;
+18: 
+19: import org.apache.seata.saga.statelang.domain.StateType;
+20: import org.apache.seata.saga.statelang.parser.impl.ChoiceStateParser;
+21: import org.apache.seata.saga.statelang.parser.impl.CompensateSubStateMachineStateParser;
+22: import org.apache.seata.saga.statelang.parser.impl.CompensationTriggerStateParser;
+23: import org.apache.seata.saga.statelang.parser.impl.FailEndStateParser;
+24: import org.apache.seata.saga.statelang.parser.impl.ScriptTaskStateParser;
+25: import org.apache.seata.saga.statelang.parser.impl.ServiceTaskStateParser;
+26: import org.apache.seata.saga.statelang.parser.impl.SubStateMachineParser;
+27: import org.apache.seata.saga.statelang.parser.impl.SucceedEndStateParser;
+28: 
+29: import java.util.Map;
+30: import java.util.concurrent.ConcurrentHashMap;
+31: 
+32: /**
+33:  * A simple factory of state parser
+34:  *
+35:  */
+36: public class StateParserFactory {
+37: 
+38:     protected static Map<StateType, StateParser> stateParserMap = new ConcurrentHashMap<>();
+39: 
+40:     static {
+41:         stateParserMap.put(StateType.SERVICE_TASK, new ServiceTaskStateParser());
+42:         stateParserMap.put(StateType.CHOICE, new ChoiceStateParser());
+43:         stateParserMap.put(StateType.COMPENSATION_TRIGGER, new CompensationTriggerStateParser());
+44:         stateParserMap.put(StateType.FAIL, new FailEndStateParser());
+45:         stateParserMap.put(StateType.SUCCEED, new SucceedEndStateParser());
+46:         stateParserMap.put(StateType.SUB_STATE_MACHINE, new SubStateMachineParser());
+47:         stateParserMap.put(StateType.SUB_MACHINE_COMPENSATION, new CompensateSubStateMachineStateParser());
+48:         stateParserMap.put(StateType.SCRIPT_TASK, new ScriptTaskStateParser());
+49:     }
+50: 
+51:     public static StateParser getStateParser(StateType stateType) {
+52:         return stateParserMap.get(stateType);
+53:     }
+54: }
+
+(End of file - total 54 lines)
+</content>

@@ -1,0 +1,222 @@
+{
+ "task_id": "task_531f225fd0c74bc1a473541ac007fa95",
+ "window": "96K",
+ "point": "g03",
+ "harness": "opencode",
+ "meta": {
+  "harness": "opencode",
+  "input_rows": 49,
+  "trigger": {
+   "round": 3,
+   "trigger_tokens": 67476,
+   "window_tokens": 96000,
+   "messages_exported": 49,
+   "tail_start_id": "msg_1d82c7aee0012QmDigRCXwIZAh",
+   "tail_start_message_index": null,
+   "summary_message_id": "msg_1d82caa09001dhn4qUgrFKBHlI",
+   "harness": null
+  },
+  "tail_start_id": "msg_1d82c7aee0012QmDigRCXwIZAh",
+  "tail_source": "trigger_metadata",
+  "view_start": 29,
+  "view_start_reason": "previous compaction summary (assistant row 29)",
+  "kept_tail_rows": 6,
+  "view_source": "rebuilt",
+  "view_rows": 14,
+  "history_rows": 29,
+  "later_source": "g03_state.patch",
+  "draft_source": "g03_baseline_summary.md"
+ },
+ "checks": {
+  "B2.1": {
+   "status": "pass",
+   "findings": [],
+   "agents": {
+    "build": 47,
+    "compaction": 2
+   },
+   "kept_tail_rows": 6,
+   "tail_boundary": "msg_1d82c7aee0012QmDigRCXwIZAh"
+  },
+  "B2.2": {
+   "status": "fail",
+   "findings": [
+    {
+     "evidence": "2 summary rows in recorded input at rows [17, 29]",
+     "detail": "input after the first compaction should hold only the previous summary"
+    }
+   ],
+   "summary_rows": 2,
+   "summary_rows_idx": [
+    17,
+    29
+   ],
+   "source": "before_compaction"
+  },
+  "C3.1": {
+   "status": "pass",
+   "findings": [],
+   "headings": [
+    "Objective",
+    "Important Details",
+    "Work State",
+    "Completed",
+    "Active",
+    "Blocked",
+    "Next Move",
+    "Relevant Files"
+   ],
+   "baseline_headings": [
+    "Objective",
+    "Important Details",
+    "Work State",
+    "Completed",
+    "Active",
+    "Blocked",
+    "Next Move",
+    "Relevant Files"
+   ],
+   "missing_vs_baseline": [],
+   "extra_vs_baseline": [],
+   "template": [
+    "Artifacts",
+    "Current State",
+    "Decisions Made",
+    "Goal",
+    "Next Steps",
+    "Resolved Issues"
+   ],
+   "extra_vs_template": [
+    "Objective",
+    "Important Details",
+    "Work State",
+    "Completed",
+    "Active",
+    "Blocked",
+    "Next Move",
+    "Relevant Files"
+   ]
+  },
+  "C3.2": {
+   "status": "pass",
+   "findings": []
+  },
+  "C3.4": {
+   "status": "pass",
+   "findings": [],
+   "cap": 15600,
+   "cap_criterion": "criteria_68",
+   "golden_chars": 14181,
+   "effective_chars": 14181
+  },
+  "D1.1": {
+   "status": "pass",
+   "findings": [],
+   "categories": {
+    "Goal fidelity": 30,
+    "Artifact preservation": 22,
+    "Decision rationale": 6,
+    "Temporal coherence": 10,
+    "Compression efficiency": 1,
+    "Structural clarity": 1
+   }
+  },
+  "D1.2": {
+   "status": "pass",
+   "findings": [],
+   "count": 70
+  },
+  "D1.3": {
+   "status": "pass",
+   "findings": [],
+   "count": 70
+  },
+  "D1.4": {
+   "status": "pass",
+   "findings": [],
+   "major": 22,
+   "positive": 67,
+   "share": 0.328
+  },
+  "D1.5": {
+   "status": "pass",
+   "findings": [],
+   "cap": 15600,
+   "cap_criterion": "criteria_68",
+   "effective_chars": 14181,
+   "required_cap": 15600,
+   "llm_verdict": null
+  },
+  "D1.6": {
+   "status": "pass",
+   "findings": []
+  },
+  "D1.7": {
+   "status": "pass",
+   "findings": []
+  },
+  "D1.10": {
+   "status": "pass",
+   "findings": []
+  },
+  "C1.1": {
+   "status": "pass",
+   "findings": []
+  },
+  "B1.1": {
+   "status": "pass",
+   "findings": [],
+   "detail": "run metadata files: g03_trigger_metadata.json, task.toml"
+  },
+  "B1.2": {
+   "status": "pass",
+   "findings": [],
+   "detail": "trigger_tokens vs window_tokens"
+  },
+  "B1.3": {
+   "status": "pass",
+   "findings": []
+  },
+  "B1.5": {
+   "status": "pass",
+   "findings": [],
+   "detail": "recorded timeouts: {\"task.toml agent budget\": 5400.0}",
+   "timeouts": {
+    "task.toml agent budget": 5400.0
+   },
+   "distinct_values": [
+    5400.0
+   ]
+  },
+  "B3.1": {
+   "status": "na",
+   "findings": [],
+   "detail": "no summary.json in task files"
+  },
+  "B3.3": {
+   "status": "na",
+   "findings": [],
+   "detail": "no summary.json in task files"
+  },
+  "B3.2": {
+   "status": "pass",
+   "findings": [],
+   "detail": "reasons=[{'auto': True, 'overflow': False}, {'auto': True, 'overflow': False}, {'auto': True, 'overflow': False}] trigger=recorded"
+  },
+  "B4.1": {
+   "status": "pass",
+   "findings": [],
+   "detail": "run artifacts: 0 files"
+  },
+  "B4.2": {
+   "status": "pass",
+   "findings": [],
+   "detail": "task.toml parsed"
+  },
+  "B4.3": {
+   "status": "na",
+   "findings": [],
+   "detail": "no run result files in task files"
+  }
+ }
+}

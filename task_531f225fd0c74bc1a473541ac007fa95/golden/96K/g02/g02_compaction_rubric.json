@@ -1,0 +1,196 @@
+{
+  "criteria": [
+    {
+      "criteria_id": "criteria_0",
+      "description": "States the objective of adding durable external-event approvals to Seata Saga so suspended workflows can resume across engine restarts.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_1",
+      "description": "Records that `StateType.java` was read only up to `LOOP_START`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_2",
+      "description": "Records that the proposed store query name `queryStateMachineInstanceByStatus` remained provisional.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_3",
+      "description": "Records that `ExecutionStatus.java` exposes `getStatusString()`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_4",
+      "description": "Records that `StateInstruction` implements `Instruction`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_5",
+      "description": "Records that `StateMachineEngine.java` shows `start(String stateMachineName, String tenantId, Map<String, Object> startParams)` in its opening excerpt.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_6",
+      "description": "Records that `SucceedEndStateHandler` has a no-op `process(ProcessContext context)` body.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_7",
+      "description": "Records that `ParameterUtils` declares `ResourceLock INPUT_LOCK` in its opening excerpt.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_8",
+      "description": "Records that `StateInstanceImpl` declares `java.util.Date` field `gmtStarted`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_9",
+      "description": "Records that `StateMachineInstanceImpl` declares `parentId` among its visible fields.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_10",
+      "description": "Records that `StateMachineProcessHandler.java` imports `SubStateMachineHandler`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_11",
+      "description": "Records the solver's plan to parse `Timeout` with `java.time.Duration.parse` in `WaitStateParser`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_12",
+      "description": "Records the solver's decision to derive the deadline from persisted `gmtStarted` plus the configured `Timeout` to avoid a new column.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_13",
+      "description": "Records the solver's reasoning that `SubStateMachineHandler` calls `engine.start` synchronously via `ProcessCtrlEventPublisher`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_14",
+      "description": "Records that choosing between a dedicated `WaitStateRouter` and reusing `TaskStateRouter` remained open.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_15",
+      "description": "Keeps related facts grouped together so information on each topic is directly findable.",
+      "metadata": {
+        "category": "Structural clarity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_16",
+      "description": "Identifies finishing reading `DbAndReportTcStateLogStore.java` as an upcoming step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_17",
+      "description": "Identifies checking whether `seata_state_machine_instance` exposes `status` in `StateLogStoreSqls.java` as an upcoming step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_18",
+      "description": "Identifies finishing reading `ProcessCtrlStateMachineEngine.java` as an upcoming step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_19",
+      "description": "Identifies inspecting `ParameterUtils.createOutputParams` in `ParameterUtils.java` as an upcoming step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_20",
+      "description": "Contains at most 15300 characters.",
+      "metadata": {
+        "category": "Compression efficiency",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_21",
+      "description": "Falsely claims that `SucceedEndStateHandler` persists completion to `StateLogStore` inside `process(ProcessContext context)`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_22",
+      "description": "Falsely claims that `StateInstanceImpl` declares `gmtStarted` with type `java.time.Instant`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_23",
+      "description": "Falsely claims that `StateInstruction` implements `State`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "negative"
+      }
+    }
+  ]
+}

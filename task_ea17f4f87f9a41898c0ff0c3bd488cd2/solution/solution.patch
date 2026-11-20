@@ -1,0 +1,346 @@
+diff --git a/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/converters/expression/parser/LegacyFunctors.java b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/converters/expression/parser/LegacyFunctors.java
+index 591afdc3..0bf83722 100644
+--- a/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/converters/expression/parser/LegacyFunctors.java
++++ b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/converters/expression/parser/LegacyFunctors.java
+@@ -80,6 +80,26 @@ public class LegacyFunctors {
+ 					}
+ 				}
+ 				break;
++			case "best-disjoint":
++				if (arity == 0) {
++					switch (n) {
++						case 1:
++							return new Pair<String,List<String>>(NavigationLibrary.NAME, Arrays.asList(lib, ftors.get(0)));
++					}
++				} else if (arity == 1) {
++					switch (n) {
++						case 0:
++							return new Pair<String,List<String>>(NavigationLibrary.NAME, Arrays.asList(lib));
++						case 1:
++							return new Pair<String,List<String>>(NavigationLibrary.NAME, Arrays.asList(lib, ftors.get(0)));
++					}
++				} else if (arity == 2) {
++					switch (n) {
++						case 0:
++							return new Pair<String,List<String>>(NavigationLibrary.NAME, Arrays.asList(lib));
++					}
++				}
++				break;
+ 			case "^":
+ 				if (n == 0)
+ 					return new Pair<String,List<String>>(StringLibrary.NAME, Arrays.asList("concat"));
+diff --git a/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/BestDisjointEvaluator.java b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/BestDisjointEvaluator.java
+new file mode 100644
+index 00000000..23b60db7
+--- /dev/null
++++ b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/BestDisjointEvaluator.java
+@@ -0,0 +1,112 @@
++/*
++Copyright 2026 Institut National de la Recherche Agronomique
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++        http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++*/
++
++package fr.inra.maiage.bibliome.alvisnlp.bibliomefactory.library.standard;
++
++import java.util.Collection;
++import java.util.Collections;
++import java.util.List;
++
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.Annotation;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.DownCastElement;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.Element;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.Layer;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.NameType;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.Section;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.expressions.AbstractListEvaluator;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.expressions.EvaluationContext;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.expressions.EvaluationType;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.expressions.Evaluator;
++import fr.inra.maiage.bibliome.alvisnlp.core.module.ModuleException;
++import fr.inra.maiage.bibliome.alvisnlp.core.module.NameUsage;
++
++public final class BestDisjointEvaluator extends AbstractListEvaluator {
++    private final String layerName;
++    private final Evaluator layerNameEvaluator;
++    private final Evaluator weightEvaluator;
++
++    public BestDisjointEvaluator(String layerName) {
++        super();
++        this.layerName = layerName;
++        this.layerNameEvaluator = null;
++        this.weightEvaluator = null;
++    }
++
++    public BestDisjointEvaluator(String layerName, Evaluator weightEvaluator) {
++        super();
++        this.layerName = layerName;
++        this.layerNameEvaluator = null;
++        this.weightEvaluator = weightEvaluator;
++    }
++
++    public BestDisjointEvaluator(Evaluator layerNameEvaluator) {
++        super();
++        this.layerName = null;
++        this.layerNameEvaluator = layerNameEvaluator;
++        this.weightEvaluator = null;
++    }
++
++    public BestDisjointEvaluator(Evaluator layerNameEvaluator, Evaluator weightEvaluator) {
++        super();
++        this.layerName = null;
++        this.layerNameEvaluator = layerNameEvaluator;
++        this.weightEvaluator = weightEvaluator;
++    }
++
++    private String getLayerName(EvaluationContext ctx, Element elt) {
++        if (layerNameEvaluator == null)
++            return layerName;
++        return layerNameEvaluator.evaluateString(ctx, elt);
++    }
++
++    @Override
++    public List<Element> evaluateList(EvaluationContext ctx, Element elt) {
++        Section sec = DownCastElement.toSection(elt);
++        if (sec == null) {
++            return Collections.emptyList();
++        }
++        String name = getLayerName(ctx, elt);
++        if (name == null || !sec.hasLayer(name)) {
++            return Collections.emptyList();
++        }
++        Layer layer = sec.getLayer(name);
++        Layer selected = layer.selectMaxWeight(a -> {
++            if (weightEvaluator == null) {
++                return 1.0;
++            }
++            return weightEvaluator.evaluateDouble(ctx, a);
++        });
++        return selected.asElementList();
++    }
++
++    @Override
++    public Collection<EvaluationType> getTypes() {
++        return Collections.singleton(EvaluationType.ANNOTATIONS);
++    }
++
++    @Override
++    public void collectUsedNames(NameUsage nameUsage, String defaultType) throws ModuleException {
++        if (layerName != null) {
++            nameUsage.addNames(NameType.LAYER, layerName);
++        }
++        if (layerNameEvaluator != null) {
++            layerNameEvaluator.collectUsedNames(nameUsage, defaultType);
++        }
++        if (weightEvaluator != null) {
++            weightEvaluator.collectUsedNames(nameUsage, defaultType);
++        }
++    }
++}
+diff --git a/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java
+index e0932341..3d66f380 100644
+--- a/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java
++++ b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java
+@@ -117,7 +117,27 @@ public abstract class NavigationLibrary extends FunctionLibrary {
+ 	public static final Evaluator xafter(String layerName) {
+ 		return new AnnotationsAfterEvaluator(layerName, false);
+ 	}
+-	
++
++	@Function(firstFtor="best-disjoint", ftors=1, nameTypes={NameType.LAYER})
++	public static final Evaluator bestDisjoint(String layerName) {
++		return new BestDisjointEvaluator(layerName);
++	}
++
++	@Function(firstFtor="best-disjoint", ftors=1, nameTypes={NameType.LAYER})
++	public static final Evaluator bestDisjoint(String layerName, Evaluator weight) {
++		return new BestDisjointEvaluator(layerName, weight);
++	}
++
++	@Function(firstFtor="best-disjoint")
++	public static final Evaluator bestDisjoint(Evaluator layerName) {
++		return new BestDisjointEvaluator(layerName);
++	}
++
++	@Function(firstFtor="best-disjoint")
++	public static final Evaluator bestDisjoint(Evaluator layerName, Evaluator weight) {
++		return new BestDisjointEvaluator(layerName, weight);
++	}
++
+ 	@Function
+ 	public static final Evaluator xafter(Evaluator layerName) {
+ 		return new AnnotationsAfterEvaluator(layerName, false);
+diff --git a/alvisnlp-bibliome/src/main/resources/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibraryDoc.xml b/alvisnlp-bibliome/src/main/resources/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibraryDoc.xml
+index 2d605e30..89c7973d 100644
+--- a/alvisnlp-bibliome/src/main/resources/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibraryDoc.xml
++++ b/alvisnlp-bibliome/src/main/resources/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibraryDoc.xml
+@@ -148,5 +148,13 @@ limitations under the License.
+     <function-doc first-ftor="xoverlapping" synopsis="nav:xoverlapping:layerName()"/>
+   
+     <function-doc first-ftor="xoverlapping" synopsis="nav:xoverlapping(layerName)"/>
++
++    <function-doc first-ftor="best-disjoint" synopsis="nav:best-disjoint:layerName()"/>
++
++    <function-doc first-ftor="best-disjoint" synopsis="nav:best-disjoint:layerName(weight)"/>
++
++    <function-doc first-ftor="best-disjoint" synopsis="nav:best-disjoint(layerName)"/>
++
++    <function-doc first-ftor="best-disjoint" synopsis="nav:best-disjoint(layerName, weight)"/>
+   </library-doc>
+ </alvisnlp-doc>
+diff --git a/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java b/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java
+index cb20cfdc..87636b87 100644
+--- a/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java
++++ b/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java
+@@ -29,6 +29,7 @@ import java.util.Comparator;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.ListIterator;
++import java.util.function.ToDoubleFunction;
+ 
+ import fr.inra.maiage.bibliome.alvisnlp.core.corpus.creators.AnnotationCreator;
+ import fr.inra.maiage.bibliome.util.Strings;
+@@ -598,4 +599,121 @@ public class Layer extends AbstractCollection<Annotation> implements Serializabl
+     public List<Element> asElementList() {
+     	return Collections.unmodifiableList((List<? extends Element>) annotations);
+     }
++
++    /**
++     * Selects non-overlapping annotations of this layer so that the sum of their weights is the highest.
++     * If several selections are worth the same, then the one whose indexes in this layer sort first is preferred.
++     * @param weight weight of each annotation, NaN counts as zero
++     * @return a new anonymous layer containing the selected annotations
++     */
++    public Layer selectMaxWeight(ToDoubleFunction<Annotation> weight) {
++        int n = annotations.size();
++        double[] w = new double[n];
++        boolean unbounded = false;
++        for (int i = 0; i < n; ++i) {
++            double x = weight.applyAsDouble(annotations.get(i));
++            w[i] = Double.isNaN(x) ? 0.0 : x;
++            if (w[i] == Double.POSITIVE_INFINITY)
++                unbounded = true;
++        }
++        return subLayer(unbounded ? selectUnbounded(w) : selectBounded(w));
++    }
++
++    private static boolean overlapsAny(Annotation annot, List<Annotation> others) {
++        for (Annotation a : others) {
++            if (a.overlaps(annot))
++                return true;
++        }
++        return false;
++    }
++
++    // Every selection with an infinite weight is worth the same, keep the one that sorts first.
++    private List<Annotation> selectUnbounded(double[] w) {
++        List<Annotation> reachable = new ArrayList<Annotation>();
++        for (int i = 0; i < w.length; ++i) {
++            if (w[i] == Double.POSITIVE_INFINITY)
++                reachable.add(annotations.get(i));
++        }
++        List<Annotation> result = new ArrayList<Annotation>();
++        for (int i = 0; i < w.length; ++i) {
++            Annotation annot = annotations.get(i);
++            if (w[i] == Double.NEGATIVE_INFINITY || overlapsAny(annot, result))
++                continue;
++            if (w[i] == Double.POSITIVE_INFINITY) {
++                result.add(annot);
++                break;
++            }
++            List<Annotation> stillReachable = new ArrayList<Annotation>();
++            for (Annotation a : reachable) {
++                if (!a.overlaps(annot))
++                    stillReachable.add(a);
++            }
++            if (stillReachable.isEmpty())
++                continue;
++            result.add(annot);
++            reachable = stillReachable;
++        }
++        return result;
++    }
++
++    // Annotations that start at the same position are solved together, from the last position to the first.
++    private List<Annotation> selectBounded(double[] w) {
++        int n = w.length;
++        double[] best = new double[n + 1];
++        boolean[] some = new boolean[n + 1];
++        int[] chosen = new int[n];
++        int[] follow = new int[n];
++        boolean[] kept = new boolean[n];
++        for (int hi = n; hi > 0;) {
++            int lo = searchStartLeft(annotations.get(hi - 1).getStart());
++            int points = hi;
++            while (points > lo && annotations.get(points - 1).getLength() == 0)
++                --points;
++            double top = best[hi];
++            for (int i = lo; i < points; ++i) {
++                follow[i] = searchStartLeft(annotations.get(i).getEnd());
++                if (w[i] != Double.NEGATIVE_INFINITY)
++                    top = Math.max(top, w[i] + best[follow[i]]);
++            }
++            int pick = -1;
++            for (int i = lo; i < points && pick < 0; ++i) {
++                if (w[i] + best[follow[i]] == top)
++                    pick = i;
++            }
++            boolean gain = false;
++            for (int i = points; i < hi; ++i) {
++                if (w[i] > 0)
++                    gain = true;
++            }
++            // selecting nothing at all sorts before any other selection worth the same
++            if (pick >= 0 && best[hi] == top && !gain && !some[hi])
++                pick = -1;
++            boolean tail = some[pick < 0 ? hi : follow[pick]];
++            double sum = top;
++            for (int i = hi - 1; i >= points; --i) {
++                if (w[i] > 0 || (w[i] == 0 && tail)) {
++                    kept[i] = true;
++                    tail = true;
++                    sum += w[i];
++                }
++            }
++            best[lo] = sum;
++            some[lo] = tail || pick >= 0;
++            chosen[lo] = pick;
++            hi = lo;
++        }
++        List<Annotation> result = new ArrayList<Annotation>();
++        for (int lo = 0; lo < n;) {
++            int hi = searchStartRight(annotations.get(lo).getStart());
++            int pick = chosen[lo];
++            if (pick >= 0)
++                result.add(annotations.get(pick));
++            for (int i = lo; i < hi; ++i) {
++                if (kept[i])
++                    result.add(annotations.get(i));
++            }
++            lo = pick < 0 ? hi : follow[pick];
++        }
++        return result;
++    }
+ }
+diff --git a/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/expressions/Expression.java b/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/expressions/Expression.java
+index 4db69973..cc2961ee 100644
+--- a/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/expressions/Expression.java
++++ b/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/expressions/Expression.java
+@@ -162,6 +162,7 @@ public class Expression implements Resolvable<Evaluator> {
+ 	private void navToString(Appendable a) throws IOException {
+ 		String firstFtor = ftors.get(0);
+ 		switch (firstFtor) {
++			case "best-disjoint":
+ 			case "after":
+ 			case "before":
+ 			case "inside":

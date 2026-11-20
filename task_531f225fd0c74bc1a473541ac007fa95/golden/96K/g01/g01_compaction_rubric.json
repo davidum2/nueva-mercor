@@ -1,0 +1,196 @@
+{
+  "criteria": [
+    {
+      "criteria_id": "criteria_0",
+      "description": "States the objective of adding durable external-event approvals to Seata Saga so suspended workflows can resume across engine restarts.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_1",
+      "description": "Records that the `ProcessCtrlStateMachineEngine.java` read returned only a clipped opening excerpt.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_2",
+      "description": "Records that the behavior of `ParameterUtils.createOutputParams` has not been shown yet.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_3",
+      "description": "Records that `ExecutionStatus.java` exposes `getStatusString()`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_4",
+      "description": "Locates `BaseState.java` in `saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_5",
+      "description": "Locates `StateParserFactory.java` in `saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_6",
+      "description": "Locates `StateMachineProcessHandler.java` in `saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_7",
+      "description": "Locates `StateLogStore.java` in `saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_8",
+      "description": "Locates `StateType.java` in `compatible/src/main/java/io/seata/saga/statelang/domain/`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_9",
+      "description": "Records that the `StateType.java` read was clipped after `LOOP_START`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_10",
+      "description": "Records that the Java search for Wait-feature symbols matched only `compatible/src/test/java/io/seata/common/LockAndCallback.java`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_11",
+      "description": "Locates `store/db/DbAndReportTcStateLogStore.java` under `saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_12",
+      "description": "Records the solver's proposal of `WaitStateImpl` for the domain implementation.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_13",
+      "description": "Records the solver's proposal to register `WaitStateHandler` in `StateMachineProcessHandler`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_14",
+      "description": "Records that choosing between a dedicated `WaitStateRouter` and reusing `TaskStateRouter` remained open.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_15",
+      "description": "Records that whether durable timeout storage needs a deadline column remained open.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_16",
+      "description": "Keeps related facts grouped together so information on each topic is directly findable.",
+      "metadata": {
+        "category": "Structural clarity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_17",
+      "description": "Identifies investigating durable Wait suspension in `DbAndReportTcStateLogStore.java` as an upcoming step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_18",
+      "description": "Identifies reading `DbStateMachineConfig.java` for database reload investigation as an upcoming step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_19",
+      "description": "Identifies reading the deprecated `io.seata.saga.statelang.domain.StateType` wrapper as an upcoming step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_20",
+      "description": "Contains at most 9700 characters.",
+      "metadata": {
+        "category": "Compression efficiency",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_21",
+      "description": "Identifies inspecting `SubStateMachineHandler.java` to understand nested execution as an upcoming step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_22",
+      "description": "Falsely claims that `ExecutionStatus.java` already defines `WA` in the repository.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_23",
+      "description": "Falsely claims that `WaitStateImpl` already exists in `seata-saga-statelang`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "negative"
+      }
+    }
+  ]
+}

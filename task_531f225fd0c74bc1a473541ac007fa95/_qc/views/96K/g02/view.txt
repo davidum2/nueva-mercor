@@ -1,0 +1,1353 @@
+# compactor view starts at before_compaction.jsonl row 17 (previous compaction summary (assistant row 17; kept from row 14))
+[17] assistant: [reasoning]
+Let me analyze this conversation to create a proper summary.
+
+The user is asking me to implement a large feature: asynchronous approvals (Wait states) in Seata Saga state machine engine. The task involves:
+
+1. **Domain (org.apache.seata.saga.statelang.domain)**:
+   - Add `StateType.WAIT` with value "Wait"
+   - Add `WaitState` interface extending `State`:
+     - `String getEvent()` (required, non-blank)
+     - `Map<String, Object> getOutput()` (optional Output)
+     - `java.time.Duration getTimeout()` (optional Timeout)
+     - `String getTimeoutNext()` (optional TimeoutNext)
+   - Reject definitions unless Timeout and TimeoutNext are both present or both absent
+   - Timeouts must be strictly positive ISO-8601 durations, including fractional seconds
+   - State-type lookup case-insensitive
+   - Wait state next destinations: exactly configured Next destination plus TimeoutNext when present
+
+2. **ExecutionStatus.WA** meaning "Waiting". Entering a Wait must:
+   - Persist a WAIT state instance with status WA
+   - Suspend machine with status WA and isRunning=false
+   - Return without executing Next, no machine completion time, no report to TC
+   - Fresh engine using same database must reload and resume
+
+3. **Compatible module (io.seata.saga.statelang.domain)**:
+   - Deprecated StateType and ExecutionStatus wrappers need matching WAIT and WA constants
+   - Preserve wrap/unwrap round trips
+
+4. **StateMachineEngine.signal(String stateMachineInstanceId, String waitStateInstanceId, String event, Map<String, Object> payload)**:
+   - Matching event atomically claims exact activation
+   - Persist status SU and output params as payload
+   - Synchronously continue until another suspension or terminal state
+   - Null payload recorded as empty map
+   - Evaluate each Output expression against recorded payload as root, merge mapped values into machine context without losing completed predecessors' outputs
+   - Repeating same event for already satisfied activation returns reloaded machine without repeating continuation
+   - In loops, delayed duplicate targeting older activation must not consume newer activation of same Wait state
+   - Null/blank required args throw EngineExecutionException with ParameterRequired or InvalidParameter
+   - Nonexistent machine ID → ObjectNotExists
+   - Event mismatch or activation lost to timeout/compensation → OperationDenied
+
+5. **int fireDueTimeouts(java.time.Instant now) on StateMachineEngine**:
+   - Claim persisted waits whose configured deadline is at or before now
+   - Persist each winner as SK
+   - Continue along TimeoutNext
+   - Return number of claims won
+   - Indefinite and not-yet-due waits stay suspended
+   - Works after engine reconstruction
+   - Null now → EngineExecutionException with InvalidParameter
+
+6. **Concurrency/semantics**:
+   - Signal delivery, timeout sweeps, compensation must have single winner per activation including concurrent duplicate signals
+   - Waiting child suspends enclosing SubStateMachine state and parent machine with WA
+   - Completing/timing out child synchronously resumes parent through multiple nesting levels, each level's output mappings applied
+   - Compensating ancestor cancels active descendant waits before any completed predecessor is compensated, including waits in grandchildren
+
+So far, the assistant has only explored the codebase. The work done:
+
+- Explored repository structure: Apache Seata repo at /workspace/repo
+- Found saga modules: seata-saga-annotation, seata-saga-engine, seata-saga-engine-store, seata-saga-processctrl, seata-saga-rm, seata-saga-spring, seata-saga-statelang, seata-saga-statemachine-designer
+- Read key files:
+  - `saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/StateType.java` - enum with SERVICE_TASK("ServiceTask"), CHOICE("Choice"), FAIL("Fail"), SUCCEED("Succeed"), COMPENSATION_TRIGGER("CompensationTrigger"), SUB_STATE_MACHINE("SubStateMachine"), SUB_MACHINE_COMPENSATION("CompensateSubMachine"), SCRIPT_TASK("ScriptTask"), LOOP_START("LoopStart"). Need to see the rest (there's likely a `getStateTypeByString` or similar method - the truncated part).
+  - `ExecutionStatus.java` - enum RU("Running"), SU("Succeed"), FA("Failed"), UN("Unknown"), SK("Skipped"). Need to add WA("Waiting").
+  - `State.java` interface - getName(), getComment(), getType(), getNext(), getExtensions(), getStateMachine()
+  - `StateInstance.java` interface (truncated read)
+  - `StateMachineInstance.java` interface (truncated)
+  - `StateMachineEngine.java` interface (truncated) - start methods, etc.
+  - `ProcessCtrlStateMachineEngine.java` (truncated read)
+  - `saga/seata-saga-engine-store/` - StateLangStore, StateLogStore interfaces, db/AbstractStore, DbStateLangStore, StateLangStoreSqls, StateLogStoreSqls
+  - `seata-saga-processctrl` files listed
+  - compatible module files listed: io.seata.saga.statelang.domain wrappers (StateType, ExecutionStatus, State, StateInstance, StateMachine, StateMachineInstance, DomainConstants, RecoverStrategy, impl classes)
+  - `saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java` exists (noted in listing)
+  - `StateMachineProcessHandler.java` (truncated) - registers handlers: ChoiceStateHandler, CompensationTriggerStateHandler, FailEndStateHandler, LoopStartStateHandler, ScriptTaskStateHandler, ServiceTaskStateHandler, SubStateMachineHandler, SucceedEndStateHandler
+  - `StateMachineProcessRouter.java` (truncated) - uses EndStateRouter, TaskStateRouter
+  - `TaskStateRouter.java` (truncated)
+  - `SubStateMachineHandler.java` (truncated)
+  - `EngineUtils.java` (truncated) - has ResourceLock usage
+  - `ServiceTaskHandlerInterceptor.java` (truncated)
+  - `BaseState.java` - abstract base with name, type, comment, next, extensions, stateMachine
+  - `StateParserFactory.java` (truncated) - map of state type -> parser, includes ChoiceStateParser, CompensateSubStateMachineStateParser, CompensationTriggerStateParser, FailEndStateParser, ScriptTaskStateParser, ServiceTaskStateParser, SubStateMachineParser, SucceedEndStateParser
+  - `StateParser.java` interface - `T parse(Object node)`
+  - `ScriptTaskStateParser.java` - extends AbstractTaskStateParser, parseTaskAttributes(scriptTaskState, node), reads "ScriptType"
+  - `ScriptTaskStateImpl.java` - extends AbstractTaskState, constructor sets type
+  - `AbstractTaskState.java` - compensateState, isForCompensation, isForUpdate, retry, catches, input, output (Map<String,Object>), status, inputExpressions, outputExpressions, isPe... (truncated)
+
+- Confirmed via grep: no existing implementation of "fireDueTimeouts", "WaitState", "getTimeoutNext", "signal(" in saga or compatible modules (only compatible test LockAndCallback.java matched). So this is a from-scratch feature implementation.
+
+- Git log shows recent commits; repo is apache/incubator-seata at commit 2efc2aab1.
+
+- Todo list created with 13 items:
+  1. Explore saga statelang domain, engine, store modules and compatible wrappers (in_progress)
+  2. Add StateType.WAIT, ExecutionStatus.WA, WaitState interface + impl, domain validation (pending)
+  3. Add parser support for Wait state (StateParser, validation, getter wiring) (pending)
+  4. Add WaitState/state machine getters/setters (Next etc.) where needed (pending)
+  5. Implement WaitState matcher/interceptor/process controller behavior in engine (pending)
+  6. Implement StateMachineInstance persistence: WAIT status, suspend, reload/resume (pending)
+  7. Implement signal(...) on StateMachineEngine incl. output evaluation/merge (pending)
+  8. Implement fireDueTimeouts(Instant) on StateMachineEngine (pending)
+  9. SubStateMachine nested wait suspension/resume/compensation handling (pending)
+  10. Compatible module io.seata wrappers: WAIT/WA constants + round trips (pending)
+  11. DB schema changes (wait deadline column?) and store serialization updates (pending)
+  12. Write unit tests (pending)
+  13. Build modules and run tests (mvn) and lint checks (pending)
+
+Active work: The assistant was in the middle of exploration - just read EngineUtils.java and ServiceTaskHandlerInterceptor.java. Next planned reads were: SucceedEndStateHandler, EngineUtils.endStateMachine, StateLogStore interface, DbAndReportTcStateLogStore, DbStateMachineConfig, DomainConstants, StateInstruction, AbstractStateMachineConfig, ParameterUtils.createOutputParams.
+
+Key facts to preserve:
+- Repo path: /workspace/repo (Apache Seata, incubator-seata)
+- Saga modules list
+- Compatible module wraps io.seata.saga.statelang.domain
+- StateLogStore implementation is in seata-saga-spring: DbAndReportTcStateLogStore (in org.apache.seata.saga.engine.store.db)
+- StateParserFactory has map keyed by state type
+- The statelang module has parser/impl, parser/utils, validator/impl directories
+- There's a validator package: org.apache.seata.saga.statelang.validator and validator/impl — important for the validation requirements (Timeout/TimeoutNext both present or absent)
+- StateMachineProcessHandler registers handlers by state type
+- No existing Wait implementation
+
+Files read (partial reads, truncated):
+- StateType.java (read, shows enum values; truncated before the end - likely has a static lookup method - the requirement "Keep state-type lookup case-insensitive" suggests there's a method like `getStateType(String)` or similar)
+- ExecutionStatus.java (fully read, 59 lines)
+- State.java (fully read)
+- StateInstance.java (truncated)
+- StateMachineInstance.java (truncated)
+- StateMachineEngine.java (truncated)
+- ProcessCtrlStateMachineEngine.java (truncated)
+- StateMachineProcessHandler.java (truncated)
+- StateMachineProcessRouter.java (truncated)
+- TaskStateRouter.java (truncated)
+- SubStateMachineHandler.java (truncated)
+- EngineUtils.java (truncated)
+- ServiceTaskHandlerInterceptor.java (truncated)
+- BaseState.java (truncated)
+- StateParserFactory.java (truncated)
+- StateParser.java (fully read)
+- ScriptTaskStateParser.java (truncated)
+- ScriptTaskStateImpl.java (truncated)
+- AbstractTaskState.java (truncated)
+
+Also commands run:
+- `find /workspace/repo/saga -type d | head -50`
+- `find /workspace/repo/saga -name "*.java" -path "*statelang/domain*"`
+- `find /workspace/repo/saga/seata-saga-engine/src/main/java -name "*.java" | sort`
+- `find /workspace/repo/saga/seata-saga-engine-store/src/main/java -name "*.java"`
+- `find /workspace/repo/saga/seata-saga-processctrl/src/main/java -name "*.java"`
+- `grep -rln "statelang" /workspace/repo/compatible --include=*.java -l`
+- `grep -rln "implements StateLogStore|StateLogStore\b" /workspace/repo/saga --include=*.java`
+- `find /workspace/repo/saga/seata-saga-spring/src/main/java -name "*.java" | sort`
+- `git log --oneline -5` and `git status --short`
+- `grep -rln "fireDueTimeouts|WaitState|getTimeoutNext|signal(" ...` → only compatible/src/test/java/io/seata/common/LockAndCallback.java matched (false positive from "signal(")
+- `find statelang dirs; parser files`
+
+Note the glob tool failed with "ripgrep execution failed" - a tool error worth noting? Probably minor; just mention glob pattern tool had an error, use bash find/grep instead.
+
+Now for the summary format:
+
+## Objective
+- Add asynchronous approval (Wait) states to Seata Saga state machine engine: new StateType.WAIT/WaitState domain model, ExecutionStatus.WA "Waiting", durable suspension/resume via signal(...) and fireDueTimeouts(...) on StateMachineEngine, plus matching io.seata compatible wrappers.
+
+## Important Details
+Key constraints:
+- StateType.WAIT("Wait"); WaitState interface extends State with String getEvent() (required non-blank), Map<String,Object> getOutput() (optional), java.time.Duration getTimeout() (optional), String getTimeoutNext() (optional).
+- Reject definitions unless Timeout and TimeoutNext both present or both absent; supplied timeouts strictly positive ISO-8601 durations including fractional seconds.
+- State-type lookup case-insensitive.
+- Wait state next destinations: exactly Next plus TimeoutNext (when present).
+- ExecutionStatus.WA("Waiting").
+- Entering Wait: persist WAIT state instance status WA, suspend machine status WA isRunning=false, return without executing Next, no machine completion time, no TC completion report. Fresh engine on same DB can reload/resume.
+- signal(stateMachineInstanceId, waitStateInstanceId, event, payload): atomically claim exact activation; persist status SU + output params = payload (null payload → empty map); synchronously continue until next suspension/terminal; evaluate each Output expression against recorded payload as root, merge mapped values into machine context without losing completed predecessors' outputs; duplicate event on satisfied activation returns reloaded machine without repeating continuation; in loops, delayed duplicate must not consume newer activation of same Wait state; null/blank args → EngineExecutionException with ParameterRequired or InvalidParameter; nonexistent machine ID → ObjectNotExists; event mismatch or activation lost to timeout/compensation → OperationDenied.
+- fireDueTimeouts(Instant now): claim persisted waits with deadline <= now, persist winner as SK, continue along TimeoutNext, return number of claims won; indefinite/not-yet-due stay suspended; works after engine reconstruction; null now → EngineExecutionException InvalidParameter.
+- Single winner per activation across signals, timeout sweeps, compensation (incl. concurrent duplicates).
+- SubStateMachine: waiting child suspends enclosing SubStateMachine state + parent machine with WA; completing/timing out child synchronously resumes parent through multiple nesting levels with each level's output mappings applied; compensating ancestor cancels active descendant waits before any completed predecessor is compensated (incl. grandchildren).
+- io.seata.saga.statelang.domain deprecated StateType and ExecutionStatus wrappers need matching WAIT/WA constants preserving wrap/unwrap round trips for every value.
+
+Facts discovered:
+- Repo: /workspace/repo (apache/incubator-seata, HEAD 2efc2aab1).
+- No existing Wait/signal/fireDueTimeouts code anywhere in saga or compatible modules (grep found nothing) — implement from scratch; hidden tests likely exercise public API.
+- Saga modules: seata-saga-annotation, seata-saga-engine, seata-saga-engine-store, seata-saga-processctrl, seata-saga-rm, seata-saga-spring, seata-saga-statelang, seata-saga-statemachine-designer.
+- statelang layout: domain, domain/impl, parser, parser/impl, parser/utils, validator, validator/impl.
+- Engine layout: StateMachineEngine, StateMachineConfig, exception/EngineExecutionException, expression/*, impl/ProcessCtrlStateMachineEngine, pcext/{StateMachineProcessHandler,StateMachineProcessRouter,StateInstruction,routers/*,handlers/*,interceptors/*,utils/*}.
+- StateLogStore interface in seata-saga-engine-store; DB impl DbAndReportTcStateLogStore lives in seata-saga-spring (org.apache.seata.saga.engine.store.db) plus DbStateMachineConfig in seata-saga-spring config.
+- Compatible wrappers in compatible/src/main/java/io/seata/saga/statelang/domain (StateType, ExecutionStatus, State, StateInstance, StateMachine, StateMachineInstance, DomainConstants, RecoverStrategy, impl/*) and io/seata/saga/engine/* (StateMachineEngine, ProcessCtrlStateMachineEngine, StateLogStore/StateLogStoreImpl, repo/*).
+- StateParserFactory maps state type string → parser (ChoiceStateParser, CompensateSubStateMachineStateParser, CompensationTriggerStateParser, FailEndStateParser, ScriptTaskStateParser, ServiceTaskStateParser, SubStateMachineParser, SucceedEndStateParser) — needs WaitStateParser registration.
+- StateMachineProcessHandler maps state type → handler (Choice/CompensationTrigger/FailEnd/LoopStart/ScriptTask/ServiceTask/SubStateMachine/SucceedEnd handlers) — needs Wait handler.
+- StateMachineProcessRouter uses EndStateRouter + TaskStateRouter.
+- BaseState has name/type/comment/next/extensions/stateMachine; AbstractTaskState adds compensateState, isForCompensation, isForUpdate, retry, catches, input, output Map<String,Object>, status, inputExpressions, outputExpressions.
+- ExecutionStatus enum currently RU/SU/FA/UN/SK with getStatusString().
+- ExecutionStatus/StateType use "statusString"/value strings; compatible wrappers wrap/unwrap via constants.
+
+Also the glob tool error: "ripgrep execution failed" — use bash find/grep instead.
+
+## Work State
+### Completed
+- Full repo/module layout exploration of /workspace/repo saga + compatible.
+- Read (partially, truncated) key domain/parser/engine files listed above.
+- Confirmed no existing Wait implementation.
+- Created 13-item todo list.
+
+### Active
+- Exploration phase in progress; assistant was mid-read of EngineUtils.java and ServiceTaskHandlerInterceptor.java (both truncated).
+
+### Blocked
+- (none) — maybe glob tool failed with ripgrep error; use bash find/grep.
+
+## Next Move
+1. Finish reading: StateType.java remainder (lookup method), DomainConstants.java, SucceedEndStateHandler, EndStateRouter, StateInstruction, StateLogStore interface, DbAndReportTcStateLogStore, DbStateMachineConfig, AbstractStateMachineConfig, ParameterUtils (createOutputParams), StateMachineProcessRouter/TaskStateRouter remainder, compatible io/seata StateType+ExecutionStatus wrappers.
+2. Then implement domain changes (StateType.WAIT, ExecutionStatus.WA, WaitState interface, WaitStateImpl, parser WaitStateParser + factory registration + validator changes).
+
+## Relevant Files
+- list of files.
+
+Let me write it out. I should keep the todo list too since it's important state. The template doesn't have a todo section, but I can include it in Active or Important Details. I'll put the todo list in Active work state as "Todo list (13 items) created" - or maybe compress into Active. Actually I'll note it in Active.
+
+Let me make sure I preserve exact file paths:
+- /workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/StateType.java
+- .../ExecutionStatus.java
+- .../State.java
+- .../StateInstance.java
+- .../StateMachineInstance.java
+- .../DomainConstants.java
+- .../domain/impl/BaseState.java
+- .../domain/impl/AbstractTaskState.java
+- .../domain/impl/ScriptTaskStateImpl.java
+- .../parser/StateParser.java
+- .../parser/StateParserFactory.java
+- .../parser/StateMachineParserFactory.java
+- .../parser/impl/ScriptTaskStateParser.java
+- .../parser/impl/AbstractTaskStateParser.java
+- .../validator/, validator/impl/
+- /workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java
+- .../StateMachineConfig.java
+- .../exception/EngineExecutionException.java
+- .../config/AbstractStateMachineConfig.java
+- .../impl/ProcessCtrlStateMachineEngine.java
+- .../pcext/StateMachineProcessHandler.java
+- .../pcext/StateMachineProcessRouter.java
+- .../pcext/StateInstruction.java
+- .../pcext/routers/TaskStateRouter.java
+- .../pcext/routers/EndStateRouter.java
+- .../pcext/handlers/SubStateMachineHandler.java
+- .../pcext/handlers/ServiceTaskStateHandler.java
+- .../pcext/handlers/SucceedEndStateHandler.java
+- .../pcext/handlers/CompensationTriggerStateHandler.java
+- .../pcext/interceptors/ServiceTaskHandlerInterceptor.java
+- .../pcext/utils/EngineUtils.java
+- .../pcext/utils/LoopTaskUtils.java
+- .../pcext/utils/ParameterUtils.java
+- .../pcext/utils/CompensationHolder.java
+- /workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java
+- .../store/db/StateLogStoreSqls.java
+- .../store/db/DbStateLangStore.java
+- /workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java
+- /workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/config/DbStateMachineConfig.java
+- /workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/impl/DefaultStateMachineConfig.java
+- /workspace/repo/compatible/src/main/java/io/seata/saga/statelang/domain/StateType.java
+- /workspace/repo/compatible/src/main/java/io/seata/saga/statelang/domain/ExecutionStatus.java
+- /workspace/repo/compatible/src/main/java/io/seata/saga/engine/StateMachineEngine.java
+- /workspace/repo/compatible/src/main/java/io/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java
+- /workspace/repo/compatible/src/main/java/io/seata/saga/engine/store/impl/StateLogStoreImpl.java
+- /workspace/repo/saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/...
+
+I should organize Relevant Files by area with brief "why it matters".
+
+Also note: the DB schema — script/client/db/ might contain saga tables (seata_state_machine... etc.). Not yet explored. I can mention as a pending investigation.
+
+Let me draft the final answer now. Keep it terse but complete. The instructions say "prefer terse bullets over paragraphs" and preserve exact paths.
+
+One thing to note about tool behaviors: `glob` tool failed with "ripgrep execution failed" — subsequent exploration used bash find/grep. Worth a note in Blocked or Important Details.
+
+Also the read tool truncates long files — many reads were truncated; that's fine.
+
+I'll now write the summary.
+## Objective
+- Add durable external-event approvals to Seata Saga so suspended workflows can resume through signals or timeouts across engine restarts.
+
+## Important Details
+- The domain additions belong in `org.apache.seata.saga.statelang.domain`.
+- Add `StateType.WAIT` with value `"Wait"`.
+- State-type lookup must remain case-insensitive.
+- Add `ExecutionStatus.WA` with value `"Waiting"`.
+- `WaitState` must be an interface extending `State`.
+- `String getEvent()` exposes a required, non-blank Event.
+- `Map<String, Object> getOutput()` exposes optional Output mappings.
+- `java.time.Duration getTimeout()` exposes the optional Timeout.
+- `String getTimeoutNext()` exposes the optional TimeoutNext.
+- Reject a definition containing only one of Timeout and TimeoutNext.
+- A supplied Timeout duration must be strictly positive.
+- A supplied Timeout must use ISO-8601 duration syntax.
+- Supplied Timeout durations must support fractional seconds.
+- A Wait's possible subsequent destinations must be exactly its configured Next and its TimeoutNext when present.
+- Entering Wait must persist a WAIT state instance in WA.
+- Persist the suspended machine with execution status WA.
+- Persist the suspended machine with `isRunning=false`.
+- Wait entry must return without executing Next.
+- Wait entry must leave the machine completion time unset.
+- Wait entry must not report completion to the transaction coordinator.
+- A fresh engine using the same database must reload a suspended workflow.
+- A fresh engine must resume the reloaded workflow.
+- Add `StateMachineInstance signal(String stateMachineInstanceId, String waitStateInstanceId, String event, Map<String, Object> payload)` to `StateMachineEngine`.
+  - A matching signal must atomically claim the exact activation identified by waitStateInstanceId.
+  - Persist a winning signal's activation status as SU.
+  - Persist the signal payload as the activation's output parameters.
+  - Record a null payload as an empty map.
+  - Continue synchronously until another suspension or a terminal state.
+  - Evaluate each Output expression using the recorded payload as its root.
+  - Merge mapped signal outputs into machine context.
+  - Preserve completed predecessors' outputs when merging mapped signal outputs.
+  - Replaying the same event for an already satisfied activation must return the reloaded machine without running its continuation again.
+  - A delayed duplicate for an older loop activation must not consume a newer activation of the same Wait state.
+  - Null or blank required arguments must raise `EngineExecutionException` carrying `ParameterRequired` or `InvalidParameter`.
+  - A nonexistent machine ID must report `ObjectNotExists`.
+  - An event mismatch must report `OperationDenied`.
+  - An activation already lost to timeout or compensation must report `OperationDenied`.
+- Add `int fireDueTimeouts(java.time.Instant now)` to `StateMachineEngine`.
+  - Claim persisted waits whose deadline is less than or equal to now.
+  - Persist each timeout winner as SK.
+  - Resume a timeout winner along TimeoutNext.
+  - Return the number of claims won.
+  - Leave indefinite waits suspended after a timeout sweep.
+  - Leave waits whose deadline is later than now suspended after a timeout sweep.
+  - After reconstruction, the engine must discover persisted waits with due deadlines.
+  - After reconstruction, the engine must resume execution when a timeout claim wins.
+  - A null now must raise `EngineExecutionException` carrying `InvalidParameter`.
+- Concurrent duplicate matching signals must yield a single winning claim for the same Wait activation.
+- A matching signal and a due timeout racing for the same Wait activation must have a single winner.
+- A matching signal and compensation racing for the same Wait activation must have a single winner.
+- A due timeout and compensation racing for the same Wait activation must have a single winner.
+- A waiting child must suspend its enclosing SubStateMachine state in WA.
+- A waiting child must suspend its parent machine in WA.
+- Completing or timing out a child must synchronously resume its parents through multiple nesting levels.
+- Apply each nesting level's output mappings during resumption.
+- Ancestor compensation must cancel active descendant waits, including waits in grandchildren.
+- Cancellation of active descendant waits must precede compensation of any completed predecessor.
+- Add the matching WAIT constant to the deprecated `io.seata.saga.statelang.domain.StateType` wrapper.
+- Add the matching WA constant to the deprecated `io.seata.saga.statelang.domain.ExecutionStatus` wrapper.
+- Preserve wrap/unwrap round trips for every value of the deprecated `io.seata.saga.statelang.domain.StateType` wrapper.
+- Preserve wrap/unwrap round trips for every value of the deprecated `io.seata.saga.statelang.domain.ExecutionStatus` wrapper.
+- The solver planned new Wait support because the scoped feature-name search found no relevant implementation to reuse.
+- The solver proposed `WaitStateImpl` for the domain implementation.
+- The solver proposed registering `WaitStateHandler` through `StateMachineProcessHandler` for Wait execution.
+- The solver had not chosen between a dedicated `WaitStateRouter` and reuse of `TaskStateRouter`.
+
+## Work State
+### Completed
+- Located the working repository at `/workspace/repo`.
+- The Java search under `saga` and `compatible` for `fireDueTimeouts`, `WaitState`, `getTimeoutNext` and `signal(` returned only `compatible/src/test/java/io/seata/common/LockAndCallback.java`.
+- The complete visible `ExecutionStatus.java` result contains RU, SU, FA, UN and SK, plus the existing `getStatusString()` method.
+- The `StateType.java` read was clipped after `LOOP_START`, leaving the state-type lookup implementation unseen.
+- The `StateMachineEngine.java` read returned only a clipped opening excerpt.
+- The `ProcessCtrlStateMachineEngine.java` read returned only a clipped opening excerpt.
+
+### Active
+- The exploration todo remains in_progress.
+- Implementation items remain pending.
+- No source edits have been made.
+- The planned unit tests are pending execution.
+- The planned Maven build is pending execution.
+- The planned lint checks are pending execution.
+- No execution results were recorded for these checks.
+- The solver left open whether durable timeout storage needs a deadline column.
+
+### Blocked
+- No blocker is established.
+
+## Next Move
+1. Investigate durable Wait suspension, starting with `DbAndReportTcStateLogStore.java`.
+2. Investigate database reload, starting with `DbStateMachineConfig.java`.
+3. Inspect the output helper the solver named `ParameterUtils.createOutputParams`, whose behavior has not been shown.
+4. Finish inspecting `SubStateMachineHandler.java` to understand nested execution.
+5. Read the unread deprecated `io.seata.saga.statelang.domain.StateType` wrapper implementation.
+6. Read the unread deprecated `io.seata.saga.statelang.domain.ExecutionStatus` wrapper implementation.
+7. After exploration, begin the pending domain additions.
+8. After exploration, begin the pending parser additions.
+
+## Relevant Files
+- Paths below are relative to `/workspace/repo`.
+- `saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/` holds `StateType.java`, `ExecutionStatus.java` and `State.java`.
+- `saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/` holds the partly read examples `BaseState.java`, `AbstractTaskState.java` and `ScriptTaskStateImpl.java`.
+- `saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/` contains `StateParserFactory.java` and `impl/ScriptTaskStateParser.java`, both partly read.
+- `saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/` contains the API target `StateMachineEngine.java` and implementation target `impl/ProcessCtrlStateMachineEngine.java`.
+- `saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/` contains the named integration targets `StateMachineProcessHandler.java`, `StateMachineProcessRouter.java`, `routers/TaskStateRouter.java` and `handlers/SubStateMachineHandler.java`.
+- `saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/` also contains `utils/EngineUtils.java` and `interceptors/ServiceTaskHandlerInterceptor.java`, both partly read.
+- `saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/` contains the persistence targets `StateLogStore.java` and `db/StateLogStoreSqls.java`.
+- `saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/` contains `store/db/DbAndReportTcStateLogStore.java` and `config/DbStateMachineConfig.java`, located but unread.
+- `compatible/src/main/java/io/seata/saga/statelang/domain/` contains the enum wrapper files `StateType.java` and `ExecutionStatus.java`.
+[14] assistant: [reasoning]
+This is a massive task. The strategy:
+
+1. Read the remaining key files:
+   - `DomainConstants`
+   - `StateLogStore` interface + `DbAndReportTcStateLogStore` + `StateLogStoreSqls` + `DbStateMachineConfig`
+   - `AbstractStateMachineConfig` (for `getProcessCtrlEventPublisher`, async etc.)
+   - `StateInstruction`
+   - `ParameterUtils`
+   - `StateMachineInstanceImpl`, `StateInstanceImpl`
+   - `DefaultStatusDecisionStrategy`
+   - `SucceedEndStateHandler`
+   - compatible `StateType`, `ExecutionStatus`, `StateMachineEngine` wrappers
+   - `DbStateLogRepository`? Let me check `StateLogRepositoryImpl` in engine repo.
+   - `LoopStartStateHandler` (simple handler)
+   - Tests in seata-saga-spring or compatible to see the DB-based test infra (e.g., `DbAndReportTcStateLogStoreTest`, mock server tests). There may be hidden tests for this feature in `saga/seata-saga-engine/src/test` — let me check what tests exist there.
+
+2. Then design:
+
+**Domain (statelang)**:
+- `StateType.WAIT("Wait")`.
+- `ExecutionStatus.WA("Waiting")`.
+- `WaitState` interface extends State: `String getEvent()`, `Map<String,Object> getOutput()`, `Duration getTimeout()`, `String getTimeoutNext()`.
+- `WaitStateImpl` extends BaseState implements WaitState. Fields event, output, outputExpressions, timeout (Duration), timeoutNext, timeoutMillis? Maybe store timeout as Duration.
+- Validation: "Reject definitions unless Timeout and TimeoutNext are both present or both absent; supplied timeouts must be strictly positive ISO-8601 durations, including fractional seconds." — This is parser-level validation in `WaitStateParser` (parsing the definition JSON). The timeout is supplied as ISO-8601 string (e.g., "PT1.5S", "PT0.001S"), parse via `Duration.parse`. Must be strictly positive (> 0). Both Timeout and TimeoutNext present or both absent. Event is required and non-blank (reject blank). Also `Next`? "For a Wait state, the set of possible subsequent destinations contains exactly its configured Next destination and, when present, its configured TimeoutNext destination, with no other destinations." — This may be about `StateMachineImpl.getState...`? Hmm, "possible subsequent destinations" — there may be a method in `StateMachine` or somewhere that returns next states... Let me search for something like "getNext" graph building. Perhaps in the `statemachine-designer` or in `StateMachineImpl` there's something computing state transitions. Let me check `StateMachine.java` interface.
+
+Where does validation of definitions normally happen? In `statelang/validator` package! Let me look at that: `org.apache.seata.saga.statelang.validator` with `Rule` and `impl` subpackage. That's probably where "reject definitions" happens. Let me look at those files.
+
+**Engine**:
+- `WaitStateHandler` implements StateHandler: when processing a Wait state:
+  - Create StateInstance with type WAIT, status WA (well, entering sets status WA after started?). "Entering a Wait must persist a WAIT state instance with status WA, suspend the machine with status WA and isRunning=false, and return without executing Next..."
+  - So WaitStateHandler.process: create StateInstance (like ServiceTaskHandlerInterceptor does pre/post work — since WaitStateHandler needs an interceptor to create the state instance; I'll create `WaitStateHandlerInterceptor` or do it all inside the handler).
+  - The state instance: machineInstanceId, name, type WAIT, status WA, gmtStarted, and a computed deadline if timeout configured (persist as what? there's no column for deadline...). Hmm — "Claim persisted waits whose configured deadline is at or before now" — so the deadline must be persisted. The state instance has `inputParams`/`outputParams` and various columns. The DB schema for `seata_state_instance`: let me check the store SQL script: `script/server/db/...`? Let me look at `StateLogStoreSqls` for the table columns.
+
+Hmm. Persisting the deadline: options:
+  a. Add a column `wait_deadline` (TIMESTAMP) to the state instance table + schema SQL update. But existing DB stores `StateInstanceImpl` via `DbAndReportTcStateLogStore`... let me look at how recordStateStarted writes the state instance: `recordStateStarted` builds the SQL from `StateLogStoreSqls`. Changing schema is invasive but might be needed for "configured deadline at or before now" claim across engine restarts ("This must work after engine reconstruction too").
+
+  b. Store deadline in inputParams (serialized JSON). The wait deadline can be computed as gmtStarted + timeout. Actually — "Claim persisted waits whose configured deadline is at or before now": the configured deadline = start time of the wait state instance + configured timeout duration. We have `gmtStarted` persisted for the state instance. The timeout duration can be re-derived from the state definition (state machine def from repo: `inst.getStateMachine().getState(name).getTimeout()`). So no new column needed! fireDueTimeouts: load all machine instances with status WA (waiting)... wait, but we need to find persisted waits. The machine instance has status WA. Then reload that machine instance, find its state list, find state instances of type WAIT with status WA, compute deadline = gmtStarted + state.getTimeout(), if due → claim.
+
+  How to "query persisted waits"? We need a way to enumerate machine instances with status WA. There's `queryStateMachineInstanceByParentId` but no "query by status" method. Hmm. There may be a `LockAndCallback` / metrics... Let me check `DbAndReportTcStateLogStore` for available query methods. There's `queryStateMachineInstanceByParentId` only I think.
+
+  Alternative: the StateLogStore interface — I could add methods like `queryStateMachineInstancesByStatus(ExecutionStatus)` and `queryStateInstanceListByStatus`? "A fresh engine using the same database must be able to reload and resume the suspended workflow" — that's for signal(). For fireDueTimeouts, "This must work after engine reconstruction too" — i.e., after building a new engine object, fireDueTimeouts must find the persisted waits in the DB. So we need a DB query for waiting machine instances. 
+
+  Simplest robust approach that works with the "same database" requirement without schema changes: query all state machine instances with status = 'Waiting'... but there's no such query. I'll add methods to StateLogStore:
+  - `List<StateMachineInstance> queryStateMachineInstanceByStatus(ExecutionStatus status)`? and DbAndReportTcStateLogStore would implement via SQL on `seata_state_machine_instance` table: `SELECT ... WHERE status = ?`. Hmm wait — actually is `status` a column in that table? Let me check `StateLogStoreSqls`.
+
+  Let me also check what `DbAndReportTcStateLogStore.getStateMachineInstance` does — it deserializes start params etc.
+
+Let me now read: DomainConstants, StateLogStore, DbAndReportTcStateLogStore, StateLogStoreSqls, DbStateMachineConfig, StateInstruction, ParameterUtils, DefaultStatusDecisionStrategy, SucceedEndStateHandler, StateMachineInstanceImpl, StateInstanceImpl, LoopStartStateHandler, and the validator package. Also the compatible module StateType/ExecutionStatus. Let me batch these reads.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/DomainConstants.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/DomainConstants.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.domain;
+18: 
+19: /**
+20:  * State Language Domain Constants
+21:  *
+22:  */
+23: public interface DomainConstants {
+24:     String COMPENSATE_SUB_MACHINE_STATE_NAME_PREFIX = "_compensate_sub_machine_state_";
+25: 
+26:     // region Service Types
+27:     String SERVICE_TYPE_SPRING_BEAN = "SpringBean";
+28:     // endregion
+29: 
+30:     // region System Variables
+31:     String VAR_NAME_STATEMACHINE_CONTEXT = "context";
+32:     String VAR_NAME_INPUT_PARAMS = "inputParams";
+33:     String VAR_NAME_OUTPUT_PARAMS = "outputParams";
+34:     String VAR_NAME_CURRENT_EXCEPTION = "currentException"; // exception of current state
+35:     String VAR_NAME_BUSINESSKEY = "_business_key_";
+36:     String VAR_NAME_SUB_MACHINE_PARENT_ID = "_sub_machine_parent_id_";
+37:     String VAR_NAME_CURRENT_CHOICE = "_current_choice_";
+38:     String VAR_NAME_STATEMACHINE_ERROR_CODE = "_statemachine_error_code_";
+39:     String VAR_NAME_STATEMACHINE_ERROR_MSG = 
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java"}
+<path>/workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.store;
+18: 
+19: import org.apache.seata.saga.proctrl.ProcessContext;
+20: import org.apache.seata.saga.statelang.domain.StateInstance;
+21: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+22: 
+23: import java.util.List;
+24: 
+25: /**
+26:  * StateMachine engine log store
+27:  *
+28:  */
+29: public interface StateLogStore {
+30: 
+31:     /**
+32:      * Record state machine startup events
+33:      *
+34:      * @param machineInstance the state machine instance
+35:      * @param context the state machine process context
+36:      */
+37:     void recordStateMachineStarted(StateMachineInstance machineInstance, ProcessContext context);
+38: 
+39:     /**
+40:      * Record status end event
+41:      *
+42:      * @param machineInstance the state machine instance
+43:      * @param context the state machine process context
+44:      */
+45:     void recordStateMachineFinished(StateMachineInstance machineInstance, ProcessContext context);
+[truncated]
+[tool:bash] {"command": "find /workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/validator -name \"*.java\" | xargs -I{} sh -c 'echo \"=== {}\"; cat {}'"}
+=== /workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/validator/Rule.java
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.seata.saga.statelang.validator;
+
+import org.apache.seata.saga.statelang.domain.StateMachine;
+
+/**
+ * Validation rule interface, use SPI to inject rules
+ *
+ */
+public interface Rule {
+    /**
+     * Validate a state machine
+     *
+     * @param stateMachine state machine
+     * @return true if passes, false if fails
+     */
+    boolean validate(StateMachine stateMachine);
+
+    /**
+     * Get the rule name
+     *
+     * @return name of the rule
+     */
+    String getName();
+
+    /**
+     * Get hints why validation passes or fails. Use this method to show more messages about validation result.
+     *
+     * @return hint of the rule
+     */
+    String getHint();
+}
+=== /workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/validator/RuleFactory.java
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License,
+[truncated]
+[15] assistant: [reasoning]
+Very important: `StateMachineUtils.getAllPossibleSubsequentStates(state)` — this is used in the validator for graph traversal. "For a Wait state, the set of possible subsequent destinations contains exactly its configured Next destination and, when present, its configured TimeoutNext destination, with no other destinations." — So I need to modify `StateMachineUtils.getAllPossibleSubsequentStates` to handle WaitState: return Next + TimeoutNext when present. Let me read `StateMachineUtils`.
+
+Also the parser: `WaitStateParser` should validate definitions ("Reject definitions unless Timeout and TimeoutNext are both present or both absent; supplied timeouts must be strictly positive ISO-8601 durations, including fractional seconds"). Where is the StateMachineParserImpl — does it run validation rules? Let me read `StateMachineParserImpl`, `StateMachineUtils`, `AbstractTaskStateParser`, `BaseStateParser`, `ChoiceStateParser` and the `JacksonJsonParser`/`FastjsonParser` to see how Duration might be handled.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/utils/StateMachineUtils.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/utils/StateMachineUtils.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.parser.utils;
+18: 
+19: import org.apache.seata.common.util.StringUtils;
+20: import org.apache.seata.saga.statelang.domain.ChoiceState;
+21: import org.apache.seata.saga.statelang.domain.State;
+22: import org.apache.seata.saga.statelang.domain.TaskState;
+23: 
+24: import java.util.HashSet;
+25: import java.util.Optional;
+26: import java.util.Set;
+27: import java.util.stream.Collectors;
+28: 
+29: /**
+30:  * Util class for parsing StateMachine
+31:  *
+32:  */
+33: public class StateMachineUtils {
+34:     public static Set<String> getAllPossibleSubsequentStates(State state) {
+35:         Set<String> subsequentStates = new HashSet<>();
+36:         // Next state
+37:         subsequentStates.add(state.getNext());
+38:         switch (state.getType()) {
+39:             case SCRIPT_TASK:
+40:             case SERVICE_TASK:
+41:             case SUB_STATE_MACHINE:
+42:             case SUB_MACHINE_COMPENSATION:
+43:                 // Next s
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/StateMachineParserImpl.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/StateMachineParserImpl.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.parser.impl;
+18: 
+19: import org.apache.seata.common.json.JsonUtil;
+20: import org.apache.seata.common.util.StringUtils;
+21: import org.apache.seata.saga.statelang.domain.DomainConstants;
+22: import org.apache.seata.saga.statelang.domain.RecoverStrategy;
+23: import org.apache.seata.saga.statelang.domain.State;
+24: import org.apache.seata.saga.statelang.domain.StateMachine;
+25: import org.apache.seata.saga.statelang.domain.StateType;
+26: import org.apache.seata.saga.statelang.domain.impl.AbstractTaskState;
+27: import org.apache.seata.saga.statelang.domain.impl.BaseState;
+28: import org.apache.seata.saga.statelang.domain.impl.StateMachineImpl;
+29: import org.apache.seata.saga.statelang.parser.StateMachineParser;
+30: import org.apache.seata.saga.statelang.parser.StateParser;
+31: import org.apache.seata.saga.statelang.parser.StateParserFactory;
+32: import org.apache.seata.saga.statelang.parser.utils.DesignerJsonTransform
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/AbstractTaskStateParser.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/AbstractTaskStateParser.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.parser.impl;
+18: 
+19: import org.apache.seata.common.util.NumberUtils;
+20: import org.apache.seata.saga.statelang.domain.TaskState.ExceptionMatch;
+21: import org.apache.seata.saga.statelang.domain.TaskState.Loop;
+22: import org.apache.seata.saga.statelang.domain.TaskState.Retry;
+23: import org.apache.seata.saga.statelang.domain.impl.AbstractTaskState;
+24: import org.apache.seata.saga.statelang.domain.impl.AbstractTaskState.ExceptionMatchImpl;
+25: import org.apache.seata.saga.statelang.domain.impl.AbstractTaskState.LoopImpl;
+26: import org.apache.seata.saga.statelang.domain.impl.AbstractTaskState.RetryImpl;
+27: 
+28: import java.util.ArrayList;
+29: import java.util.List;
+30: import java.util.Map;
+31: 
+32: /**
+33:  * AbstractTaskStateParser
+34:  *
+35:  */
+36: public abstract class AbstractTaskStateParser extends BaseStateParser {
+37: 
+38:     protected void parseTaskAttributes(AbstractTaskState state, Object node) {
+39
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/BaseStateParser.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/BaseStateParser.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.parser.impl;
+18: 
+19: import org.apache.seata.saga.statelang.domain.impl.BaseState;
+20: 
+21: import java.util.Map;
+22: 
+23: /**
+24:  * BaseStateParser
+25:  *
+26:  */
+27: public abstract class BaseStateParser {
+28: 
+29:     protected void parseBaseAttributes(BaseState state, Object node) {
+30: 
+31:         Map<String, Object> nodeMap = (Map<String, Object>) node;
+32:         state.setComment((String) nodeMap.get("Comment"));
+33:         state.setNext((String) nodeMap.get("Next"));
+34:         state.setExtensions((Map<String, Object>) nodeMap.get("Extensions"));
+35:     }
+36: }
+
+(End of file - total 36 lines)
+</content>
+[18] user: Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.
+[19] assistant: [reasoning]
+Let me continue exploring the key files I need. I still need to read:
+- StateInstruction
+- ParameterUtils (createOutputParams)
+- SucceedEndStateHandler
+- LoopStartStateHandler
+- DefaultStatusDecisionStrategy
+- StateMachineInstanceImpl, StateInstanceImpl
+- DbAndReportTcStateLogStore
+- StateLogStoreSqls
+- DbStateMachineConfig / AbstractStateMachineConfig
+- compatible StateType/ExecutionStatus/StateMachineEngine wrappers
+- ProcessCtrlStateMachineEngine (full)
+- StateMachineProcessHandler (full)
+- TaskStateRouter (full)
+- SubStateMachineHandler (full)
+- EngineUtils (full)
+- ServiceTaskHandlerInterceptor (full)
+- StateMachineImpl (to see getState etc.)
+- CompensationHolder
+- LoopTaskUtils
+- Expression utils
+
+Let me batch reads now. Start with the most important engine pieces.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateInstruction.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateInstruction.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.StringUtils;
+21: import org.apache.seata.saga.engine.StateMachineConfig;
+22: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+23: import org.apache.seata.saga.proctrl.Instruction;
+24: import org.apache.seata.saga.proctrl.ProcessContext;
+25: import org.apache.seata.saga.statelang.domain.DomainConstants;
+26: import org.apache.seata.saga.statelang.domain.State;
+27: import org.apache.seata.saga.statelang.domain.StateMachine;
+28: 
+29: /**
+30:  * State Instruction
+31:  *
+32:  * @see Instruction
+33:  */
+34: public class StateInstruction implements Instruction {
+35: 
+36:     private String stateName;
+37:     private String stateMachineName;
+38:     private String tenantId;
+39:     private boolean end;
+40: 
+41:     /**
+42:      * Temporary state node for running temporary nodes in the state machine
+43:      *
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/ParameterUtils.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/ParameterUtils.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.utils;
+18: 
+19: import org.apache.seata.common.lock.ResourceLock;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.common.util.StringUtils;
+22: import org.apache.seata.saga.engine.expression.Expression;
+23: import org.apache.seata.saga.engine.expression.ExpressionResolver;
+24: import org.apache.seata.saga.engine.expression.seq.SequenceExpression;
+25: import org.apache.seata.saga.statelang.domain.StateInstance;
+26: import org.apache.seata.saga.statelang.domain.impl.AbstractTaskState;
+27: import org.apache.seata.saga.statelang.domain.impl.StateInstanceImpl;
+28: 
+29: import java.util.ArrayList;
+30: import java.util.LinkedHashMap;
+31: import java.util.List;
+32: import java.util.Map;
+33: 
+34: /**
+35:  * ParameterUtils
+36:  *
+37:  */
+38: public class ParameterUtils {
+39: 
+40:     private static final ResourceLock INPUT_LOCK = new ResourceLock();
+41: 
+42:     public static List<Object> createInputPa
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SucceedEndStateHandler.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SucceedEndStateHandler.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.handlers;
+18: 
+19: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+20: import org.apache.seata.saga.engine.pcext.StateHandler;
+21: import org.apache.seata.saga.proctrl.ProcessContext;
+22: 
+23: /**
+24:  * SucceedEndState Handler
+25:  *
+26:  */
+27: public class SucceedEndStateHandler implements StateHandler {
+28: 
+29:     @Override
+30:     public void process(ProcessContext context) throws EngineExecutionException {
+31:         // Do Nothing
+32:     }
+33: }
+
+(End of file - total 33 lines)
+</content>
+[20] assistant: [reasoning]
+Now let me read the full ProcessCtrlStateMachineEngine, StateMachineProcessHandler, TaskStateRouter, EngineUtils, ServiceTaskHandlerInterceptor, SubStateMachineHandler, and the state instance impls. These are big files. Let me batch.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.impl;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.common.util.StringUtils;
+22: import org.apache.seata.saga.engine.AsyncCallback;
+23: import org.apache.seata.saga.engine.StateMachineConfig;
+24: import org.apache.seata.saga.engine.StateMachineEngine;
+25: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+26: import org.apache.seata.saga.engine.exception.ForwardInvalidException;
+27: import org.apache.seata.saga.engine.pcext.StateInstruction;
+28: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+29: import org.apache.seata.saga.engine.pcext.utils.LoopTaskUtils;
+30: import org.apache.seata.saga.engine.pcext.utils.ParameterUtils;
+31: import org.apache.seata.saga.engine.utils.ProcessContextBuilder;
+32: import org.apache.seata.saga.proctrl.ProcessContext;
+33: import org.apache.seata.saga.proc
+[truncated]
+[21] assistant: [reasoning]
+Now the StateMachineEngine interface full, StateMachineProcessHandler full, TaskStateRouter full, EngineUtils full, ServiceTaskHandlerInterceptor full, SubStateMachineHandler full. Let me read them.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine;
+18: 
+19: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+20: import org.apache.seata.saga.engine.exception.ForwardInvalidException;
+21: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+22: 
+23: import java.util.Map;
+24: 
+25: /**
+26:  * State machine engine
+27:  *
+28:  */
+29: public interface StateMachineEngine {
+30: 
+31:     /**
+32:      * start a state machine instance
+33:      *
+34:      * @param stateMachineName the state machine name
+35:      * @param tenantId the tenant id
+36:      * @param startParams the start params
+37:      * @return the state machine instance
+38:      * @throws EngineExecutionException the engine execution exception
+39:      */
+40:     StateMachineInstance start(String stateMachineName, String tenantId, Map<String, Object> startParams)
+41:             throws EngineExecutionException;
+42: 
+43:     /**
+44:      * start a state machine instance with businessKey
+45:      *
+46
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext;
+18: 
+19: import org.apache.seata.common.exception.FrameworkException;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.saga.engine.pcext.handlers.ChoiceStateHandler;
+22: import org.apache.seata.saga.engine.pcext.handlers.CompensationTriggerStateHandler;
+23: import org.apache.seata.saga.engine.pcext.handlers.FailEndStateHandler;
+24: import org.apache.seata.saga.engine.pcext.handlers.LoopStartStateHandler;
+25: import org.apache.seata.saga.engine.pcext.handlers.ScriptTaskStateHandler;
+26: import org.apache.seata.saga.engine.pcext.handlers.ServiceTaskStateHandler;
+27: import org.apache.seata.saga.engine.pcext.handlers.SubStateMachineHandler;
+28: import org.apache.seata.saga.engine.pcext.handlers.SucceedEndStateHandler;
+29: import org.apache.seata.saga.proctrl.ProcessContext;
+30: import org.apache.seata.saga.proctrl.handler.ProcessHandler;
+31: import org.apache.seata.saga.statelang.domain.S
+[truncated]
+[22] assistant: [tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/TaskStateRouter.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/TaskStateRouter.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.routers;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.StringUtils;
+21: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+22: import org.apache.seata.saga.engine.pcext.StateInstruction;
+23: import org.apache.seata.saga.engine.pcext.StateRouter;
+24: import org.apache.seata.saga.engine.pcext.utils.CompensationHolder;
+25: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+26: import org.apache.seata.saga.engine.pcext.utils.LoopTaskUtils;
+27: import org.apache.seata.saga.proctrl.HierarchicalProcessContext;
+28: import org.apache.seata.saga.proctrl.Instruction;
+29: import org.apache.seata.saga.proctrl.ProcessContext;
+30: import org.apache.seata.saga.statelang.domain.CompensateSubStateMachineState;
+31: import org.apache.seata.saga.statelang.domain.DomainConstants;
+32: import org.apache.seata.saga.statelang.domain.ExecutionStatus;
+33: imp
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/EngineUtils.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/EngineUtils.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.utils;
+18: 
+19: import org.apache.seata.common.lock.ResourceLock;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.common.util.StringUtils;
+22: import org.apache.seata.saga.engine.AsyncCallback;
+23: import org.apache.seata.saga.engine.StateMachineConfig;
+24: import org.apache.seata.saga.engine.pcext.StateInstruction;
+25: import org.apache.seata.saga.engine.pcext.handlers.ScriptTaskStateHandler;
+26: import org.apache.seata.saga.proctrl.HierarchicalProcessContext;
+27: import org.apache.seata.saga.proctrl.ProcessContext;
+28: import org.apache.seata.saga.statelang.domain.DomainConstants;
+29: import org.apache.seata.saga.statelang.domain.StateInstance;
+30: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+31: import org.apache.seata.saga.statelang.domain.TaskState;
+32: import org.apache.seata.saga.statelang.domain.TaskState.ExceptionMatch;
+33: import org.apache.seata.saga.statelang.
+[truncated]
+[23] assistant: [reasoning]
+Now let me read ServiceTaskHandlerInterceptor (full), SubStateMachineHandler (full), StateInstanceImpl (domain impl), StateMachineInstanceImpl, and CompensationHolder. These are key to understand state instance creation and the sub-machine mechanism.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.interceptors;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.loader.LoadLevel;
+21: import org.apache.seata.common.lock.ResourceLock;
+22: import org.apache.seata.common.util.CollectionUtils;
+23: import org.apache.seata.common.util.StringUtils;
+24: import org.apache.seata.saga.engine.StateMachineConfig;
+25: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+26: import org.apache.seata.saga.engine.expression.ELExpression;
+27: import org.apache.seata.saga.engine.expression.Expression;
+28: import org.apache.seata.saga.engine.expression.ExpressionResolver;
+29: import org.apache.seata.saga.engine.expression.exception.ExceptionMatchExpression;
+30: import org.apache.seata.saga.engine.pcext.InterceptableStateHandler;
+31: import org.apache.seata.saga.engine.pcext.StateHandlerInterceptor;
+32: import org.apache.seata.saga.engine.pcext.StateI
+[truncated]
+[24] assistant: [reasoning]
+Now SubStateMachineHandler (full) — key to understand nested machines. Then StateInstanceImpl, StateMachineInstanceImpl, CompensationHolder. Let me read.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SubStateMachineHandler.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SubStateMachineHandler.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.handlers;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.StringUtils;
+21: import org.apache.seata.saga.engine.StateMachineConfig;
+22: import org.apache.seata.saga.engine.StateMachineEngine;
+23: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+24: import org.apache.seata.saga.engine.exception.ForwardInvalidException;
+25: import org.apache.seata.saga.engine.pcext.InterceptableStateHandler;
+26: import org.apache.seata.saga.engine.pcext.StateHandler;
+27: import org.apache.seata.saga.engine.pcext.StateHandlerInterceptor;
+28: import org.apache.seata.saga.engine.pcext.StateInstruction;
+29: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+30: import org.apache.seata.saga.engine.store.StateLogStore;
+31: import org.apache.seata.saga.proctrl.ProcessContext;
+32: import org.apache.seata.saga.statelang.domain.DomainConstants;
+33: impo
+[truncated]
+[25] assistant: [reasoning]
+Interesting: SubStateMachineHandler synchronously calls `engine.start` — the sub state machine runs to completion synchronously within the parent handler (because `start` uses `processCtrlEventPublisher.publish` which runs synchronously in the same thread by default? Actually `ProcessCtrlEventPublisher` — in DefaultStateMachineConfig, the sync publisher executes in current thread; async publisher uses thread pool). So a nested state machine with a Wait state would... `engine.start` returns a StateMachineInstance that is suspended (WA) — then `decideStatus` gets status WA which isn't handled: `stateMachineInstance.getStatus()` returns WA... `decideStatus` returns WA and sets stateInstance status to WA. Then postProcess (ServiceTaskHandlerInterceptor) — decideExecutionStatus would see stateInstance status WA... Actually the requirement says: "A waiting child must suspend its enclosing SubStateMachine state in WA" — so parent's SubStateMachine state instance gets status WA, and parent machine instance gets status WA and isRunning=false.
+
+OK. Now I need to see:
+- StateInstanceImpl, StateMachineInstanceImpl domain impls
+- CompensationHolder
+- DbAndReportTcStateLogStore + StateLogStoreSqls (persistence SQL) + DbStateMachineConfig
+- The compatible module wrappers (StateType, ExecutionStatus, StateMachineEngine, ProcessCtrlStateMachineEngine)
+- StateMachineImpl (getState)
+- How tests are structured in saga modules (test dirs)
+
+Let me read StateInstanceImpl and StateMachineInstanceImpl now.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/StateInstanceImpl.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/StateInstanceImpl.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.domain.impl;
+18: 
+19: import org.apache.seata.common.util.StringUtils;
+20: import org.apache.seata.saga.statelang.domain.ExecutionStatus;
+21: import org.apache.seata.saga.statelang.domain.StateInstance;
+22: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+23: import org.apache.seata.saga.statelang.domain.StateType;
+24: 
+25: import java.util.Date;
+26: 
+27: /**
+28:  * state execution instance
+29:  *
+30:  */
+31: public class StateInstanceImpl implements StateInstance {
+32: 
+33:     private String id;
+34:     private String machineInstanceId;
+35:     private String name;
+36:     private StateType type;
+37:     private String serviceName;
+38:     private String serviceMethod;
+39:     private String serviceType;
+40:     private String businessKey;
+41:     private Date gmtStarted;
+42:     private Date gmtUpdated;
+43:     private Date gmtEnd;
+44:     private boolean isForUpdate;
+45:     private Exception except
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/StateMachineInstanceImpl.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/StateMachineInstanceImpl.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.domain.impl;
+18: 
+19: import org.apache.seata.saga.statelang.domain.ExecutionStatus;
+20: import org.apache.seata.saga.statelang.domain.StateInstance;
+21: import org.apache.seata.saga.statelang.domain.StateMachine;
+22: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+23: 
+24: import java.util.ArrayList;
+25: import java.util.Collections;
+26: import java.util.Date;
+27: import java.util.HashMap;
+28: import java.util.List;
+29: import java.util.Map;
+30: import java.util.concurrent.ConcurrentHashMap;
+31: 
+32: /**
+33:  * state machine execution instance
+34:  *
+35:  */
+36: public class StateMachineInstanceImpl implements StateMachineInstance {
+37: 
+38:     private String id;
+39:     private String machineId;
+40:     private String tenantId;
+41:     private String parentId;
+42:     private Date gmtStarted;
+43:     private String businessKey;
+44:     private Map<String, Object> startParams = new HashMap<>()
+[truncated]
+[26] assistant: [reasoning]
+Now let me read the persistence layer: DbAndReportTcStateLogStore (the DB implementation), StateLogStoreSqls, and DbStateMachineConfig. Also look at test infrastructure. Let me also check `saga/seata-saga-engine/src/test` and `saga/seata-saga-spring/src/test` for existing tests.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java"}
+<path>/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.store.db;
+18: 
+19: import org.apache.seata.common.Constants;
+20: import org.apache.seata.common.exception.FrameworkErrorCode;
+21: import org.apache.seata.common.exception.StoreException;
+22: import org.apache.seata.common.util.CollectionUtils;
+23: import org.apache.seata.common.util.StringUtils;
+24: import org.apache.seata.core.context.RootContext;
+25: import org.apache.seata.core.exception.TransactionException;
+26: import org.apache.seata.core.model.BranchStatus;
+27: import org.apache.seata.core.model.BranchType;
+28: import org.apache.seata.core.model.GlobalStatus;
+29: import org.apache.seata.saga.engine.StateMachineConfig;
+30: import org.apache.seata.saga.engine.config.DbStateMachineConfig;
+31: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+32: import org.apache.seata.saga.engine.impl.DefaultStateMachineConfig;
+33: import org.apache.seata.saga.engine.pcext.StateInstruction;
+34: import org.apache.se
+[truncated]

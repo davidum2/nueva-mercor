@@ -1,0 +1,2387 @@
+# compactor view starts at before_compaction.jsonl row 29 (previous compaction summary (assistant row 29; kept from row 27))
+[29] assistant: [reasoning]
+Let me construct a combined summary. The prior summary has extensive details about the objective (durable external-event approvals / Wait states in Seata Saga), important details (all the requirement bullets), work state, next moves, relevant files.
+
+The conversation since then shows continued exploration:
+
+1. Assistant read DomainConstants.java (partially truncated - saw constants like VAR_NAME_STATEMACHINE_CONTEXT, VAR_NAME_INPUT_PARAMS, etc.)
+2. Read StateLogStore.java interface (recordStateMachineStarted, recordStateMachineFinished, etc.)
+3. Read validator package: Rule.java, RuleFactory.java (partial), noted `StateMachineUtils.getAllPossibleSubsequentStates(state)` is used in validator graph traversal
+4. Read StateMachineUtils.java - `getAllPossibleSubsequentStates` - needs modification for WaitState: return Next + TimeoutNext when present
+5. Read StateMachineParserImpl.java (truncated)
+6. Read AbstractTaskStateParser.java (truncated) - parseTaskAttributes
+7. Read BaseStateParser.java (full) - parseBaseAttributes parses Comment, Next, Extensions
+8. Read StateInstruction.java (truncated)
+9. Read ParameterUtils.java (truncated) - has createInputParams, INPUT_LOCK ResourceLock
+10. Read SucceedEndStateHandler.java (full) - process does nothing
+11. Read ProcessCtrlStateMachineEngine.java (truncated)
+12. Read StateMachineEngine.java (truncated) - interface with start methods
+13. Read StateMachineProcessHandler.java (truncated) - registers handlers: ChoiceStateHandler, CompensationTriggerStateHandler, FailEndStateHandler, LoopStartStateHandler, ScriptTaskStateHandler, ServiceTaskStateHandler, SubStateMachineHandler, SucceedEndStateHandler
+14. Read TaskStateRouter.java (truncated)
+15. Read EngineUtils.java (truncated)
+16. Read ServiceTaskHandlerInterceptor.java (truncated)
+17. Read SubStateMachineHandler.java (truncated) - synchronously calls engine.start
+18. Read StateInstanceImpl.java (truncated) - fields id, machineInstanceId, name, type (StateType), serviceName, serviceMethod, serviceType, businessKey, gmtStarted, gmtUpdated, gmtEnd, isForUpdate, exception...
+19. Read StateMachineInstanceImpl.java (truncated) - fields id, machineId, tenantId, parentId, gmtStarted, businessKey, startParams...
+20. Read DbAndReportTcStateLogStore.java (truncated) - in seata-saga-spring module
+
+Key reasoning insights from the conversation:
+
+- The strategy was outlined: read remaining key files, then design.
+- Domain design: StateType.WAIT("Wait"), ExecutionStatus.WA("Waiting"), WaitState interface with getEvent(), getOutput(), getTimeout() (Duration), getTimeoutNext(). WaitStateImpl extends BaseState.
+- Validation happens at parser level in WaitStateParser: Timeout/TimeoutNext both present or both absent; Duration.parse for ISO-8601; strictly positive; fractional seconds supported (Duration.parse handles this natively).
+- `StateMachineUtils.getAllPossibleSubsequentStates(state)` needs Wait case handling: Next + TimeoutNext.
+- Engine design: WaitStateHandler implements StateHandler. Entering Wait: create StateInstance with type WAIT, status WA, gmtStarted; suspend machine instance with status WA and isRunning=false; return without executing Next.
+- Deadline persistence question: options considered — (a) add a `wait_deadline` column to state instance table, or (b) derive deadline from gmtStarted + state.getTimeout() where the timeout comes from the state machine definition reloaded from the repo. The assistant leaned toward option (b) to avoid schema changes.
+- For fireDueTimeouts after engine reconstruction: need a way to enumerate persisted waiting machine instances. `StateLogStore` has no query-by-status method; may need to add `queryStateMachineInstanceByStatus(ExecutionStatus)` or similar to StateLogStore + DbAndReportTcStateLogStore implementation with SQL on `seata_state_machine_instance` table (status column check pending via StateLogStoreSqls).
+- Discovered `StateMachineUtils.getAllPossibleSubsequentStates` is used by the validator for graph traversal — so the Wait destinations requirement maps to modifying that method.
+- SubStateMachineHandler synchronously calls engine.start — nested machine with a Wait state would return a suspended (WA) instance; decideStatus would see WA; requirement: "A waiting child must suspend its enclosing SubStateMachine state in WA" — parent's SubStateMachine state instance gets status WA, parent machine instance WA, isRunning=false.
+- The prior summary's open question about whether to use dedicated WaitStateRouter vs TaskStateRouter is still open. Actually wait — the prior summary says "The solver had not chosen between a dedicated `WaitStateRouter` and reuse of `TaskStateRouter`." That's still true.
+- The prior summary said "The solver left open whether durable timeout storage needs a deadline column." The conversation now has more clarity: leaning toward deriving deadline from gmtStarted + timeout from definition, but still needs verification of StateLogStoreSqls columns and whether a status query exists.
+
+Files read so far (partially, since many were truncated):
+- DomainConstants.java
+- StateLogStore.java
+- validator/Rule.java (full), RuleFactory.java (partial)
+- StateMachineUtils.java (partial)
+- StateMachineParserImpl.java (partial)
+- AbstractTaskStateParser.java (partial)
+- BaseStateParser.java (full)
+- StateInstruction.java (partial)
+- ParameterUtils.java (partial)
+- SucceedEndStateHandler.java (full)
+- ProcessCtrlStateMachineEngine.java (partial)
+- StateMachineEngine.java (partial)
+- StateMachineProcessHandler.java (partial)
+- TaskStateRouter.java (partial)
+- EngineUtils.java (partial)
+- ServiceTaskHandlerInterceptor.java (partial)
+- SubStateMachineHandler.java (partial)
+- StateInstanceImpl.java (partial)
+- StateMachineInstanceImpl.java (partial)
+- DbAndReportTcStateLogStore.java (partial)
+
+Still to read:
+- DbStateMachineConfig.java / AbstractStateMachineConfig (getProcessCtrlEventPublisher, async)
+- StateLogStoreSqls.java (table columns)
+- DefaultStatusDecisionStrategy
+- LoopStartStateHandler
+- compatible StateType/ExecutionStatus wrappers (partially read per prior summary — StateType read clipped after LOOP_START; ExecutionStatus read complete per prior summary)
+- Tests in seata-saga-engine/src/test, seata-saga-spring/src/test
+- StateMachineImpl (getState)
+- CompensationHolder
+- LoopTaskUtils
+- Expression utils
+- DefaultStateMachineConfig
+- ProcessCtrlStateMachineEngine full
+- StateMachineProcessHandler full (truncated)
+- DbAndReportTcStateLogStore full (truncated)
+
+Important facts discovered:
+- `StateInstanceImpl.type` is a `StateType` enum field — so `StateType.WAIT` must exist.
+- `StateMachineInstanceImpl` has fields id, machineId, tenantId, parentId, gmtStarted, businessKey, startParams.
+- `StateMachineProcessHandler` statically registers handlers (ChoiceStateHandler, CompensationTriggerStateHandler, FailEndStateHandler, LoopStartStateHandler, ScriptTaskStateHandler, ServiceTaskStateHandler, SubStateMachineHandler, SucceedEndStateHandler) — WaitStateHandler would be registered there too (per prior decision: "The solver proposed registering `WaitStateHandler` through `StateMachineProcessHandler` for Wait execution.").
+- `ParameterUtils` has `createInputParams` with INPUT_LOCK ResourceLock; `createOutputParams` named but content unseen.
+- `SucceedEndStateHandler.process` does nothing — the "end" handling is done by router/process handler via `end` flag on StateInstruction.
+- `BaseStateParser.parseBaseAttributes` parses Comment/Next/Extensions from nodeMap.
+- Validator package: `Rule` interface with validate(StateMachine), getName(), getHint(); SPI-based RuleFactory.
+- `SubStateMachineHandler` synchronously calls engine.start (sub-machine runs to completion synchronously in the same thread since ProcessCtrlEventPublisher sync executes in current thread).
+
+Wait — the SubStateMachineHandler reasoning said "synchronously calls `engine.start`" — this is from the assistant's reasoning after reading the truncated file. The reasoning said "SubStateMachineHandler synchronously calls `engine.start` — the sub state machine runs to completion synchronously within the parent handler (because `start` uses `processCtrlEventPublisher.publish` which runs synchronously in the same thread by default...)". This is the assistant's inference; I should present it as a discovered fact with the caveat it's inferred.
+
+Also key design decision emerging: WaitStateHandler may need an interceptor (like ServiceTaskHandlerInterceptor) to create the state instance — the assistant considered `WaitStateHandlerInterceptor` or doing it all inside the handler.
+
+Now, the requirement about "Entering a Wait must persist a WAIT state instance with status WA, suspend the machine with status WA and isRunning=false, and return without executing Next".
+
+Also: "Wait entry must not report completion to the transaction coordinator" — DbAndReportTcStateLogStore reports to TC (BranchStatus, GlobalStatus imports seen).
+
+Let me now structure the new summary:
+
+## Objective
+- Add durable Wait-state external-event approvals to Seata Saga: suspended workflows resume via signals or timeouts across engine restarts (statelang domain, parser, engine, persistence, compatible wrappers).
+
+## Important Details
+Carry forward all the requirement bullets from the prior summary (they're all still constraints). Plus new insights:
+- Validation of definitions happens at parser level: `WaitStateParser` using `Duration.parse` for ISO-8601 with fractional seconds; both-or-neither for Timeout/TimeoutNext; strictly positive check.
+- `StateMachineUtils.getAllPossibleSubsequentStates(State)` is the graph-traversal utility used by validator; must add WAIT case returning Next + TimeoutNext.
+- Validator SPI exists: `org.apache.seata.saga.statelang.validator.Rule` (validate/getName/getHint) + `RuleFactory`.
+- StateInstanceImpl fields: id, machineInstanceId, name, type (StateType enum), serviceName, serviceMethod, serviceType, businessKey, gmtStarted, gmtUpdated, gmtEnd, isForUpdate, exception...
+- StateMachineInstanceImpl fields: id, machineId, tenantId, parentId, gmtStarted, businessKey, startParams...
+- `StateMachineProcessHandler` statically registers all StateHandlers — WaitStateHandler must be registered there.
+- `BaseStateParser.parseBaseAttributes` parses Comment/Next/Extensions keys ("Comment", "Next", "Extensions") from node map.
+- SubStateMachineHandler synchronously calls engine.start; nested machine suspended (WA) means decideStatus sees WA — parent SubStateMachine state instance must get WA, parent machine WA + isRunning=false.
+- Deadline persistence: leaning toward deriving deadline = stateInstance.gmtStarted + state.getTimeout() from reloaded definition, avoiding schema changes; alternative is a new column (still unverified against StateLogStoreSqls).
+- fireDueTimeouts after reconstruction requires a way to enumerate waiting machine instances; StateLogStore currently lacks query-by-status; plan to add e.g. `queryStateMachineInstanceByStatus(ExecutionStatus)` (naming TBD) to StateLogStore + DbAndReportTcStateLogStore SQL.
+- WaitStateHandler may need a companion interceptor (analogous to ServiceTaskHandlerInterceptor) to create the state instance, or do it inline.
+
+## Work State
+### Completed
+- All the prior completed items (repo located, searches, reads).
+- Files read this session: DomainConstants.java, StateLogStore.java, validator Rule.java/RuleFactory.java, StateMachineUtils.java, StateMachineParserImpl.java, AbstractTaskStateParser.java, BaseStateParser.java (full), StateInstruction.java, ParameterUtils.java, SucceedEndStateHandler.java (full), ProcessCtrlStateMachineEngine.java, StateMachineEngine.java, StateMachineProcessHandler.java, TaskStateRouter.java, EngineUtils.java, ServiceTaskHandlerInterceptor.java, SubStateMachineHandler.java, StateInstanceImpl.java, StateMachineInstanceImpl.java, DbAndReportTcStateLogStore.java.
+- SucceedEndStateHandler.process is empty (end semantics via StateInstruction.end flag).
+- No source edits made yet.
+
+### Active
+- Exploration in progress; many reads truncated and need completion.
+- Design decisions pending finalization (deadline persistence, StateLogStore query methods, WaitStateRouter vs TaskStateRouter, interceptor vs inline state-instance creation).
+
+### Blocked
+- None established.
+
+## Next Move
+1. Finish reading DbAndReportTcStateLogStore.java fully (getStateMachineInstance deserialization etc.) — was last read, truncated.
+2. Read StateLogStoreSqls.java to confirm `seata_state_machine_instance` / `seata_state_instance` columns (status column existence).
+3. Read DbStateMachineConfig.java and AbstractStateMachineConfig/DefaultStateMachineConfig (getProcessCtrlEventPublisher sync/async).
+4. Read DefaultStatusDecisionStrategy, LoopStartStateHandler, CompensationHolder, LoopTaskUtils, StateMachineImpl, expression utils.
+5. Read compatible StateType.java wrapper fully (read clipped after LOOP_START) and ExecutionStatus wrapper.
+6. Inspect test infra: saga/seata-saga-engine/src/test, saga/seata-saga-spring/src/test, DbAndReportTcStateLogStore tests.
+7. Then implement: domain (StateType.WAIT, ExecutionStatus.WA, WaitState, WaitStateImpl), parser (WaitStateParser + StateMachineUtils WAIT case), engine (WaitStateHandler + interceptor, StateMachineProcessHandler registration, signal()/fireDueTimeouts in ProcessCtrlStateMachineEngine), store additions, compatible wrappers.
+
+## Relevant Files
+Keep the prior list plus new ones.
+
+The prior summary has an extensive "Important Details" list of requirements. I need to carry them forward. Let me preserve them all since they're constraints not yet implemented.
+
+Also from the conversation: assistant tool call for validator package showed `Rule.java` full and `RuleFactory.java` partial. StateMachineUtils.java read shows `getAllPossibleSubsequentStates` method beginning — adds state.getNext() first, then switch on type: SCRIPT_TASK, SERVICE_TASK, SUB_STATE_MACHINE, SUB_MACHINE_COMPENSATION... (truncated).
+
+Let me also note: DomainConstants read partially showed constants: VAR_NAME_STATEMACHINE_CONTEXT = "context", VAR_NAME_INPUT_PARAMS = "inputParams", VAR_NAME_OUTPUT_PARAMS = "outputParams", VAR_NAME_CURRENT_EXCEPTION = "currentException", VAR_NAME_BUSINESSKEY = "_business_key_", VAR_NAME_SUB_MACHINE_PARENT_ID = "_sub_machine_parent_id_", VAR_NAME_CURRENT_CHOICE = "_current_choice_", VAR_NAME_STATEMACHINE_ERROR_CODE = "_statemachine_error_code_", VAR_NAME_STATEMACHINE_ERROR_MSG (truncated). These might be useful.
+
+StateLogStore interface: recordStateMachineStarted(StateMachineInstance, ProcessContext), recordStateMachineFinished(StateMachineInstance, ProcessContext) — truncated after.
+
+OK, let me write the summary now. I should be terse but comprehensive. The Important Details section is long due to all requirements; that's fine.
+
+Format requirements: exact Markdown structure with sections: ## Objective, ## Important Details, ## Work State (### Completed, ### Active, ### Blocked), ## Next Move, ## Relevant Files.
+## Objective
+- Add durable external-event approvals to Seata Saga so suspended workflows resume through signals or timeouts across engine restarts.
+
+## Important Details
+- Domain additions belong in `org.apache.seata.saga.statelang.domain`.
+- Add `StateType.WAIT` with value `"Wait"`.
+- State-type lookup must remain case-insensitive.
+- Add `ExecutionStatus.WA` with value `"Waiting"`.
+- `WaitState` must be an interface extending `State`.
+- `String getEvent()` exposes a required, non-blank Event.
+- `Map<String, Object> getOutput()` exposes optional Output mappings.
+- `java.time.Duration getTimeout()` exposes the optional Timeout.
+- `String getTimeoutNext()` exposes the optional TimeoutNext.
+- Reject a definition containing only one of Timeout and TimeoutNext.
+- A supplied Timeout duration must be strictly positive.
+- A supplied Timeout must use ISO-8601 duration syntax.
+- Supplied Timeout durations must support fractional seconds.
+- A Wait's possible subsequent destinations must be its configured Next plus its TimeoutNext when present.
+- Entering Wait must persist a WAIT state instance in WA.
+- Persist the suspended machine with execution status WA.
+- Persist the suspended machine with `isRunning=false`.
+- Wait entry must return without executing Next.
+- Wait entry must leave the machine completion time unset.
+- Wait entry must skip completion reporting to the transaction coordinator.
+- A fresh engine using the same database must reload a suspended workflow.
+- A fresh engine must resume the reloaded workflow.
+- Add `StateMachineInstance signal(String stateMachineInstanceId, String waitStateInstanceId, String event, Map<String, Object> payload)` to `StateMachineEngine`.
+  - Atomically claim the exact activation identified by `waitStateInstanceId` on a matching event.
+  - Persist a winning signal's activation status as SU.
+  - Persist the signal payload as the activation's output parameters.
+  - Record a null payload as an empty map.
+  - Continue synchronously until another suspension or a terminal state.
+  - Evaluate each Output expression using the recorded payload as its root.
+  - Merge mapped signal outputs into machine context.
+  - Preserve completed predecessors' outputs when merging mapped signal outputs.
+  - Replaying the same event on a satisfied activation returns the reloaded machine without running its continuation again.
+  - A delayed duplicate for an older loop activation must not consume a newer activation of the same Wait state.
+  - Null or blank required arguments raise `EngineExecutionException` carrying `ParameterRequired` or `InvalidParameter`.
+  - A nonexistent machine ID must report `ObjectNotExists`.
+  - An event mismatch must report `OperationDenied`.
+  - An activation already lost to timeout or compensation must report `OperationDenied`.
+- Add `int fireDueTimeouts(java.time.Instant now)` to `StateMachineEngine`.
+  - Claim persisted waits whose configured deadline is less than or equal to `now`.
+  - Persist each timeout winner as SK.
+  - Resume a timeout winner along TimeoutNext.
+  - Return the number of claims won.
+  - Leave indefinite waits suspended after a timeout sweep.
+  - Leave waits whose deadline is later than `now` suspended after a timeout sweep.
+  - After reconstruction, the engine must discover persisted waits with due deadlines.
+  - After reconstruction, the engine must resume execution when a timeout claim wins.
+  - A null `now` raises `EngineExecutionException` carrying `InvalidParameter`.
+- Concurrent duplicate matching signals must yield a single winning claim for the same Wait activation.
+- A matching signal and a due timeout racing for the same Wait activation must have a single winner.
+- A matching signal and compensation racing for the same Wait activation must have a single winner.
+- A due timeout and compensation racing for the same Wait activation must have a single winner.
+- A waiting child must suspend its enclosing SubStateMachine state in WA.
+- A waiting child must suspend its parent machine in WA.
+- Completing or timing out a child must synchronously resume its parents through multiple nesting levels.
+- Apply each nesting level's output mappings during resumption.
+- Ancestor compensation must cancel active descendant waits, including waits in grandchildren.
+- Cancellation of active descendant waits must precede compensation of any completed predecessor.
+- Add the matching WAIT constant to the deprecated `io.seata.saga.statelang.domain.StateType` wrapper.
+- Add the matching WA constant to the deprecated `io.seata.saga.statelang.domain.ExecutionStatus` wrapper.
+- Preserve wrap/unwrap round trips for every value of the deprecated `io.seata.saga.statelang.domain.StateType` wrapper.
+- Preserve wrap/unwrap round trips for every value of the deprecated `io.seata.saga.statelang.domain.ExecutionStatus` wrapper.
+- `ExecutionStatus.java` defines `RU`, `SU`, `FA`, `UN`, and `SK`.
+- `ExecutionStatus.java` exposes `getStatusString()`.
+- `SucceedEndStateHandler` implements `StateHandler`.
+- `SucceedEndStateHandler` has a no-op `process(ProcessContext context)` body.
+- `StateInstruction` implements `Instruction`.
+- `StateInstruction` declares visible fields `stateName`, `stateMachineName`, `tenantId`, and `end`.
+- `ParameterUtils` declares `ResourceLock INPUT_LOCK` in its opening excerpt.
+- `ParameterUtils.createOutputParams` lies past the clipped `ParameterUtils.java` excerpt.
+- `StateInstanceImpl` implements `StateInstance`.
+- `StateInstanceImpl` declares visible `java.util.Date` fields `gmtStarted`, `gmtUpdated`, and `gmtEnd`.
+- `StateMachineInstanceImpl` implements `StateMachineInstance`.
+- `StateMachineInstanceImpl` declares visible fields `id`, `machineId`, `tenantId`, `parentId`, and `gmtStarted`.
+- `StateMachineEngine.java` shows `start(String stateMachineName, String tenantId, Map<String, Object> startParams)` in its opening excerpt.
+- `StateMachineProcessHandler.java` imports `SubStateMachineHandler`.
+- `StateMachineProcessHandler.java` imports `SucceedEndStateHandler`.
+- The solver planned new Wait support after searching `saga` and `compatible` matched only `compatible/src/test/java/io/seata/common/LockAndCallback.java`.
+- The solver planned `WaitStateImpl` to extend `BaseState`.
+- The solver planned `WaitStateImpl` to implement `WaitState`.
+- The solver proposed registering `WaitStateHandler` through `StateMachineProcessHandler`.
+- The solver had not chosen between a dedicated `WaitStateRouter` and reuse of `TaskStateRouter`.
+- The solver decided to derive the deadline from the persisted `gmtStarted` plus the configured `Timeout` to avoid a new column.
+- The solver planned a `StateLogStore` query by WA status so a reconstructed engine can discover waiting machine instances.
+- The solver proposed filtering `seata_state_machine_instance` by status in `DbAndReportTcStateLogStore`.
+- The proposed store query name `queryStateMachineInstanceByStatus(ExecutionStatus)` was provisional.
+- The solver had yet to verify the status column in `StateLogStoreSqls.java`.
+- The solver planned to parse ISO-8601 `Timeout` values with `java.time.Duration.parse` in `WaitStateParser`.
+- The solver planned to update `StateMachineUtils.getAllPossibleSubsequentStates` so graph traversal includes `Next` and the optional `TimeoutNext` for a Wait state.
+- The solver reasoned that `SubStateMachineHandler` calls `engine.start` synchronously under `DefaultStateMachineConfig` via `ProcessCtrlEventPublisher`.
+- The solver reasoned that `decideStatus` must propagate child WA status to the enclosing `SubStateMachine` state.
+- The solver reasoned that `ServiceTaskHandlerInterceptor.postProcess` receives a WA state instance from a suspended child.
+- The solver reasoned that `decideExecutionStatus` should propagate the WA status to the parent machine.
+
+## Work State
+### Completed
+- Located `/workspace/repo`.
+- Read `ExecutionStatus.java` in full.
+- Read `SucceedEndStateHandler.java` in full.
+- Read `StateType.java` up to `LOOP_START`.
+- Read the opening excerpt of `StateInstruction.java`.
+- Read the opening excerpt of `ParameterUtils.java`.
+- Read the opening excerpt of `StateMachineEngine.java`.
+- Read the opening excerpt of `StateInstanceImpl.java`.
+- Read the opening excerpt of `StateMachineInstanceImpl.java`.
+- Read the clipped opening excerpt of `ProcessCtrlStateMachineEngine.java`.
+- Read the clipped opening excerpt of `StateMachineProcessHandler.java`.
+- Read the clipped opening excerpt of `TaskStateRouter.java`.
+- Read the clipped opening excerpt of `EngineUtils.java`.
+- Read the clipped opening excerpt of `ServiceTaskHandlerInterceptor.java`.
+- Read the clipped opening excerpt of `SubStateMachineHandler.java`.
+- Read the clipped opening excerpt of `DbAndReportTcStateLogStore.java`.
+
+### Active
+- The exploration todo remains `in_progress`.
+- Zero source edits have been made.
+- Implementation items remain pending.
+- Planned unit tests remain pending execution.
+- Planned Maven builds remain pending execution.
+- Planned lint checks remain pending execution.
+- No execution results were recorded for these checks.
+
+### Blocked
+- No blocker is established.
+
+## Next Move
+1. Finish reading `StateType.java` past `LOOP_START`.
+2. Add StateType.WAIT with value "Wait" while preserving case-insensitive state-type lookup.
+3. Add ExecutionStatus.WA with value "Waiting".
+4. Add the WaitState interface extending State and implement the planned WaitStateImpl.
+5. Read the deprecated `io.seata.saga.statelang.domain.StateType` wrapper implementation.
+6. Read the deprecated `io.seata.saga.statelang.domain.ExecutionStatus` wrapper implementation.
+7. Mirror WAIT and WA in the deprecated io.seata enum wrappers and preserve wrap/unwrap round trips.
+8. Register WaitStateParser for Wait in StateParserFactory.java.
+9. Validate a non-blank Event, paired Timeout and TimeoutNext, and a strictly positive ISO-8601 duration with fractional-second support.
+10. Update `StateMachineUtils.getAllPossibleSubsequentStates` to handle `Next` and optional `TimeoutNext` for Wait graph traversal.
+11. Finish reading `DbAndReportTcStateLogStore.java`.
+12. Check whether `seata_state_machine_instance` exposes `status` in `StateLogStoreSqls.java`.
+13. Read `DbStateMachineConfig.java`.
+14. Finish reading `ProcessCtrlStateMachineEngine.java`.
+15. Finish reading `SubStateMachineHandler.java`.
+16. Inspect `ParameterUtils.createOutputParams` in `ParameterUtils.java`.
+17. Finish reading `StateInstanceImpl.java`.
+18. Finish reading `StateMachineInstanceImpl.java`.
+19. Read `StateMachineImpl`.
+20. Read `CompensationHolder`.
+21. Read the `StateMachineEngine` wrappers under `compatible`.
+22. Inspect tests under `saga/seata-saga-engine/src/test`.
+23. Inspect tests under `saga/seata-saga-spring/src/test`.
+24. Implement `WaitStateHandler` execution.
+25. Implement Wait state routing.
+26. Implement durable Wait suspension.
+27. Implement database reload for suspended workflows.
+28. Implement `signal` on `StateMachineEngine`.
+29. Implement `fireDueTimeouts` on `StateMachineEngine` using `gmtStarted` plus the configured `Timeout` as the deadline.
+30. Implement nested `SubStateMachine` WA status propagation.
+31. Implement descendant wait cancellation before predecessor compensation.
+32. Add unit tests for durable Wait behavior.
+33. Run Maven builds.
+34. Run lint checks.
+
+## Relevant Files
+- Paths are relative to `/workspace/repo`.
+- The state language source root is `saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/`.
+- The state language source root contains `domain/StateType.java`.
+- The state language source root contains `domain/ExecutionStatus.java`.
+- The state language source root contains `domain/State.java`.
+- The state language source root contains `domain/impl/BaseState.java`.
+- The state language source root contains `domain/impl/AbstractTaskState.java`.
+- The state language source root contains `domain/impl/ScriptTaskStateImpl.java`.
+- The state language source root contains `domain/impl/StateInstanceImpl.java`.
+- The state language source root contains `domain/impl/StateMachineInstanceImpl.java`.
+- The state language source root contains `parser/StateParserFactory.java`.
+- The state language source root contains `parser/impl/ScriptTaskStateParser.java`.
+- The engine source root is `saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/`.
+- The engine source root contains `StateMachineEngine.java`.
+- The engine source root contains `impl/ProcessCtrlStateMachineEngine.java`.
+- The engine source root contains `pcext/StateMachineProcessHandler.java`.
+- The engine source root contains `pcext/StateMachineProcessRouter.java`.
+- The engine source root contains `pcext/StateInstruction.java`.
+- The engine source root contains `pcext/routers/TaskStateRouter.java`.
+- The engine source root contains `pcext/handlers/SubStateMachineHandler.java`.
+- The engine source root contains `pcext/handlers/SucceedEndStateHandler.java`.
+- The engine source root contains `pcext/interceptors/ServiceTaskHandlerInterceptor.java`.
+- The engine source root contains `pcext/utils/EngineUtils.java`.
+- The engine source root contains `pcext/utils/ParameterUtils.java`.
+- The store source root is `saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/`.
+- The store source root contains `StateLogStore.java`.
+- The store source root contains `db/StateLogStoreSqls.java`.
+- The Spring source root is `saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/`.
+- The Spring source root contains `store/db/DbAndReportTcStateLogStore.java`.
+- The Spring source root contains `config/DbStateMachineConfig.java`.
+- The compatible source root is `compatible/src/main/java/io/seata/saga/statelang/domain/`.
+- The compatible source root contains `StateType.java`.
+- The compatible source root contains `ExecutionStatus.java`.
+[27] assistant: [reasoning]
+Let me see the rest of DbAndReportTcStateLogStore (from line 1021) and then StateLogStoreSqls, and the test infrastructure. Also DbStateMachineConfig and the compatible module's ProcessCtrlStateMachineEngine/StateType/ExecutionStatus.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java", "offset": 1021}
+<path>/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java</path>
+<type>file</type>
+<content>
+1021:             StateInstanceImpl stateInstance = new StateInstanceImpl();
+1022:             stateInstance.setId(resultSet.getString("id"));
+1023:             stateInstance.setMachineInstanceId(resultSet.getString("machine_inst_id"));
+1024:             stateInstance.setName(resultSet.getString("name"));
+1025:             stateInstance.setType(StateType.getStateType(resultSet.getString("type")));
+1026:             stateInstance.setBusinessKey(resultSet.getString("business_key"));
+1027:             stateInstance.setStatus(ExecutionStatus.valueOf(resultSet.getString("status")));
+1028:             stateInstance.setGmtStarted(resultSet.getTimestamp("gmt_started"));
+1029:             stateInstance.setGmtEnd(resultSet.getTimestamp("gmt_end"));
+1030:             stateInstance.setServiceName(resultSet.getString("service_name"));
+1031:             stateInstance.setServiceMethod(resultSet.getString("service_method"));
+1032:             stateInstance.setServiceType(resultSet.getString("service_type"));
+1033:             stateInstance.setForUpdate(resultSet.getBoolean("is_for_update"));
+1034:             stateInstance.setStateIdCompensatedFor(resultSet.getString("state_id_compensated_for"));
+1035:             stateInstance.setStateIdRetriedFor(resultSet.getString("state_id_retried_for"));
+1036:             stateInstance.setSerializedInputParams(resultSet.getString("input_params"));
+1037:             stateInstance.setSerializedOutputParams(resultSet.getString("output_params"));
+1038:             stateInstance.setSerializedException(resultSet.getBytes("excep"));
+1039: 
+1040:             return stateInstance;
+1041:         }
+1042:     }
+1043: }
+
+(End of file - total 1043 lines)
+</content>
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/db/StateLogStoreSqls.java"}
+<path>/workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/db/StateLogStoreSqls.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.store.db;
+18: 
+19: /**
+20:  * State log store sqls
+21:  *
+22:  */
+23: public class StateLogStoreSqls {
+24: 
+25:     /**
+26:      * machine instance
+27:      **/
+28:     private static final String STATE_MACHINE_INSTANCE_FIELDS =
+29:             "id, machine_id, tenant_id, parent_id, business_key, gmt_started, gmt_end, status, compensation_status, "
+30:                     + "is_running, gmt_updated, start_params, end_params, excep";
+31: 
+32:     private static final String STATE_MACHINE_INSTANCE_FIELDS_WITHOUT_PARAMS =
+33:             "id, machine_id, tenant_id, parent_id, business_key, gmt_started, gmt_end, status, compensation_status, "
+34:                     + "is_running, gmt_updated";
+35: 
+36:     private static final String RECORD_STATE_MACHINE_STARTED_SQL = "INSERT INTO ${TABLE_PREFIX}state_machine_inst\n"
+37:             + "(id, machine_id, tenant_id, parent_id, gmt_started, business_key, start_params, is_running, stat
+[truncated]
+[30] user: Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.
+[31] assistant: [reasoning]
+Let me reconstruct the full picture of this task. This is a very large task: adding a "Wait" state (external-event approval / durable suspension) to the Seata Saga engine. The previous summary lists many requirements. Let me lay out what I know and what I still need to verify, then start implementing.
+
+Key requirements recap (from the summary):
+
+1. **Domain (statelang)**:
+   - `StateType.WAIT` with value `"Wait"` (in `org.apache.seata.saga.statelang.domain.StateType`)
+   - `ExecutionStatus.WA` with value `"Waiting"` (in `org.apache.seata.saga.statelang.domain.ExecutionStatus`)
+   - `WaitState` interface extending `State` with:
+     - `String getEvent()` — required non-blank event name
+     - `Map<String, Object> getOutput()` — optional output mappings
+     - `java.time.Duration getTimeout()` — optional timeout
+     - `String getTimeoutNext()` — optional timeout next state
+   - `WaitStateImpl extends BaseState implements WaitState`
+   - Deprecated `io.seata.saga.statelang.domain.StateType` wrapper gets WAIT constant; `io.seata.saga.statelang.domain.ExecutionStatus` wrapper gets WA constant. Wrap/unwrap round trips preserved.
+
+2. **Parser**:
+   - `WaitStateParser` registered in `StateParserFactory` for "Wait".
+   - Validation: Event required non-blank; Timeout/TimeoutNext both-or-neither; Timeout strictly positive ISO-8601 duration with fractional seconds support (use `java.time.Duration.parse`).
+   - `StateMachineUtils.getAllPossibleSubsequentStates` must handle Wait: Next + TimeoutNext.
+
+3. **Engine**:
+   - `WaitStateHandler implements StateHandler` registered in `StateMachineProcessHandler` PROCESS_STATE_HANDLERS map.
+   - Routing: dedicated `WaitStateRouter` or reuse `TaskStateRouter` (TaskStateRouter probably routes to state handler generically? Actually StateRouters route to the handler based on... let me recall — in Seata saga, `StateMachineProcessRouter.route` iterates state routers; `TaskStateRouter.route` returns a `StateInstruction` with stateName set, I think. Actually StateInstruction's `getStateName`... Let me recall the actual code:
+
+```java
+public class TaskStateRouter implements StateRouter {
+    @Override
+    public RouteMeta route(ProcessContext context, StateMachine stateMachine, StateInstance stateInstance) throws Exception {
+        StateInstruction instruction = context.getInstruction(StateInstruction.class);
+        State state = stateMachine.getState(instruction.getStateName());
+        ...
+        if (state != null && state instanceof BaseState) {
+            if (StringUtils.isBlank(state.getNext())) { // the next state is blank, means the state is a retry state or compensation state
+                ...
+            }
+        }
+        return RouteMeta.builder()....state(state)...
+    }
+}
+```
+
+Hmm, I don't remember exactly. I read it earlier (clipped). I'll re-read as needed.
+
+   - Entering Wait: persist WAIT state instance with status WA, gmtStarted; suspend machine instance with status WA, isRunning=false; return without executing Next; machine completion time unset; skip TC completion report (i.e., don't call recordStateMachineFinished; instead call updateStateMachineRunningStatus false or a new "recordStateMachineSuspended" style method... Actually the existing `recordStateMachineFinished` is the one that reports to TC (DbAndReportTcStateLogStore branches report to TC when state machine finished). The existing `updateStateMachineRunningStatus` just updates is_running + gmt_updated — good for suspension.
+
+Wait, actually machine status WA: `recordStateMachineFinished` sets status etc. and reports branch commit/rollback to TC. For suspension we want machine status=WA, is_running=false. There's `UPDATE_STATE_MACHINE_RUNNING_STATUS_SQL` which only sets is_running and gmt_updated — not status. So we need a new SQL: `UPDATE_STATE_MACHINE_SUSPENDED_SQL`? or generalize: `UPDATE ...state_machine_inst SET status = ?, is_running = ?, gmt_updated = ? WHERE id = ? and gmt_updated = ?`.
+
+Hmm. But wait — maybe simpler: reuse `recordStateMachineFinished`-like update without TC report. Let me design a new method in `StateLogStore`:
+
+```java
+void recordStateMachineSuspended(StateMachineInstance machineInstance, ProcessContext context); // ? 
+```
+
+Hmm, but the interface `StateLogStore` currently has methods: recordStateMachineStarted, recordStateMachineFinished, recordStateStarted, recordStateFinished, updateStateMachineRunningStatus (or similar), getStateMachineInstance by various, queryStateInstancesByMachineId, getStateInstanceByIdAndMachineInstanceId, etc.
+
+Let me re-read StateLogStore.java to be precise. I read it before (partially). It has:
+
+```java
+public interface StateLogStore {
+    void recordStateMachineStarted(StateMachineInstance machineInstance, ProcessContext context) throws ExecutionException;
+    void recordStateMachineFinished(StateMachineInstance machineInstance, ProcessContext context) throws ExecutionException;
+    void recordStateStarted(StateInstance stateInstance, ProcessContext context) throws ExecutionException;
+    void recordStateFinished(StateInstance stateInstance, ProcessContext context) throws ExecutionException;
+    StateMachineInstance getStateMachineInstance(String machineInstanceId);
+    StateMachineInstance getStateMachineInstanceByBusinessKey(String businessKey, String tenantId);
+    List<StateMachineInstance> queryStateMachineInstanceByParentId(String parentId);
+    StateInstance getStateInstance(String machineInstanceId, String stateInstanceId);
+    List<StateInstance> queryStateInstanceByMachineInstanceId(String machineInstanceId);
+    void updateStateMachineRunningStatus(StateMachineInstance machineInstance, boolean running) throws ExecutionException; ...
+}
+```
+
+Something like that. I need to re-read to be sure.
+
+Now, the CRITICAL design area: **signal() and fireDueTimeouts()** on StateMachineEngine, plus persistence-level "claim" operations for concurrency (single winner among concurrent signal/signal, signal/timeout, signal/compensation, timeout/compensation).
+
+How to atomically claim? The DB-backed approach: update the WAIT state instance's status from WA to SU/SK conditionally (optimistic claim): e.g.
+
+```java
+int updateStateExecutionStatus(...) // UPDATE state_inst SET status=?, gmt_updated=? WHERE machine_inst_id=? AND id=? AND status=?
+```
+
+Existing `UPDATE_STATE_EXECUTION_STATUS_SQL` doesn't have a status precondition: `UPDATE state_inst SET status = ?, gmt_updated = ? WHERE machine_inst_id = ? AND id = ?`. For atomic claim we need `AND status = 'WA'` precondition, returning affected rows (1 = win, 0 = lose). So add new SQL constant e.g.
+
+```
+UPDATE ${TABLE_PREFIX}state_inst SET status = ?, gmt_updated = ? WHERE machine_inst_id = ? AND id = ? AND status = ?
+```
+
+The claim winner for signal: status becomes SU with output_params persisted as payload (signal payload recorded as activation's output params). For timeout winner: status SK.
+
+Also machine claim: the machine instance itself is suspended with status WA; upon resume we must set machine status RU (or directly handle) — but claim at state-instance level suffices if we then update machine running status. However there could be concurrency at machine level too (compensation running in parallel). Hmm.
+
+"An activation already lost to timeout or compensation must report OperationDenied" — so signal() checks state instance status: if not WA → OperationDenied (unless already SU by the same/duplicate signal → return reloaded machine, i.e. idempotent replay).
+
+Wait requirement: "Replaying the same event on a satisfied activation returns the reloaded machine without running its continuation again." Hmm — "on a satisfied activation" — so if activation status is SU (won by signal), replaying returns reloaded machine instance without re-running continuation. But "An event mismatch must report OperationDenied" and "A delayed duplicate for an older loop activation must not consume a newer activation of the same Wait state."
+
+Hmm, this loop scenario: same Wait state executed multiple times (loop). Each activation is a separate StateInstance (different id). "A delayed duplicate for an older loop activation must not consume a newer activation of the same Wait state" — meaning signal must find the *matching* activation — presumably the one whose... hmm. How does signal know which activation? The API: `signal(String stateMachineInstanceId, String waitStateInstanceId, String event, Map payload)` — waitStateInstanceId is given explicitly! So the caller identifies the exact activation. But a "delayed duplicate for an older loop activation" — the signal references an older activation instance id (from an earlier loop iteration) that has since completed or been superseded... Actually if waitStateInstanceId is specified explicitly, then the duplicate targets the old activation; if the old activation is no longer WA (e.g. it was superseded), report OperationDenied? But the requirement says "must not consume a newer activation of the same Wait state" — i.e. don't do a lookup by state name and pick the newest waiting activation when the signal names an older activation id. So with explicit waitStateInstanceId, we target exactly that instance.
+
+Hmm wait, but is that the actual semantics? Let me re-read: "A delayed duplicate for an older loop activation must not consume a newer activation of the same Wait state." So if signal targets activation id X (older loop iteration), and there's a newer activation Y of the same state currently waiting, the signal must NOT be applied to Y. It should either fail or detect that X is no longer waiting. So: signal resolves activation strictly by waitStateInstanceId. If that instance is not in WA status → OperationDenied (or if SU from same event replay → return machine). 
+
+Hmm, but "Replaying the same event on a satisfied activation returns the reloaded machine without running its continuation again" — so if status == SU and output already recorded, return the reloaded machine instance (whatever its current state — maybe it finished, or is waiting at another Wait). So signal logic:
+
+```
+machine = store.getStateMachineInstance(stateMachineInstanceId)
+if machine == null -> ObjectNotExists
+state = store.getStateInstance(stateMachineInstanceId, waitStateInstanceId)
+if state == null -> ObjectNotExists? or OperationDenied? Hmm.
+if event blank -> InvalidParameter / ParameterRequired (null or blank required args raise EngineExecutionException carrying ParameterRequired or InvalidParameter)
+if state.status == WA:
+    if !state.name/event matches -> OperationDenied? 
+```
+
+Wait — "An event mismatch must report OperationDenied" — the Wait state definition has an Event name; the signal's event must equal the Wait's event. But to know the Wait's event, we need the state machine definition: machine.machineId → StateMachineRegistry → StateMachineImpl → getState(state.name) → WaitState.getEvent(). If event doesn't match → OperationDenied.
+
+Claim: CAS update state_inst SET status='SU', output_params=payload, gmt_updated=? WHERE machine_inst_id=? AND id=? AND status='WA'. If affected rows == 0 → someone else won → reload state; if now SU (and it was a signal) → return reloaded machine (duplicate concurrent signal); else → OperationDenied.
+
+Hmm, but concurrent duplicate signals: "Concurrent duplicate matching signals must yield a single winning claim for the same Wait activation." So one CAS wins, the other loses. The loser sees status now SU. What does the loser return? Probably just returns the reloaded machine instance too (idempotent), or OperationDenied? The requirement says "Persist a winning signal's activation status as SU" and "Replaying the same event on a satisfied activation returns the reloaded machine without running its continuation again" — replay → returns reloaded machine. A concurrent loser is essentially a replay (the winner already set SU). So loser returns reloaded machine. OK.
+
+But hold on — "An activation already lost to timeout or compensation must report OperationDenied": if status is SK (timeout won) or the machine is compensating → OperationDenied.
+
+After winning claim: continue synchronously: set machine instance back to running (status RU? is_running=true), reload definition, build a "continuation" ProcessContext: StateInstruction pointing at the wait state's Next (after applying output mappings to machine context with payload as root), and run through the event-driven processor until next suspension or terminal state. And return the machine instance.
+
+How to continue execution? The engine's internal machinery is `StateMachineProcessHandler` (a `ProcessHandler`) + `ProcessCtrlEventPublisher.publish(context)`. In `ProcessCtrlStateMachineEngine`, `start` builds initial context: creates StateMachineInstanceImpl, sets instruction with first state (`stateMachine.getFirstStateName()... actually instruction.setStateMachineName / setTenantId / setBeginStateName?`), then `processCtrlEventPublisher.publish(context)`.
+
+For resumption, we need a context that: uses existing machine instance (reloaded from DB), existing state list (from store query), and instruction pointing to the next state to execute. Something like:
+
+```java
+ProcessContext context = createProcessContext();
+// in signal: 
+StateInstruction instruction = new StateInstruction();
+instruction.setTenantId(tenantId);
+instruction.setStateMachineName(machine.getMachineId()); // hmm, stateMachineName vs machineId...
+```
+
+Wait — `StateMachineInstanceImpl` has `machineId` which is actually the state machine *name*? In saga, `machineId` is the state machine name (yes, in Seata saga the "machineId" is the stateMachineName... let me recall: `StateMachineInstance.getMachineId()` — javadoc "state machine definition id"? In `ProcessCtrlStateMachineEngine.forward`: `String machineId = stateMachineInstance.getMachineId(); StateMachine stateMachine = stateMachineRepository.getStateMachine(machineId);` and repository `getStateMachineById`... Actually there are two: `StateMachineRepository.getStateMachineById(String stateMachineId)` and `getStateMachine(String stateMachineName, String tenantId)`. And `machineId` of instance = definition id. And definition id is derived from name+tenantId hash? In `StateMachineRepositoryImpl.getStateMachine`, `stateMachine.setId(stateMachineName + UnifiedConstant... )`? Hmm.
+
+Let me recall from actual Seata code (1.x):
+
+```java
+public interface StateMachineRepository {
+    StateMachine getStateMachineById(String stateMachineId);
+    StateMachine getStateMachine(String stateMachineName, String tenantId);
+    void registerStateMachine(StateMachine stateMachine) throws Exception;
+    ...
+}
+```
+
+And `StateMachineImpl` has `getId()` — which is like `"name" + "_" + "tenantId"` hashed? In `StateMachineRepositoryImpl.registerStateMachine`: `stateMachine.setId(generateId(stateMachine.getName(), stateMachine.getTenantId()))`? Not sure. In `ProcessCtrlStateMachineEngine.start`:
+
+```java
+StateMachineInstanceImpl stateMachineInstance = new StateMachineInstanceImpl();
+stateMachineInstance.setMachineId(stateMachineName); // hmm? 
+```
+
+Hmm, actually I recall in `ProcessCtrlStateMachineEngine.forward`:
+
+```java
+protected StateMachineInstance forward(String stateMachineName, String tenantId, Map<String, Object> startParams, ...)
+```
+
+and in `forward`:
+
+```java
+    StateMachine stateMachine = ...registry.getStateMachine... 
+    StateMachineInstanceImpl stateMachineInstance = new StateMachineInstanceImpl();
+    stateMachineInstance.setMachineId(stateMachine.getId());
+    stateMachineInstance.setTenantId(tenantId);
+    stateMachineInstance.setStatus(ExecutionStatus.RU);
+```
+
+Yes — `stateMachineInstance.setMachineId(stateMachine.getId())` where stateMachine.getId() is generated: `StateMachineRepositoryImpl` does `stateMachine.setId(StateMachineUtils.generateId(...))`? Something like `name + "-" + tenantId`? Not critical — in resume path, I can get StateMachine via `stateMachineRepository.getStateMachineById(machineInstance.getMachineId())`.
+
+And the instruction: `StateInstruction` has fields stateName, stateMachineName, tenantId, end, isAborted? I read it's `stateName`, `stateMachineName`, `tenantId`, `end`. Wait — but the engine needs `stateMachineInstanceId` in context. `ProcessContext` variables: `varNameStateMachineInstance` ("StateMachineInstance"), `varNameStateMachineEngine` etc. `StateMachineProcessHandler.process` does:
+
+```java
+StateMachineInstance stateMachineInstance = (StateMachineInstance)context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INSTANCE);
+if (stateMachineInstance == null) {
+    if (StringUtils.isNotBlank(instruction.getStateMachineName())) {
+        // load existing instance by id? 
+```
+
+Hmm. Actually `StateMachineProcessHandler.process`:
+
+```java
+public void process(ProcessContext context) throws SagaRetryException {
+    StateInstruction instruction = context.getInstruction(StateInstruction.class);
+    StateMachineInstance stateMachineInstance = (StateMachineInstance)context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INSTANCE);
+    if (stateMachineInstance == null && StringUtils.isNotBlank(instruction.getStateMachineInstanceId())) {
+        stateMachineInstance = reloadStateMachineInstance(instruction.getStateMachineInstanceId(), instruction.tenantId?, context);
+    }
+    if (stateMachineInstance == null) {
+        if (StringUtils.isNotBlank(instruction.getStateMachineName())) {
+            // create new instance
+            ((ProcessCtrlStateMachineEngine)stateMachineEngine).createStateMachineInstance(...)
+        }
+    }
+    ...
+}
+```
+
+I'm not 100% sure StateInstruction has `stateMachineInstanceId`. The summary says: "`StateInstruction` declares visible fields `stateName`, `stateMachineName`, `tenantId`, and `end`." — those are the *visible* fields in the clipped read; there may be more past the clip (e.g. `stateMachineInstanceId`, `isAborted`). In Seata 1.7/1.8, `StateInstruction` has:
+
+```java
+public class StateInstruction implements Instruction {
+    private String stateName;
+    private String stateMachineName;
+    private String tenantId;
+    private boolean end;
+    private String stateMachineInstanceId;
+    private boolean isAborted;  // hmm?
+```
+
+Actually I recall `StateMachineProcessHandler.process`:
+
+```java
+@Override
+public void process(ProcessContext context) throws SagaRetryException {
+
+    StateInstruction instruction = context.getInstruction(StateInstruction.class);
+
+    StateMachineInstance stateMachineInstance = (StateMachineInstance) context
+        .getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INSTANCE);
+
+    if (stateMachineInstance == null && StringUtils.isNotBlank(instruction.getStateMachineInstanceId())) {
+        stateMachineInstance = reloadStateMachineInstance(instruction.getStateMachineInstanceId(), instruction.getTenantId(), context);
+    }
+
+    if (stateMachineInstance == null && StringUtils.isBlank(instruction.getStateMachineName())) {
+        throw new SagaStartFailedException(...);
+    }
+    ...
+```
+
+Hmm I really don't remember precisely. I must re-read `StateMachineProcessHandler.java` fully, `ProcessCtrlStateMachineEngine.java` fully, `StateInstruction.java` fully. That's essential before writing engine code.
+
+OK. Also `SubStateMachineHandler` full read — how it starts sub machine, how `ServiceTaskHandlerInterceptor.postProcess` decides status (`decideStatus`), `EngineUtils.decideExecutionStatus`, `CompensationHolder`, `StateMachineUtils`, `ParameterUtils` full, `LoopTaskUtils`.
+
+Given the enormous scope, my approach for this continuation:
+
+Step 1: Finish reading the key engine files (StateInstruction, StateMachineProcessHandler, ProcessCtrlStateMachineEngine, TaskStateRouter, EngineUtils, ServiceTaskHandlerInterceptor, SubStateMachineHandler, ParameterUtils, StateMachineUtils, StateLogStore, DbAndReportTcStateLogStore remaining parts, ProcessCtrlEventPublisher, EventPublisherFactory?, DbStateMachineConfig, StateMachineProcessRouter, CompensationHolder, LoopTaskUtils, StateMachineImpl, AbstractTaskStateParser, ScriptTaskStateParser, StateParserFactory, validator Rule/RuleFactory + rules, Compatible StateType/ExecutionStatus, engine tests).
+
+Step 2: Design & implement.
+
+Given the scale, I should prioritize implementation now with targeted reads. Let me think about what the minimal-but-complete implementation looks like.
+
+### Files to create/modify
+
+**Domain (seata-saga-statelang):**
+
+1. `domain/StateType.java` — add `WAIT("Wait")`. (Read up to LOOP_START; there are entries SERVICE_TASK, SCRIPT_TASK, SUB_STATE_MACHINE, CHOICE, SUCCEED, FAIL, COMPENSATION, COMPENSATION_TRIGGER, LOOP_START... and maybe RUNTIME?). Need full read first.
+
+2. `domain/ExecutionStatus.java` — add `WA("Waiting")` — need full read (already read in full per summary: values RU, SU, FA, UN, SK). Add `WA("Waiting")`.
+
+3. `domain/WaitState.java` — new interface:
+
+```java
+public interface WaitState extends State {
+    String getEvent();
+    Map<String, Object> getOutput();
+    java.time.Duration getTimeout();
+    String getTimeoutNext();
+}
+```
+
+Hmm wait — but State interface has `String getNext()`, `String getComment()`, `String getType()`, `Map<String,Object> getExtensions()`, `boolean isForUpdate()`, `boolean isAsync()`? Let me recall `State`:
+
+```java
+public interface State {
+    String getName();
+    String getComment();
+    String getType();
+    String getNext();
+    Map<String, Object> getExtensions();
+    boolean isForUpdate();
+    boolean isAsync();
+    boolean isPersist() ??? 
+```
+
+Hmm — not sure about isPersist/isAsync (AbstractTaskState has isPersist, isForUpdate, isAsync, isCompensateState?). BaseStateImpl has name/comment/next/extensions. I'll re-read `State.java` and `BaseState.java`... wait, summary says domain/impl/BaseState.java exists? Actually the summary lists `domain/impl/BaseState.java` and `domain/impl/AbstractTaskState.java`. Hmm, actually I believe it's `BaseStateImpl` in older versions; in apache/seata-saga statelang: `org.apache.seata.saga.statelang.domain.impl.BaseState`? The summary says `domain/impl/BaseState.java`. OK whatever — I'll glob and read.
+
+The statelang domain classes: `State.java`, `AbstractState`? Let me just list the directory.
+
+4. `domain/impl/WaitStateImpl.java` — extends BaseState implements WaitState; fields event, output, timeout(Duration), timeoutNext. Parser sets them.
+
+5. Parser: `parser/StateParserFactory.java` registers parsers by state type string. Wait: add `stateParserFactory.registerParser("Wait", WaitStateParser.getInstance())`? Need to read StateParserFactory + ScriptTaskStateParser + AbstractTaskStateParser + BaseStateParser to mirror pattern.
+
+WaitStateParser extends BaseStateParser (or AbstractTaskStateParser? WaitState is not a task state — no input/CompensateState/catch. It extends BaseState). So `WaitStateParser extends BaseStateParser`:
+
+```java
+public class WaitStateParser extends BaseStateParser {
+    @Override
+    public State parse(State state, Map<String, Object> nodeMap) {
+        WaitStateImpl waitState = (WaitStateImpl) state; // or create
+        Object event = nodeMap.get("Event");
+        if (event != null) waitState.setEvent(event.toString());
+        Object output = nodeMap.get("Output");
+        if (output instanceof List) waitState.setOutput(parseOutputMappings?...)
+        ...
+        Object timeout = nodeMap.get("Timeout");
+        if (timeout != null) {
+            try { waitState.setTimeout(Duration.parse(timeout.toString())); }
+            catch (DateTimeParseException e) { throw new ParserException(...) }
+        }
+        Object timeoutNext = nodeMap.get("TimeoutNext");
+        ...
+        return waitState;
+    }
+    @Override public String getStateType() { return StateType.WAIT.getCode()? } 
+```
+
+Hmm — BaseStateParser likely has `getStateType()` returning String; parse() signature: `public State parse(State state, Map<String, Object> nodeMap)`? Actually let me recall ScriptTaskStateParser:
+
+```java
+public class ScriptTaskStateParser extends AbstractTaskStateParser {
+    @Override
+    public State parse(State state, Map<String, Object> nodeMap) {
+        ScriptTaskStateImpl scriptTaskState = (ScriptTaskStateImpl) state;
+        super.parse(state, nodeMap);
+        ...
+    }
+}
+```
+
+And `BaseStateParser`:
+
+```java
+public abstract class BaseStateParser implements StateParser {
+    @Override
+    public State parse(State state, Map<String, Object> nodeMap) {
+        return parseBaseAttributes(state, nodeMap);
+    }
+    protected State parseBaseAttributes(State state, Map<String, Object> nodeMap) { ... }
+}
+```
+
+I read BaseStateParser fully (per the summary: "Read the full `BaseStateParser.java` and `AbstractStateParser`/`AbstractTaskStateParser` opening excerpts"). Hmm, but I don't have its content in hand now — the details of what I "read" are compressed in the summary. I must re-read these files anyway since I can't recall exact method signatures.
+
+**Validation:** the requirements mention "Reject a definition containing only one of Timeout and TimeoutNext", "Timeout strictly positive", "ISO-8601 with fractional seconds". Where to validate? Options: (a) in WaitStateParser.parse (throws ParserException → wrapped?), (b) in a validator Rule. The statelang has `validator` package with Rule SPI (RuleFactory). But simpler: validate in WaitStateParser.parse → throws `ParserException` (exists in parser package? `org.apache.seata.saga.statelang.parser.ParserException`?). Hmm — "The solver planned to parse ISO-8601 Timeout values with java.time.Duration.parse in WaitStateParser" and validate there. 
+
+Actually — think about "A supplied Timeout must use ISO-8601 duration syntax" + "must support fractional seconds" — Duration.parse("PT0.5S") handles fractional. "Strictly positive": `!duration.isZero() && !duration.isNegative()`. Both-or-neither: if timeout != null && timeoutNext blank → reject; if timeoutNext != null && timeout blank → reject.
+
+Also Event required non-blank: validate at parse time? "Reject a definition..." — hmm, requirement says "String getEvent() exposes a required, non-blank Event" — "required" — so definition without Event is invalid → parse-time or validator-time check. I'll do parse-time check in WaitStateParser (throwing ParserException with clear message). Hmm, but is parse-time exception the right "reject"? The requirement just says "Reject a definition containing only one of Timeout and TimeoutNext" — some test will load a bad definition and expect an exception. ParserException is fine.
+
+Wait, actually — maybe better to also add a validator Rule so `validator/Validator` picks it up. But tests in statelang parser: `DefaultStateMachineValidatorTest`? Let me check what tests exist for parser — there might be `StateMachineParserImplTest`. The validation via parser parse-time exceptions is testable. I'll go parse-time.
+
+**StateMachineUtils.getAllPossibleSubsequentStates** — add Wait case:
+
+```java
+case WAIT: ... subsequentStates.add(state.getNext()); if (StringUtils.isNotBlank(state.getTimeoutNext())) subsequentStates.add(state.getTimeoutNext());
+```
+
+Need to read StateMachineUtils fully to patch.
+
+**Engine (seata-saga-engine):**
+
+6. `pcext/handlers/WaitStateHandler.java` — new:
+
+```java
+public class WaitStateHandler implements StateHandler {
+    @Override
+    public void process(ProcessContext context) {
+        StateInstruction instruction = context.getInstruction(StateInstruction.class);
+        StateMachineInstance stateMachineInstance = (StateMachineInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INSTANCE);
+        StateInstance stateInstance = (StateInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CURRENT_STATE_INSTANCE);
+        WaitState waitState = (WaitState) stateMachine.getState(stateInstance.getStateName() ... );
+        // set status WA, record, suspend machine
+    }
+}
+```
+
+Hmm — how does a state instance get created for task states? Via `ServiceTaskHandlerInterceptor` (a `StateHandlerInterceptor`) — `preProcess` creates StateInstance and does `recordStateStarted`... Let me recall `ServiceTaskHandlerInterceptor`:
+
+```java
+public class ServiceTaskHandlerInterceptor implements StateHandlerInterceptor {
+    @Override
+    public void preProcess(ProcessContext context) {
+        StateInstruction instruction = context.getInstruction(StateInstruction.class);
+        StateMachineInstance stateMachineInstance = (StateMachineInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INSTANCE);
+        StateInstanceImpl stateInstance = new StateInstanceImpl();
+        ... 
+        context.setVariable(DomainConstants.VAR_NAME_STATEMACHINE_CURRENT_STATE_INSTANCE, stateInstance);
+        if (StringUtils.isBlank(stateInstance.getId())) {
+            stateInstance.setId(generateInstanceId(stateInstance));
+        }
+        stateMachineInstance.put(stateInstance);
+        stateLogStore.recordStateStarted(stateInstance, context);
+    }
+    @Override
+    public void postProcess(ProcessContext context, ...) { ... }
+}
+```
+
+Hmm, something like that. So for Wait: I can create a `WaitStateHandlerInterceptor` analogous, or create the state instance inside WaitStateHandler.process itself (then no interceptor). The handler needs the state instance recorded with status WA and machine suspended.
+
+Actually the flow: `StateMachineProcessHandler.process` → routes instruction → `StateMachineProcessRouter.route` → `TaskStateRouter.route` returns instruction (with stateName) → handler lookup by state type in `STATE_HANDLER_MAP`? Hmm no. Let me recall: `StateMachineProcessHandler implements ProcessHandler`:
+
+```java
+public class StateMachineProcessHandler implements ProcessHandler<ProcessContext> {
+    private static final Map<String, StateHandler> STATE_HANDLER_MAP = new HashMap<>();
+    static {
+        STATE_HANDLER_MAP.put(StateType.SERVICE_TASK.name(), ServiceTaskStateHandler.getInstance());
+        ...
+    }
+    @Override
+    public void process(ProcessContext context) throws Exception {
+        StateInstruction stateInstruction = context.getInstruction(StateInstruction.class);
+        StateMachine stateMachine = (StateMachine) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE);
+        State state = stateMachine.getState(stateInstruction.getStateName());
+        StateHandler handler = STATE_HANDLER_MAP.get(state.getType().toUpperCase());
+        ...
+        InterceptorHandler interceptor = ...; // StateHandlerInterceptors
+        try {
+            interceptor.preProcess(context);
+            handler.process(context);
+        } finally {
+            interceptor.postProcess(context, ...);
+        }
+    }
+}
+```
+
+Roughly. Actually I think the interceptor chain: `context.getVariable(...Interceptors)`? There's `StateHandlerInterceptor` interface with preProcess/postProcess; `StateMachineProcessHandler` iterates `state.getExtensions()`? Hmm no — I recall in `StateMachineProcessHandler`:
+
+```java
+    @Override
+    public void process(ProcessContext context) throws SagaTimeoutException? {
+        ...
+        State state = stateMachine.getState(stateInstruction.getStateName());
+        StateHandler handler = STATE_HANDLER_MAP.get(state.getType());
+        handler = STATE_HANDLER_MAP.get(StateType.getStateType(state.getType(), true)?...)
+```
+
+I'll re-read the file fully. Anyway — plan: register `WaitStateHandler.getInstance()` in the static map for StateType.WAIT.
+
+Wait — but where does the *state instance creation + recordStateStarted* happen for a Wait? If I follow ServiceTask pattern: create `WaitStateHandlerInterceptor implements StateHandlerInterceptor`? Hmm, how are interceptors attached? I remember `StateMachineProcessHandler.process`:
+
+```java
+StateHandlerInterceptor interceptor = ...;
+List<StateHandlerInterceptor> interceptors = ...
+```
+
+Ugh. Let me look at actual Seata 1.8 code (I've seen it before):
+
+```java
+public class StateMachineProcessHandler implements ProcessHandler<ProcessContext> {
+
+    private static final Map<String, StateHandler> STATE_HANDLER_MAP = new HashMap<>();
+    private static final Map<String, StateHandlerInterceptor> STATE_HANDLER_INTERCEPTOR_MAP = new HashMap<>();
+    private static final String START_STATE_NAME = ""; // ??
+    static {
+        STATE_HANDLER_MAP.put(StateType.SERVICE_TASK.name(), ServiceTaskStateHandler.getInstance());
+        STATE_HANDLER_MAP.put(StateType.SCRIPT_TASK.name(), ScriptTaskStateHandler.getInstance());
+        STATE_HANDLER_MAP.put(StateType.CHOICE.name(), ChoiceStateHandler.getInstance());
+        STATE_HANDLER_MAP.put(StateType.SUCCEED.name(), SucceedEndStateHandler.getInstance());
+        STATE_HANDLER_MAP.put(StateType.FAIL.name(), FailEndStateHandler.getInstance());
+        STATE_HANDLER_MAP.put(StateType.SUB_STATE_MACHINE.name(), SubStateMachineHandler.getInstance());
+        STATE_HANDLER_MAP.put(StateType.COMPENSATION_TRIGGER.name(), CompensationTriggerStateHandler.getInstance());
+        STATE_HANDLER_MAP.put(StateType.LOOP_START.name(), LoopStartStateHandler.getInstance());
+        ...
+    }
+```
+
+And in `process`:
+
+```java
+    @Override
+    public void process(ProcessContext context) throws SagaTimeoutException {
+
+        try {
+            StateInstruction instruction = context.getInstruction(StateInstruction.class);
+            StateMachine stateMachine = (StateMachine)context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE);
+            if (stateMachine == null) {
+                throw new SagaTimeoutException("StateMachine is null");
+            }
+            String stateName = instruction.getStateName();
+            State state = stateMachine.getState(stateName);
+            StateHandler handler = STATE_HANDLER_MAP.get(state.getType().toUpperCase());
+            ...
+            if (handler != null) {
+                if (StringUtils.isNotBlank(state.getExtensions()... interceptor)) ...
+```
+
+I honestly don't remember. MUST re-read. Also whether interceptors are per-state via `state.getExtensions().get("Interceptor")`? I do recall something about `"Interceptor"` extension key in statelang docs? Hmm.
+
+Alternative simpler approach used by some fork implementations (Seata actually added WaitStateHandler? No — official Seata does NOT have Wait states; this is a synthetic task). So I design it myself:
+
+Simplest robust design: do everything in `WaitStateHandler.process(context)`:
+
+```java
+public void process(ProcessContext context) {
+    StateInstruction instruction = context.getInstruction(StateInstruction.class);
+    StateMachineInstance stateMachineInstance = (StateMachineInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INSTANCE);
+    WaitState waitState = (WaitState) stateMachine.getState(instruction.getStateName());
+
+    StateInstanceImpl stateInstance = new StateInstanceImpl();
+    stateInstance.setMachineInstanceId(stateMachineInstance.getId());
+    stateInstance.setName(waitState.getName());
+    stateInstance.setType(StateType.WAIT);
+    stateInstance.setStatus(ExecutionStatus.WA);
+    stateInstance.setGmtStarted(new Date());
+    // id generation
+    stateInstance.setId(generateStateInstanceId?);
+    stateMachineInstance.put(stateInstance); // hmm
+    // record started
+    stateLogStore.recordStateStarted(stateInstance, context);
+    // suspend machine
+    stateMachineInstance.setStatus(ExecutionStatus.WA);
+    stateMachineInstance.setRunning(false); // wait, is there setRunning? StateMachineInstance has setRunning? It has is_running column; StateMachineInstanceImpl likely has `setRunning(boolean)`.
+    stateLogStore.recordStateMachineSuspended?? or updateStateMachineRunningStatus(false)
+    context.setVariable(DomainConstants.VAR_NAME_STATEMACHINE_CURRENT_STATE_INSTANCE?, stateInstance);
+    // do NOT set next instruction — return, leaving the process loop suspended
+}
+```
+
+But wait — how does the surrounding "process" loop work? `ProcessCtrlEventPublisher` executes events synchronously through `EventConsumer` chain: `StateMachineProcessHandler` is a consumer; after `handler.process(context)`, the publisher checks `context.instruction hasNext`? The event-driven model: handlers set the *next instruction* on context (e.g., `instruction.setNextState`?) and the publisher loops while there's a next event. In Seata saga: `ProcessCtrlEventPublisher.publish` → `eventPublisher MultEventPublisher?`. Hmm.
+
+Actually the saga engine `ProcessCtrlEventPublisher`:
+
+```java
+public class ProcessCtrlEventPublisher extends AbstractEventPublisher<ProcessContext> {
+    @Override
+    public void publish(ProcessContext context) { ... }
+```
+
+Hmm — `AbstractEventPublisher.publish(SeataEvent event)`? The `ProcessCtrlEventPublisher implements EventPublisher<ProcessContext>` with a workflow: `public boolean publish(ProcessContext event) { Runnable runnable = () -> { synchronized (event) { try { process(event); ... } } } ... }`. And `process(context)` → `List<EventConsumer> consumers = ...; while (context.hasNext?)`. 
+
+I remember the saga engine `ProcessCtrlEventPublisher`:
+
+```java
+    @Override
+    public boolean publish(ProcessContext context) {
+        return syncPublisher? ...
+    }
+```
+
+OK — enough guessing; the actual mechanics: `StateMachineProcessHandler.process` (the ProcessHandler) executes ONE state (instruction), then at the end, if the machine didn't end, it routes to the next state via `StateMachineProcessRouter.route(context, stateMachine)` which returns a NEW `StateInstruction`? And then `ProcessCtrlEventPublisher` publishes a new event for the next instruction — in sync mode it's a loop within the same thread (recursive call or while loop). If a handler sets no next state / doesn't call the router, execution just stops — which is exactly what suspension needs!
+
+I recall `StateMachineProcessHandler.process` ends with:
+
+```java
+            if (!instruction.isEnd()) {
+                RouteMeta routeMeta = stateMachineProcessRouter.route(context, stateMachine, state);
+                if (routeMeta != null) {
+                    StateInstruction newInstruction = routeMeta.getInstruction();
+                    context.setInstruction(newInstruction);
+                    ((ProcessCtrlStateMachineEngine)stateMachineEngine).getProcessCtrlEventPublisher()? 
+```
+
+Hmm no. Let me look at real code from memory (seata 1.5+, `StateMachineProcessHandler`):
+
+```java
+    @Override
+    public void process(ProcessContext context) throws Exception {
+        try {
+            ProcessContext currentContext = ...;
+            StateInstruction instruction = context.getInstruction(StateInstruction.class);
+            StateMachine stateMachine = (StateMachine) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE);
+            State state = stateMachine.getState(instruction.getStateName());
+            StateHandler handler = STATE_HANDLER_MAP.get(state.getType().toUpperCase());
+            if (handler == null) { throw new SagaRuntimeException(...); }
+            try {
+                handler.process(context);
+            } finally {
+                ... interceptor postProcess
+            }
+
+            RouteMeta routeMeta = stateMachineProcessRouter.route(context, stateMachine, state);
+            if (routeMeta != null && routeMeta.getInstruction() != null) {
+                ... publish next
+            }
+        }
+    }
+```
+
+Honestly the cleanest is to re-read these files. Since this continuation message says "Continue if you have next steps", I should continue: finish reading the required files, then implement everything, then build & test.
+
+Given the sheer scope, let me be systematic. Files to read fully (engine):
+
+- `StateInstruction.java`
+- `StateMachineProcessHandler.java`
+- `StateMachineProcessRouter.java`
+- `ProcessCtrlStateMachineEngine.java` (full 1000+ lines? it's ~600)
+- `TaskStateRouter.java`
+- `EngineUtils.java`
+- `ServiceTaskHandlerInterceptor.java`
+- `SubStateMachineHandler.java`
+- `ParameterUtils.java`
+- `StateMachineUtils.java` (statelang)
+- `StateLogStore.java` (interface)
+- `DbAndReportTcStateLogStore.java` (remaining: lines 1-1020 mostly read; I have 1021-1043; need the middle methods — I have summaries: recordStateMachineStarted etc. Need exact method list to extend)
+- `DbStateMachineConfig.java` (Spring module) — getProcessCtrlEventPublisher, default dispatcher bean
+- `AbstractStateMachineConfig.java` (seata-saga-engine? config) — how sync/async publisher created
+- `CompensationHolder.java`, `LoopTaskUtils.java`, `StateMachineImpl`, `DefaultStatusDecisionStrategy`? (engine status decision: `EngineUtils.decideExecutionStatus`? there's `StateMachineStatusDecisionStrategy`? I recall `org.apache.seata.saga.engine.pcext.utils.EngineUtils.decideExecutionStatus(stateMachineInstance, ...)`.)
+- `EventPublisher`/`ProcessCtrlEventPublisher` + `EventConsumer`/`EventProcessor`
+- `DomainConstants.java` full
+- statelang parser: `StateMachineParserImpl.java`, `StateParserFactory.java`, `BaseStateParser.java`, `AbstractTaskStateParser.java`, `ScriptTaskStateParser.java`
+- statelang domain: `State.java`, `BaseState(Impl).java`, `AbstractTaskState.java`, `StateMachine.java`, `StateMachineImpl.java`, `StateInstance.java`, `StateInstanceImpl.java`, `StateMachineInstance.java`, `StateMachineInstanceImpl.java`, `StateType.java`, `ExecutionStatus.java`
+- validator: `Rule.java`, `RuleFactory.java`, existing rules dir
+- compatible: `io/seata/saga/statelang/domain/StateType.java`, `ExecutionStatus.java` — and check how wrap/unwrap implemented (they wrap org.apache enums). Also compatible engine `io/seata/saga/engine/StateMachineEngine`? The summary says "Read the StateMachineEngine wrappers under compatible" as a next step — so compatible has `io.seata.saga.engine.StateMachineEngine` delegating. signal/fireDueTimeouts need to be added to the compatible wrapper too? The requirement says "Add `StateMachineInstance signal(...)` to `StateMachineEngine`" — the interface in org.apache.seata.saga.engine. If there's a compatible wrapper interface `io.seata.saga.engine.StateMachineEngine`, adding methods there could break implementors... The compatible module generates deprecated API forwarding. Hmm — requirement only mentions adding to `StateMachineEngine` (org.apache) and matching constants to deprecated io.seata statelang domain wrappers. Let me check what compatible contains for saga: `compatible/src/main/java/io/seata/saga/...`. I'll glob.
+
+- tests: `seata-saga-engine/src/test`, `seata-saga-spring/src/test` — to know test infra (they use H2? `DbStateMachineConfig` with h2 in tests?).
+
+That's a LOT of reading. But necessary. Let me start. I'll batch reads in parallel where possible.
+
+Also **DbAndReportTcStateLogStore middle** — I read 1-1020 earlier? The summary said clipped opening excerpt. I'll re-read fully (1043 lines total — fine, 2 reads).
+
+Let me also decide **architecture for signal/fireDueTimeouts** now (to be refined after reads):
+
+New methods on `StateMachineEngine` interface:
+
+```java
+StateMachineInstance signal(String stateMachineInstanceId, String waitStateInstanceId, String event, Map<String, Object> payload);
+int fireDueTimeouts(java.time.Instant now);
+```
+
+`ProcessCtrlStateMachineEngine` implements both.
+
+Persistence additions (`StateLogStore` + `DbAndReportTcStateLogStore` + `StateLogStoreSqls`):
+
+1. `boolean updateStateExecutionStatus(...)`? Existing: `void updateStateExecutionStatus(StateInstance stateInstance, ProcessContext context)` — hmm the interface has `updateStateExecutionStatus`? Actually summary says StateLogStore has recordStateStarted/recordStateFinished... Let me read the interface fully.
+
+For claim semantics we need conditional update returning boolean. Design new methods:
+
+```java
+// claim wait activation: status WA -> target status (SU for signal / SK for timeout), optionally set output params
+boolean claimWaitStateActivation(String machineInstanceId, String stateInstanceId, ExecutionStatus newStatus, Map<String,Object> outputParams);
+```
+
+Hmm — but StateLogStore methods in Db impl use `TransactionTemplate` etc. Let me model after existing methods (e.g., `recordStateFinished` uses update with optimistic check `gmt_updated`).
+
+Simpler: since claiming is done in the engine, and DbAndReportTcStateLogStore is the only real store impl (there may be a memory impl in tests? StateLogStore impls: DbAndReportTcStateLogStore (db) and maybe others) — I'll add to interface:
+
+```java
+int updateWaitStateActivation(String machineInstanceId, String stateInstanceId, ExecutionStatus expectStatus, ExecutionStatus targetStatus, byte[] serializedOutput, Date gmtUpdated)? 
+```
+
+Hmm — how do existing methods serialize output params? `recordStateFinished(StateInstance stateInstance, ProcessContext context)` — inside Db impl it serializes stateInstance.getOutputParams() via `paramsSerializer` and executes RECORD_STATE_FINISHED_SQL with `if updated == 0 → optimistic lock fail → retry`? Let me look at actual code when I read.
+
+Let me think about what minimal SQL is needed:
+
+A. **Claim wait state instance** (both signal & timeout):
+
+```sql
+UPDATE ${TABLE_PREFIX}state_inst SET status = ?, output_params = ?, gmt_updated = ? 
+WHERE machine_inst_id = ? AND id = ? AND status = 'WA'
+```
+
+- Signal: status='SU', output_params=payload serialized.
+- Timeout: status='SK', output_params=null (or empty). 
+
+Affected rows 1 → claim won. 0 → lost/race.
+
+B. **Resume machine from suspension** (set status RU, is_running=true):
+
+Existing `UPDATE_STATE_MACHINE_RUNNING_STATUS_SQL`: `SET is_running=?, gmt_updated=? WHERE id=? AND gmt_updated=?` — only is_running, not status. When machine suspended, status column = 'WA', is_running=false. On resume: status should become RU + is_running=true. Add:
+
+```sql
+UPDATE ${TABLE_PREFIX}state_machine_inst SET status = 'RU', is_running = 1?, gmt_updated = ? WHERE id = ? AND gmt_updated = ?
+```
+
+Hmm — is_running column type? In record: `setBoolean`. And status 'RU'. Actually — maybe I add a new SQL `UPDATE_STATE_MACHINE_RESUMED_SQL`:
+
+```sql
+UPDATE ${TABLE_PREFIX}state_machine_inst SET status = ?, is_running = ?, gmt_updated = ? WHERE id = ? AND gmt_updated = ?
+```
+
+C. **Suspend machine** (status 'WA', is_running=false):
+
+```sql
+UPDATE ${TABLE_PREFIX}state_machine_inst SET status = 'WA', is_running = 0/false, gmt_updated = ? WHERE id = ? AND gmt_updated = ?
+```
+
+D. **Query waiting machine instances** for fireDueTimeouts:
+
+```sql
+SELECT ... FROM ${TABLE_PREFIX}state_machine_inst WHERE status = 'WA'
+```
+
+But `STATE_MACHINE_INSTANCE_FIELDS` includes start_params/end_params/excep (serialized) — fine to reuse. Query returns StateMachineInstanceImpl with machineId → load definition → getState(name of wait state) → timeout → deadline = gmtStarted + timeout. Need to find the WAIT state instances per machine: `queryStateInstancesByMachineInstanceIdSql` exists. Then filter type WAIT & status WA.
+
+Hmm wait — deadline computed from *which* state instance gmtStarted? The machine's WAIT activation(s): the LAST WAIT state instance in WA status (the currently-active activation). A machine in status WA should have exactly one WA state instance (the suspension point) — the current state. Filter state instances where type==WAIT && status==WA → that's the activation.
+
+But what about a machine suspended at a Wait *inside a loop*? Still one WA state instance at a time.
+
+What about machine status WA due to child suspension (parent machine suspended because sub-machine waits)? Parent machine status WA, parent's SUB_STATE_MACHINE state instance status WA, child machine also WA with its WAIT state instance WA. FireDueTimeouts: query machines by status WA → for each, find its WAIT state instance... parent machine has NO wait state instance (its suspended state is SUB_STATE_MACHINE type). So fireDueTimeouts on parent machine: no WAIT state → skip (indefinite/NA at this level). But the child machine IS also in the table with status WA and has the WAIT instance → it gets processed. Child timeout → child resumes → completes → parent's SubStateMachine state resumes → parent continues. 
+
+And `fireDueTimeouts` returns count of *claimed* waits — "Return the number of claims won" — count of wait state instances transitioned WA→SK by this call. Child wait timeouts count. OK.
+
+But careful: "A waiting child must suspend its enclosing SubStateMachine state in WA" — SubStateMachine state instance status WA — its *machine* status WA. Then fireDueTimeouts(Instant) queries all WA machines; for the child machine, finds WAIT state inst; computes deadline; claims; resumes child machine. Child machine continues (maybe to completion) → `SubStateMachineHandler`... wait, how does the parent resume? 
+
+The synchronous nested call model: `SubStateMachineHandler.process` calls `stateMachineEngine.start(subStateMachineName, tenantId, startParams, ..., parentId, subMachineParentContext?)`. In *sync* mode, `start` runs the whole sub-machine inline (within parent's `handler.process(context)` call). So if the sub-machine suspends at Wait, `start` returns a WA instance → `SubStateMachineHandler` then: sees child instance status != completed → suspends parent machine instance (status WA, is_running=false), records child→parent relation, returns. When child later resumes (via signal/timeout on the *child* machine), the child runs to completion synchronously *within the signal/fireDueTimeouts thread*; then we must "resume the parent synchronously" — "Completing or timing out a child must synchronously resume its parents through multiple nesting levels" and "Apply each nesting level's output mappings during resumption."
+
+So the resume logic: after continuation of a machine instance reaches terminal state (or next suspension), if machine has parentId and parent's suspended state is this SUB_STATE_MACHINE state → propagate: parent's SUB_STATE_MACHINE state instance gets child's final status/output; apply sub-machine's `Output` mappings into parent context; then parent continues from the SubStateMachine state's Next. This "unwind" must loop up nesting levels.
+
+How does the existing code resume a parent after child completes in the *inline* case? It doesn't need to — inline completion happens inside the parent's handler call, and `ServiceTaskHandlerInterceptor.postProcess`/`SubStateMachineHandler` continues: after `engine.start` returns completed child, `SubStateMachineHandler` sets stateInstance output & status, then the process loop routes to Next. So the *inline* path handles completion naturally.
+
+For *resumed* child: child machine finished (SU) at some later time. Parent is suspended in DB. Need a method: `resumeParentIfNecessary(StateMachineInstance childInstance)` → find parent machine instance (queryStateMachineInstanceByParentId(child.getId())), reload parent, find parent's WA SUB_STATE_MACHINE state instance whose ... hmm — how to know WHICH parent state corresponds to this child? Parent state instance for sub-state-machine: the child machine's id is recorded? `StateMachineInstance.parentId` = parent *machine instance* id. The parent's state instance (SUB_STATE_MACHINE type) — how linked to child machine instance id? In `SubStateMachineHandler`, when starting child inline, it knows the current parent state instance id. Is child machine instance id persisted anywhere? Hmm — `SubStateMachineHandler`:
+
+```java
+// subStateMachine parent id
+stateMachineInstance.setParentId? 
+```
+
+I recall `SubStateMachineHandler.process` does:
+
+```java
+context.setVariable(DomainConstants.VAR_NAME_SUB_MACHINE_PARENT_ID, ...)? 
+```
+
+Hmm. And `StateMachineUtils.getOriginStateMachineParentId?`. Let me think — in `DbAndReportTcStateLogStore.recordStateMachineStarted`, parentId is inserted. For lookup direction parent-state → child machine: `queryStateMachineInstanceByParentId(parentId)` gives children of a parent machine. Multiple SubStateMachine executions of same parent → multiple children. Which child corresponds to which parent SUB_STATE_MACHINE state instance? Probably: the child machine whose `id`... hmm — maybe the parent state instance's `serviceMethod`/`serviceName`? No.
+
+Look: `StateInstanceImpl` has fields serviceName, serviceMethod — for SUB_STATE_MACHINE states, SubStateMachineHandler sets stateInstance.setServiceName(subStateMachineName)? And `StateMachineUtils`? I remember `SubStateMachineHandler`:
+
+```java
+StateInstance stateInstance = (StateInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CURRENT_STATE_INSTANCE?);
+...
+stateInstance.setServiceName(subStateMachine.getName())? 
+```
+
+Hmm. Or maybe the parent state instance id ↔ child relation: `child machine instance id` could be stored in parent state instance? There's no field for that.
+
+Alternative design for parent resumption: when child resumes and completes, we call `resumeParent(parentMachineInstanceId)`: reload parent machine + its state instances; find parent state instances of type SUB_STATE_MACHINE with status WA — there should be exactly ONE (the suspension point — since parent suspended, its current state is that one). Then find the child machine instance(s) with parent_id = parentMachineInstanceId — pick the one that this WA state corresponds to. If parent has multiple WA SUB_STATE_MACHINE instances... can't happen: a machine instance is suspended at exactly one state (the current one). The current state is the LAST one in execution order with status not finished? The parent's state list: all states with status; the suspended one is the SUB_STATE_MACHINE state instance in WA status. So: `parent.getStateInstances().stream().filter(s -> s.getStatus() == WA && s.getType() == SUB_STATE_MACHINE).findFirst()` → that's the activation to resolve. And its child machine: `queryStateMachineInstanceByParentId(parent.getId())` — filter by... hmm, could there be stale children from retries? For simplicity: the child machine instance whose parent... Actually maybe simpler: find child machines by parent_id, order by gmt_started desc, take the first that is "related"? Risky.
+
+Hold on — maybe there's an existing mechanism: `SubStateMachineHandler` when child suspends — does official Seata even support that? In official Seata, sub-machine runs inline to completion; no suspension. So I'm designing new. I can store the linkage myself: e.g., when suspending parent due to child, set parent state instance's... I control `SubStateMachineHandler` modifications. I could persist child machine instance id into parent state instance — where? `StateInstance` has `serviceMethod` field — could store child id? Ugly. 
+
+Hmm wait — actually let me reconsider: is `parentId` of child machine = parent machine instance id, and to map parent SUB_STATE_MACHINE state → child machine: the parent state instance is created *before* child starts, with id X. I could set child machine's... `StateMachineInstanceImpl` has no "parent state instance id" field either. But `start` has signature `start(String stateMachineName, String tenantId, Map startParams, String parentId, String subMachineParentId?...)`? Hmm! I recall `StateMachineEngine`:
+
+```java
+StateMachineInstance start(String stateMachineName, String tenantId, Map<String, Object> startParams, String parentId, String subMachineParentId? 
+```
+
+no... Let me recall actual interface:
+
+```java
+public interface StateMachineEngine {
+    StateMachineInstance start(String stateMachineName, String tenantId, Map<String, Object> startParams) throws ExecutionEngineException?;
+    StateMachineInstance start(String stateMachineName, String tenantId, Map<String, Object> startParams, String parentId) ...;
+    StateMachineInstance start(String stateMachineName, String tenantId, Map<String, Object> startParams, String parentId, String subMachineParentId) ...;
+    StateMachineInstance forward?... 
+```
+
+Hmm. There IS something with `subMachineParentId` — I genuinely recall `DomainConstants.VAR_NAME_SUB_MACHINE_PARENT_ID = "_sub_machine_parent_id_"` — value is a *state instance id*? In `SubStateMachineHandler`:
+
+```java
+String subMachineParentId = (String) context.getVariable(DomainConstants.VAR_NAME_SUB_MACHINE_PARENT_ID);
+```
+
+Hmm, and then `stateMachineInstance.setParentId(parentId)` where parentId = parent machine instance id... I need to read `SubStateMachineHandler` + `StateMachineEngine` + `ProcessCtrlStateMachineEngine` carefully. 
+
+If `subMachineParentId` (the parent *state instance* id) is passed to child machine start as startParam `_sub_machine_parent_id_`... then child machine instance could expose it? `StateMachineInstance` interface — does it have getSubMachineParentId? Hmm, maybe not; maybe it's just a context var passed through so that... hmm.
+
+Whatever — after full reads I'll know. If linkage is weak, my resume-parent logic: parent machine reload → find WA SUB_STATE_MACHINE state instance (unique) → find children machines by parent_id ordered by gmt_started DESC → take first whose... state matches? Actually take the child whose start was triggered BY that state: since parent suspended at that state, the child started most recently by that parent = the child of that activation (loop iterations of the same state can't coexist because parent processes states sequentially). So children ordered by gmtStarted desc → first = current child. Good enough and deterministic.
+
+Hmm wait — but actually simpler: when a child machine *completes or times out* and I resume it, I know exactly which child instance it is (I have it in hand). Its parentId → parent machine instance. So: `queryStateMachineInstancesByParentId(child.getId())` → parents? No wait — parentId on child = parent machine id. So `parentMachine = getStateMachineInstance(child.getParentId())`. Then find parent's WA SUB_STATE_MACHINE state instance (unique — the suspension point), set its status = child's final status (SU/FA), output = child machine's endParams? or via Output mappings? — "Apply each nesting level's output mappings during resumption": the SUB_STATE_MACHINE state has Output mappings mapping child results into parent context (`Output` on substatemachine task maps from child machine's endParams or context?). In `SubStateMachineHandler` inline path:
+
+```java
+//after sub machine finished
+Map<String, Object> subMachineEndParams = subStateMachineInstance.getEndParams();
+Map<String, Object> outputParams = ParameterUtils.createOutputParams(stateMachine, state? , subMachineEndParams?);
+stateInstance.setOutputParams(outputParams)? 
+```
+
+Something like that. I'll mirror it in the resume path.
+
+Then: recordStateFinished on that parent state instance; decide parent status (if child FA → parent state FA → maybe triggers compensation...). Hmm — "Ancestor compensation must cancel active descendant waits" — compensation propagates DOWN too: parent compensation → child machine compensation. This exists? In official Seata, compensation of SUB_STATE_MACHINE states: `SubStateMachineHandler` has compensation handling? The state machine's compensate: each state's CompensateState... For sub-state-machine, the child machine itself gets... Hmm, official Seata: `StateMachineInstance.compensationStatus`... when machine fails, engine calls `compensate` which executes CompensateState of each state. For SUB_STATE_MACHINE states, compensating means starting child machine in compensate mode? I don't think official Seata supports auto-compensation of sub-machines (docs say sub-state-machine compensation not supported?). 
+
+The requirement: "Ancestor compensation must cancel active descendant waits, including waits in grandchildren" + "Cancellation of active descendant waits must precede compensation of any completed predecessor." So when a machine instance compensates (e.g., parent fails at some other state → CompensationTrigger → compensation runs → cancels the WA wait states in descendants). Implementation: during `compensate`, before compensating completed predecessors, find active (WA) state instances of type WAIT in this machine and its suspended children recursively → claim them (CAS WA→SK? or a "cancelled" status?) — statuses: SU (signal success), SK (timeout skip)... cancelled wait → SK seems natural ("skip"). Requirement says "Persist each timeout winner as SK" and claim winner of signal as SU. For cancellation, status SK too? "An activation already lost to timeout or compensation must report OperationDenied" — so compensation-claimed waits are not WA anymore; SK works. Hmm — but maybe FA? No — the wait didn't fail; it was cancelled/skipped. SK ("skipped") fits.
+
+Hmm wait, let me re-read: "Ancestor compensation must cancel active descendant waits" — so during compensation of machine M (suspended at Wait? or running with a suspended child?), all descendant waits become cancelled (SK), and "Cancellation of active descendant waits must precede compensation of any completed predecessor" — ordering: cancel waits first, then compensate completed predecessors. 
+
+When does ancestor compensation happen? E.g., machine instance with a suspended child at Wait — meanwhile (in another thread/signal? no...) hmm — example: parent has states [A, Sub1(WaitChild), B]; Sub1 suspends at WaitChild. Parent suspended. Now... nothing else can act on parent unless... Actually how would ancestor compensation EVER trigger while a wait is active? The machine is suspended — no other branch is running. UNLESS: multi-branch? Seata saga is single-sequential. Hmm — unless the parent machine is suspended at Wait W, and simultaneously... no, still nothing runs.
+
+Wait — maybe scenario: machine has states [Sub1, C]; Sub1's child suspends at Wait → parent suspends at Sub1. Now an operator calls engine.compensate(parentMachineInstanceId) manually? There's `StateMachineEngine.compensate(String stateMachineInstanceId)`? Hmm — is there? I recall `restart`/`compensate`/`forward` methods maybe in `StateMachineRecoveryService`? Hmm.
+
+Or: timeout racing with compensation: "A due timeout and compensation racing for the same Wait activation must have a single winner" — so compensation and timeout CAN race → compensation can be triggered externally while wait active. So the engine must expose compensation of a suspended machine? Or the wait is in the SAME machine as the compensating state? [A, Wait(W), C] — machine suspended at W. Nothing else runs... UNLESS the machine is *nested* and its parent continues on another path? No — parent suspends too.
+
+Hmm, unless: async states? `isAsync` — a task state with isAsync=true executes... In Seata saga, async task states are still sequentially routed? I believe async means the service call runs async but routing waits? No... Actually there IS multi-thread? I don't think so.
+
+OK here's a plausible concrete scenario for "ancestor compensation cancels descendant waits": machine P = [Sub1, B]; child C1 = [A1, Wait(W), A2]. C1 suspends at W → P suspended. Now someone calls... the requirement tests likely do: engine.compensate? Let me look — does StateMachineEngine have compensate? I recall:
+
+```java
+public interface StateMachineEngine {
+    StateMachineInstance start(...);
+    StateMachineInstance startAsync(...);
+    StateMachineInstance forward(String stateMachineInstanceId, Map<String, Object> replaceParams);
+    StateMachineInstance forwardAsync(...);
+    StateMachineInstance compensate(String stateMachineInstanceId);
+    StateMachineInstance compensateAsync(String stateMachineInstanceId);
+    StateMachineInstance skipAndForward?... 
+    StateMachineInstance reloadStateMachineInstance?...
+}
+```
+
+Hmm — I genuinely recall `StateMachineEngine` having `forward`, `forwardAsync`, `compensate`, `compensateAsync`, `skipAndForward`, `restart`, `restartAsync`... Not sure. `ProcessCtrlStateMachineEngine` has methods forward/compensate/restart? Let me just read the full file.
+
+If `compensate(machineInstanceId)` exists, then: compensate a suspended machine → CompensationTrigger → iterates state list backwards → for each completed state execute its CompensateState → AND for active waits: cancel (claim to SK). For nested: compensating parent P suspended at Sub1 (child C1 waiting at W): compensation of P must cancel C1's wait AND compensate C1's completed predecessors (A1's compensate). "including waits in grandchildren" — deeper nesting.
+
+This is getting deep. The "compensation" path in `ProcessCtrlStateMachineEngine`:
+
+```java
+public StateMachineInstance compensate(String stateMachineInstanceId) {
+    StateMachineInstance stateMachineInstance = reloadStateMachineInstance(stateMachineInstanceId);
+    return compensateInternal(stateMachineInstance?...);
+```
+
+Hmm — I really need the real code. Let me stop theorizing and READ.
+
+Reading plan (batches):
+1. Engine: StateInstruction.java (full), StateMachineProcessHandler.java (full), StateMachineProcessRouter.java, TaskStateRouter.java, EngineUtils.java (full), ServiceTaskHandlerInterceptor.java (full), SubStateMachineHandler.java (full), ParameterUtils.java (full), ProcessCtrlStateMachineEngine.java (full ~? lines), StateMachineEngine.java (full), StateLogStore.java (full), DbAndReportTcStateLogStore.java (full), DbStateMachineConfig.java, AbstractStateMachineConfig.java (engine config?), ProcessCtrlEventPublisher.java, EventConsumer/EventProcessor?, CompensationHolder.java, LoopTaskUtils.java, DomainConstants.java (full).
+2. statelang: StateType.java, ExecutionStatus.java, State.java, BaseState(Impl), AbstractTaskState, ScriptTaskStateImpl, StateMachine(Impl), StateInstance(Impl), StateMachineInstance(Impl), StateMachineUtils.java, parser: StateMachineParserImpl.java, StateParserFactory.java, BaseStateParser.java, AbstractTaskStateParser.java, ScriptTaskStateParser.java, DomainConstants? (parser constants), validator Rule/RuleFactory/rules.
+3. compatible: glob io/seata/saga/**, read StateType, ExecutionStatus wrappers (+ engine wrapper if exists).
+4. Tests: glob saga/**/src/test/**, read relevant (e.g. `SeataSagaTest`? `StateMachineTests`? DbAndReportTcStateLogStore test?), find H2 schema DDL (`state_machine` DDL files? e.g. `seata-saga-spring/src/test/resources/schema.sql`? or `saga/sql`?). Also check root pom modules for build order.
+
+Also DDL files for DB tables (mysql/postgres/oracle etc. under `seata-saga-spring`? or distribution `script/client/saga/db/`?) — adding new SQL constants doesn't require schema change (good: derive deadline from gmtStarted + definition timeout; no new columns!). Requirement "The solver decided to derive the deadline from the persisted gmtStarted plus the configured Timeout to avoid a new column." 
+
+But wait — machine status WA: `recordStateMachineFinished` sets status; suspension needs status='WA' persisted on machine — UPDATE ... SET status='WA', is_running=... — column exists already. Good, no schema change. 
+
+Also `ExecutionStatus.valueOf(resultSet.getString("status"))` on reload — works with WA once enum has WA.
+
+Now — about tests: The task says "Add unit tests for durable Wait behavior" etc. I should add tests mirroring existing test infra. Let me look at existing tests: `seata-saga-engine/src/test/java/org/apache/seata/saga/engine/...` e.g. `StateMachineTests`? And `seata-saga-spring/src/test` e.g. `SeataSagaTest`/`DbStateMachineTest`. They likely spin H2 in-mem with DDL. I'll mirror.
+
+Testing concurrency (racing signal/timeout) in unit tests: simulate by sequential claims (CAS) — e.g., two threads call signal concurrently; assert exactly one returns continued machine... hard to make deterministic. Maybe tests do: claim via one path, then second path gets OperationDenied. That's the "single winner" semantics — deterministic via CAS.
+
+But honestly — given the size, maybe the test suite expected here is the *task's own* hidden tests; my job: implement + my own tests + compile. Let me aim for: full implementation + a reasonable set of unit tests using existing infra (mock-based store like existing `StateMachineMockTest`? I saw `seata-saga-engine/src/test` has mock DB impl? e.g. `MockStateMachineStateLogStore`? Hmm — there might be `MockStateLogStore` used by engine tests without DB). Let me check test dirs.
+
+Let me now start reading. I'll do big parallel batches.
+
+Batch 1 (engine core control flow):
+- StateInstruction.java (full)
+- StateMachineProcessHandler.java (full)
+- StateMachineProcessRouter.java (full)
+- TaskStateRouter.java (full)
+- EngineUtils.java (full)
+- ServiceTaskHandlerInterceptor.java (full)
+
+Batch 2:
+- SubStateMachineHandler.java (full)
+- ParameterUtils.java (full)
+- ProcessCtrlStateMachineEngine.java (full — it's maybe 700 lines; 2 reads)
+- StateMachineEngine.java (full)
+- StateLogStore.java (full)
+- DomainConstants.java (full)
+
+Batch 3:
+- DbAndReportTcStateLogStore.java (full)
+- DbStateMachineConfig.java
+- AbstractStateMachineConfig.java (engine module config dir)
+- ProcessCtrlEventPublisher.java + related (EventPublisher, ProcessCtrlEventConsumer?)
+
+Batch 4 (statelang):
+- StateType.java, ExecutionStatus.java, State.java, impl BaseState/AbstractTaskState/ScriptTaskStateImpl, StateMachineImpl, StateInstanceImpl, StateMachineInstanceImpl, StateMachineUtils.java, parser files, validator files.
+
+Batch 5:
+- compatible io/seata/saga glob + wrappers
+- tests glob + read key ones
+- pom structure
+
+That's ~40 reads. Let me be efficient: use `read` with full file (files are mostly < 600 lines).
+
+Then implement. Let me get going. Also update the todo list per the "next steps" — mark step "Finish reading DbAndReportTcStateLogStore.java" done (just did), "Check whether seata_state_machine_instance exposes status in StateLogStoreSqls.java" done (yes — status column exists in STATE_MACHINE_INSTANCE_FIELDS; tables: `state_machine_inst`, `state_inst`).
+
+I'll now read the big engine files. Let me kick off Batch 1+2 in parallel (12 files at once is fine).
+
+Actually let me also glob first to know exact paths. I have paths from summary; they should be right. Let me glob a few to confirm and read.
+
+Let me do: glob statelang domain dir, parser dir, engine dir, compatible saga dir, tests dirs — 5 globs + start reading known files.
+
+I'll combine: 
+- glob `saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/**/*.java`
+- glob `saga/seata-saga-engine/src/**/*.java` (might be many; engine module only) 
+- glob `compatible/src/main/java/io/seata/saga/**/*.java`
+- glob `saga/**/src/test/**/*.java`
+
+Plus reads of StateInstruction, StateMachineProcessHandler, StateMachineProcessRouter, TaskStateRouter, EngineUtils, ServiceTaskHandlerInterceptor (6 reads).
+
+Hmm — output size: each read returns full file; StateMachineProcessHandler ~ 100 lines, TaskStateRouter ~ 120, EngineUtils ~ 300?, ServiceTaskHandlerInterceptor ~ 250. Fine.
+
+Let me go.
+I'll continue: first finish reading the engine files I still need, then implement. The `status` column exists on `state_machine_inst`/`state_inst` (confirmed in `StateLogStoreSqls`), so the deadline will be derived from `gmt_started` + definition `Timeout` with no schema change. Let me map the remaining code.
+[tool:glob] {"pattern": "saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/**/*.java"}
+[tool error]
+ripgrep execution failed
+[tool:glob] {"pattern": "compatible/src/main/java/io/seata/saga/**/*.java"}
+[tool error]
+ripgrep execution failed
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateInstruction.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateInstruction.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.StringUtils;
+21: import org.apache.seata.saga.engine.StateMachineConfig;
+22: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+23: import org.apache.seata.saga.proctrl.Instruction;
+24: import org.apache.seata.saga.proctrl.ProcessContext;
+25: import org.apache.seata.saga.statelang.domain.DomainConstants;
+26: import org.apache.seata.saga.statelang.domain.State;
+27: import org.apache.seata.saga.statelang.domain.StateMachine;
+28: 
+29: /**
+30:  * State Instruction
+31:  *
+32:  * @see Instruction
+33:  */
+34: public class StateInstruction implements Instruction {
+35: 
+36:     private String stateName;
+37:     private String stateMachineName;
+38:     private String tenantId;
+39:     private boolean end;
+40: 
+41:     /**
+42:      * Temporary state node for running temporary nodes in the state machine
+43:      *
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext;
+18: 
+19: import org.apache.seata.common.exception.FrameworkException;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.saga.engine.pcext.handlers.ChoiceStateHandler;
+22: import org.apache.seata.saga.engine.pcext.handlers.CompensationTriggerStateHandler;
+23: import org.apache.seata.saga.engine.pcext.handlers.FailEndStateHandler;
+24: import org.apache.seata.saga.engine.pcext.handlers.LoopStartStateHandler;
+25: import org.apache.seata.saga.engine.pcext.handlers.ScriptTaskStateHandler;
+26: import org.apache.seata.saga.engine.pcext.handlers.ServiceTaskStateHandler;
+27: import org.apache.seata.saga.engine.pcext.handlers.SubStateMachineHandler;
+28: import org.apache.seata.saga.engine.pcext.handlers.SucceedEndStateHandler;
+29: import org.apache.seata.saga.proctrl.ProcessContext;
+30: import org.apache.seata.saga.proctrl.handler.ProcessHandler;
+31: import org.apache.seata.saga.statelang.domain.S
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext;
+18: 
+19: import org.apache.seata.common.exception.FrameworkException;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.saga.engine.StateMachineConfig;
+22: import org.apache.seata.saga.engine.pcext.routers.EndStateRouter;
+23: import org.apache.seata.saga.engine.pcext.routers.TaskStateRouter;
+24: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+25: import org.apache.seata.saga.proctrl.Instruction;
+26: import org.apache.seata.saga.proctrl.ProcessContext;
+27: import org.apache.seata.saga.proctrl.ProcessRouter;
+28: import org.apache.seata.saga.statelang.domain.DomainConstants;
+29: import org.apache.seata.saga.statelang.domain.State;
+30: import org.apache.seata.saga.statelang.domain.StateMachine;
+31: import org.apache.seata.saga.statelang.domain.StateType;
+32: 
+33: import java.util.ArrayList;
+34: import java.util.List;
+35: import java.util.Map;
+36: import java.util.concurrent.Conc
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/TaskStateRouter.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/TaskStateRouter.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.routers;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.StringUtils;
+21: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+22: import org.apache.seata.saga.engine.pcext.StateInstruction;
+23: import org.apache.seata.saga.engine.pcext.StateRouter;
+24: import org.apache.seata.saga.engine.pcext.utils.CompensationHolder;
+25: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+26: import org.apache.seata.saga.engine.pcext.utils.LoopTaskUtils;
+27: import org.apache.seata.saga.proctrl.HierarchicalProcessContext;
+28: import org.apache.seata.saga.proctrl.Instruction;
+29: import org.apache.seata.saga.proctrl.ProcessContext;
+30: import org.apache.seata.saga.statelang.domain.CompensateSubStateMachineState;
+31: import org.apache.seata.saga.statelang.domain.DomainConstants;
+32: import org.apache.seata.saga.statelang.domain.ExecutionStatus;
+33: imp
+[truncated]
+[32] assistant: [reasoning]
+The glob tool failed with "ripgrep execution failed" — maybe the glob patterns with `**` are fine but something else. Let me try simpler globs or use bash find... The instructions say avoid bash find, but glob is failing. Let me try glob with a narrower pattern.
+
+Let me try again with different pattern syntax.
+[tool:glob] {"pattern": "saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/*.java"}
+[tool error]
+ripgrep execution failed
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/EngineUtils.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/EngineUtils.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.utils;
+18: 
+19: import org.apache.seata.common.lock.ResourceLock;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.common.util.StringUtils;
+22: import org.apache.seata.saga.engine.AsyncCallback;
+23: import org.apache.seata.saga.engine.StateMachineConfig;
+24: import org.apache.seata.saga.engine.pcext.StateInstruction;
+25: import org.apache.seata.saga.engine.pcext.handlers.ScriptTaskStateHandler;
+26: import org.apache.seata.saga.proctrl.HierarchicalProcessContext;
+27: import org.apache.seata.saga.proctrl.ProcessContext;
+28: import org.apache.seata.saga.statelang.domain.DomainConstants;
+29: import org.apache.seata.saga.statelang.domain.StateInstance;
+30: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+31: import org.apache.seata.saga.statelang.domain.TaskState;
+32: import org.apache.seata.saga.statelang.domain.TaskState.ExceptionMatch;
+33: import org.apache.seata.saga.statelang.
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.interceptors;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.loader.LoadLevel;
+21: import org.apache.seata.common.lock.ResourceLock;
+22: import org.apache.seata.common.util.CollectionUtils;
+23: import org.apache.seata.common.util.StringUtils;
+24: import org.apache.seata.saga.engine.StateMachineConfig;
+25: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+26: import org.apache.seata.saga.engine.expression.ELExpression;
+27: import org.apache.seata.saga.engine.expression.Expression;
+28: import org.apache.seata.saga.engine.expression.ExpressionResolver;
+29: import org.apache.seata.saga.engine.expression.exception.ExceptionMatchExpression;
+30: import org.apache.seata.saga.engine.pcext.InterceptableStateHandler;
+31: import org.apache.seata.saga.engine.pcext.StateHandlerInterceptor;
+32: import org.apache.seata.saga.engine.pcext.StateI
+[truncated]
+[33] assistant: [reasoning]
+The glob tool is failing ("ripgrep execution failed"). Let me use bash `ls` or `find` alternatives... The instructions say avoid `find` in bash unless necessary — but glob is failing. Let me try bash with `ls -R` on specific dirs, or try glob with simpler patterns. Maybe glob fails because of the huge repo? Let me test glob on a small path.
+
+Let me try bash `ls` on directories instead.
+The glob tool is erroring; I'll use directory listing via bash instead.
+[tool:bash] {"command": "ls saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/ saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/ saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/ saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/ saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/validator/"}
+saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/:
+ChoiceState.java
+CompensateSubStateMachineState.java
+CompensationTriggerState.java
+DomainConstants.java
+EndState.java
+ExecutionStatus.java
+FailEndState.java
+LoopStartState.java
+RecoverStrategy.java
+ScriptTaskState.java
+ServiceTaskState.java
+State.java
+StateInstance.java
+StateMachine.java
+StateMachineInstance.java
+StateType.java
+SubStateMachine.java
+SucceedEndState.java
+TaskState.java
+impl
+
+saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/:
+AbstractTaskState.java
+BaseState.java
+ChoiceStateImpl.java
+CompensateSubStateMachineStateImpl.java
+CompensationTriggerStateImpl.java
+FailEndStateImpl.java
+LoopStartStateImpl.java
+ScriptTaskStateImpl.java
+ServiceTaskStateImpl.java
+StateInstanceImpl.java
+StateMachineImpl.java
+StateMachineInstanceImpl.java
+SubStateMachineImpl.java
+SucceedEndStateImpl.java
+
+saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/:
+JsonParser.java
+JsonParserFactory.java
+StateMachineParser.java
+StateMachineParserFactory.java
+StateParser.java
+StateParserFactory.java
+impl
+utils
+
+saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/:
+AbstractTaskStateParser.java
+BaseStateParser.java
+ChoiceStateParser.java
+CompensateSubStateMachineStateParser.java
+CompensationTriggerStateParser.java
+FailEndStateParser.java
+FastjsonParser.java
+JacksonJsonParser.java
+ScriptTaskStateParser.java
+ServiceTaskStateParser.java
+StateMachineParserImpl.java
+SubStateMachineParser.java
+SucceedEndStateParser.java
+
+saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/validator/:
+Rule.java
+RuleFactory.java
+StateMachineValidator.java
+ValidationException.java
+impl
+[tool:bash] {"command": "ls compatible/src/main/java/io/seata/saga/statelang/domain/ compatible/src/main/java/io/seata/saga/engine/ 2>/dev/null; ls saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/ saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/"}
+compatible/src/main/java/io/seata/saga/engine/:
+AsyncCallback.java
+StateMachineConfig.java
+StateMachineEngine.java
+config
+expression
+impl
+pcext
+repo
+store
+
+compatible/src/main/java/io/seata/saga/statelang/domain/:
+DomainConstants.java
+ExecutionStatus.java
+RecoverStrategy.java
+State.java
+StateInstance.java
+StateMachine.java
+StateMachineInstance.java
+StateType.java
+impl
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/:
+AsyncCallback.java
+StateMachineConfig.java
+StateMachineEngine.java
+config
+exception
+expression
+impl
+invoker
+pcext
+repo
+sequence
+serializer
+strategy
+utils
+
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/:
+ProcessCtrlStateMachineEngine.java
+[34] assistant: [reasoning]
+Now let me read the key remaining files. Batch:
+
+1. `StateMachineEngine.java` (org.apache) — full
+2. `ProcessCtrlStateMachineEngine.java` — full (probably ~800 lines)
+3. `StateLogStore.java` — full
+4. `DomainConstants.java` (statelang) — full
+5. `SubStateMachineHandler.java` — full
+6. `ParameterUtils.java` — full
+
+Then:
+7. `StateType.java`, `ExecutionStatus.java` (statelang)
+8. `BaseState.java`, `AbstractTaskState.java`, `StateMachineImpl.java`, `StateInstanceImpl.java`, `StateMachineInstanceImpl.java`, `State.java`, `StateInstance.java`, `StateMachineInstance.java`, `StateMachine.java`
+9. Parser: `StateMachineParserImpl.java`, `StateParserFactory.java`, `BaseStateParser.java`, `AbstractTaskStateParser.java`, `ScriptTaskStateParser.java`, `SubStateMachineParser.java`
+10. `StateMachineUtils.java` (parser/utils)
+11. Validator: Rule, RuleFactory, StateMachineValidator, impl dir
+12. Compatible: StateType, ExecutionStatus, StateMachineEngine, impl dir
+13. Engine: `AbstractStateMachineConfig` (config dir), `ProcessCtrlEventPublisher` (proctrl module — wait, proctrl is in seata-saga-proctrl module), `CompensationHolder`, `LoopTaskUtils`, `DbStateMachineConfig` (spring), `DbAndReportTcStateLogStore` (full), `StateLogStoreSqls` (done).
+14. Tests: list test dirs.
+
+Note: `StateInstanceImpl.setStateMachineInstance(...)` — good, StateInstance has getStateMachineInstance.
+
+Important discovery from TaskStateRouter: routing depends on `state.getNext()`; WaitState extends State → getNext() exists. Also `State.getStateMachine()` — states hold reference to their StateMachine. And StateInstruction has `getState(context)` resolving temporaryState or by name.
+
+StateMachineProcessHandler: `stateHandlers` keyed by StateType — add `stateHandlers.put(StateType.WAIT, new WaitStateHandler())` in initDefaultHandlers. But interceptors: `InterceptableStateHandler.getInterceptors()`. ServiceTaskStateHandler/SubStateMachineHandler are InterceptableStateHandler — the interceptors are loaded how? Let me check `ServiceTaskStateHandler` + `InterceptableStateHandler` — interceptors probably registered via EnhancedServiceLoader (LoadLevel annotations: `@LoadLevel(name = "ServiceTask", order = 100)` on ServiceTaskHandlerInterceptor). There must be a place that iterates ServiceLoader<StateHandlerInterceptor> and calls `interceptor.match(handlerClass)` to attach. Let me find that.
+
+Also note `StateMachineProcessHandler.process` calls `stateHandler.process(context)` then... wait — no routing happens in StateMachineProcessHandler! The router is invoked... where? `StateMachineProcessRouter.route(context)` — who calls it? Probably the proctrl ProcessCtrlEventPublisher event loop: `ProcessCtrlEventPublisher` → `ProcessCtrlEventConsumer` → ... In seata-saga-proctrl module: `org.apache.seata.saga.proctrl.impl.ProcessCtrlEventPublisher`, handlers `ProcessCtrlEventHandler`? Let me list proctrl module.
+
+The event loop: publisher publishes a ProcessContext event → consumer processes → calls ProcessHandler (StateMachineProcessHandler.process = execute current state) → then ProcessRouter (StateMachineProcessRouter.route = decide next instruction) → then publisher.publish(context) again if instruction present (sync: recursive/loop). I need to see this to understand how "not returning instruction" suspends.
+
+Let me read the proctrl module. Path: saga/seata-saga-proctrl/src/main/java/org/apache/seata/saga/proctrl/...
+
+Also `HierarchicalProcessContext`, `ProcessContext` — same module.
+
+Batch now (parallel reads):
+1. StateMachineEngine.java (org.apache, engine)
+2. StateLogStore.java
+3. SubStateMachineHandler.java
+4. ParameterUtils.java
+5. DomainConstants.java (statelang)
+6. proctrl dir listing
+
+Then ProcessCtrlStateMachineEngine full (it's big — need 2 reads), proctrl files.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine;
+18: 
+19: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+20: import org.apache.seata.saga.engine.exception.ForwardInvalidException;
+21: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+22: 
+23: import java.util.Map;
+24: 
+25: /**
+26:  * State machine engine
+27:  *
+28:  */
+29: public interface StateMachineEngine {
+30: 
+31:     /**
+32:      * start a state machine instance
+33:      *
+34:      * @param stateMachineName the state machine name
+35:      * @param tenantId the tenant id
+36:      * @param startParams the start params
+37:      * @return the state machine instance
+38:      * @throws EngineExecutionException the engine execution exception
+39:      */
+40:     StateMachineInstance start(String stateMachineName, String tenantId, Map<String, Object> startParams)
+41:             throws EngineExecutionException;
+42: 
+43:     /**
+44:      * start a state machine instance with businessKey
+45:      *
+46
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java"}
+<path>/workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.store;
+18: 
+19: import org.apache.seata.saga.proctrl.ProcessContext;
+20: import org.apache.seata.saga.statelang.domain.StateInstance;
+21: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+22: 
+23: import java.util.List;
+24: 
+25: /**
+26:  * StateMachine engine log store
+27:  *
+28:  */
+29: public interface StateLogStore {
+30: 
+31:     /**
+32:      * Record state machine startup events
+33:      *
+34:      * @param machineInstance the state machine instance
+35:      * @param context the state machine process context
+36:      */
+37:     void recordStateMachineStarted(StateMachineInstance machineInstance, ProcessContext context);
+38: 
+39:     /**
+40:      * Record status end event
+41:      *
+42:      * @param machineInstance the state machine instance
+43:      * @param context the state machine process context
+44:      */
+45:     void recordStateMachineFinished(StateMachineInstance machineInstance, ProcessContext context);
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SubStateMachineHandler.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SubStateMachineHandler.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.handlers;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.StringUtils;
+21: import org.apache.seata.saga.engine.StateMachineConfig;
+22: import org.apache.seata.saga.engine.StateMachineEngine;
+23: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+24: import org.apache.seata.saga.engine.exception.ForwardInvalidException;
+25: import org.apache.seata.saga.engine.pcext.InterceptableStateHandler;
+26: import org.apache.seata.saga.engine.pcext.StateHandler;
+27: import org.apache.seata.saga.engine.pcext.StateHandlerInterceptor;
+28: import org.apache.seata.saga.engine.pcext.StateInstruction;
+29: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+30: import org.apache.seata.saga.engine.store.StateLogStore;
+31: import org.apache.seata.saga.proctrl.ProcessContext;
+32: import org.apache.seata.saga.statelang.domain.DomainConstants;
+33: impo
+[truncated]
+[tool:bash] {"command": "ls -R saga/seata-saga-proctrl/src/main/java/org/apache/seata/saga/proctrl/ | head -60; ls saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/ saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/ saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/ saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/ saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/strategy/"}
+ls: cannot access 'saga/seata-saga-proctrl/src/main/java/org/apache/seata/saga/proctrl/': No such file or directory
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/config/:
+AbstractStateMachineConfig.java
+
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/:
+InterceptableStateHandler.java
+InterceptableStateRouter.java
+StateHandler.java
+StateHandlerInterceptor.java
+StateInstruction.java
+StateMachineProcessHandler.java
+StateMachineProcessRouter.java
+StateRouter.java
+StateRouterInterceptor.java
+handlers
+interceptors
+routers
+utils
+
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/:
+ChoiceStateHandler.java
+CompensationTriggerStateHandler.java
+FailEndStateHandler.java
+LoopStartStateHandler.java
+ScriptTaskStateHandler.java
+ServiceTaskStateHandler.java
+SubStateMachineHandler.java
+SucceedEndStateHandler.java
+
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/:
+EndStateRouterInterceptor.java
+InSagaBranchHandlerInterceptor.java
+LoopTaskHandlerInterceptor.java
+ScriptTaskHandlerInterceptor.java
+ServiceTaskHandlerInterceptor.java
+
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/:
+CompensationHolder.java
+EngineUtils.java
+LoopContextHolder.java
+LoopTaskUtils.java
+ParameterUtils.java
+
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/strategy/:
+StatusDecisionStrategy.java
+impl
+[35] assistant: [reasoning]
+proctrl is elsewhere. Let me find it: `ls saga/`:
+[tool:bash] {"command": "ls saga/; ls saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/strategy/impl/ saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/ saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/"}
+pom.xml
+seata-saga-annotation
+seata-saga-engine
+seata-saga-engine-store
+seata-saga-processctrl
+seata-saga-rm
+seata-saga-spring
+seata-saga-statelang
+seata-saga-statemachine-designer
+target
+saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/strategy/impl/:
+DefaultStatusDecisionStrategy.java
+
+saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/:
+config
+expression
+impl
+invoker
+store
+tm
+utils
+
+saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/:
+DbAndReportTcStateLogStore.java
+[tool:bash] {"command": "find saga -maxdepth 6 -type d -name proctrl; ls saga/seata-saga-engine/src/test/java/org/apache/seata/saga/engine/ saga/seata-saga-spring/src/test/java/org/apache/seata/saga/ 2>/dev/null"}
+saga/seata-saga-engine/src/test/java/org/apache/seata/saga/engine/:
+exception
+expression
+impl
+pcext
+repo
+serializer
+utils
+
+saga/seata-saga-spring/src/test/java/org/apache/seata/saga/:
+engine
+statelang
+[36] assistant: [reasoning]
+proctrl is `saga/seata-saga-processctrl`. Now read:
+1. `ProcessCtrlStateMachineEngine.java` full (large)
+2. `AbstractStateMachineConfig.java`
+3. `DefaultStatusDecisionStrategy.java`
+4. proctrl: ProcessCtrlEventPublisher etc.
+5. `DbStateMachineConfig.java` (spring config)
+6. `DbAndReportTcStateLogStore.java` (full)
+
+Let me list proctrl and read engine impl.
+[tool:bash] {"command": "ls -R saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/ | head -50"}
+saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/:
+HierarchicalProcessContext.java
+Instruction.java
+ProcessContext.java
+ProcessController.java
+ProcessRouter.java
+ProcessType.java
+eventing
+handler
+impl
+process
+
+saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/eventing:
+EventBus.java
+EventConsumer.java
+EventPublisher.java
+impl
+
+saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/eventing/impl:
+AbstractEventBus.java
+AsyncEventBus.java
+DirectEventBus.java
+ProcessCtrlEventConsumer.java
+ProcessCtrlEventPublisher.java
+
+saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/handler:
+DefaultRouterHandler.java
+ProcessHandler.java
+RouterHandler.java
+
+saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/impl:
+ProcessContextImpl.java
+ProcessControllerImpl.java
+
+saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/process:
+BusinessProcessor.java
+impl
+
+saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/process/impl:
+CustomizeBusinessProcessor.java
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.impl;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.common.util.StringUtils;
+22: import org.apache.seata.saga.engine.AsyncCallback;
+23: import org.apache.seata.saga.engine.StateMachineConfig;
+24: import org.apache.seata.saga.engine.StateMachineEngine;
+25: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+26: import org.apache.seata.saga.engine.exception.ForwardInvalidException;
+27: import org.apache.seata.saga.engine.pcext.StateInstruction;
+28: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+29: import org.apache.seata.saga.engine.pcext.utils.LoopTaskUtils;
+30: import org.apache.seata.saga.engine.pcext.utils.ParameterUtils;
+31: import org.apache.seata.saga.engine.utils.ProcessContextBuilder;
+32: import org.apache.seata.saga.proctrl.ProcessContext;
+33: import org.apache.seata.saga.proc
+[truncated]
+[37] assistant: [reasoning]
+Excellent. Now I understand the engine well. Key insights:
+
+- `startInternal` builds ProcessContext with `ProcessContextBuilder` (in `org.apache.seata.saga.engine.utils.ProcessContextBuilder`), publishes to `processCtrlEventPublisher`.
+- `compensateInternal` shows how to resume a machine instance from DB: reload, rebuild context vars, set instruction, publish.
+- `reloadStateMachineInstance` reloads + replays context variables.
+- `replayContextVariables` replays each state's Output mappings from persisted outputParams — works generically via `state.getOutput()` on `ServiceTaskStateImpl`. Note: it casts to ServiceTaskStateImpl! For Wait states I need `ParameterUtils.createOutputParams(resolver, state, output)` — let me check ParameterUtils signature: `createOutputParams(ExpressionResolver, State?, Object)` — in ServiceTaskHandlerInterceptor: `ParameterUtils.createOutputParams(stateMachineConfig.getExpressionResolver(), state, serviceOutputParams)` where state is ServiceTaskStateImpl. Let me read ParameterUtils to see the exact param type (probably `TaskState` or `State`). WaitState extends State, not TaskState. If createOutputParams takes `State`, fine. Need to check.
+
+- `compensateInternal` uses `recordStateMachineRestarted` → that's the resume-ish method — sets status? Let me check DbAndReportTcStateLogStore.recordStateMachineRestarted — likely UPDATE ... SET is_running=true, gmt_updated=? Hmm — RECORD_STATE_MACHINE_FINISHED_SQL updates status; UPDATE_STATE_MACHINE_RUNNING_STATUS_SQL sets is_running. What does recordStateMachineRestarted use? Probably `updateStateMachineRunningStatusSql`? Let me read the Db store impl fully.
+
+Now the crucial question: how does the synchronous event loop work, and can I "suspend" by simply having the WaitStateHandler not route further? Let me read `ProcessCtrlEventPublisher` + `ProcessCtrlEventConsumer` + `DefaultRouterHandler` + `ProcessControllerImpl` + `CustomizeBusinessProcessor`. The pattern: publish(context) → bus (sync: DirectEventBus) → ProcessCtrlEventConsumer.accept → ProcessControllerImpl.process(context) → businessProcessor.process → ProcessHandler (StateMachineProcessHandler) → then businessProcessor.route → ProcessRouter (StateMachineProcessRouter) → if instruction returned → controller re-process (loop) until instruction null or end.
+
+In ProcessControllerImpl.process loop: `while instruction != null`: handler.process then router.route. So if WaitStateHandler doesn't throw and doesn't set anything, then router.route runs (StateMachineProcessRouter.route → TaskStateRouter.route → next = state.getNext() → would route to next state!). So the Wait handler must prevent routing: return null from route, or set instruction end? Hmm — TaskStateRouter: `if (stateInstruction.isEnd()) return null`. Wait — but "end" means machine ended (endStateMachine does bookkeeping). We want suspension WITHOUT ending.
+
+How to stop the loop? Options:
+- WaitStateHandler sets a marker context var that TaskStateRouter checks and returns null (like VAR_NAME_IS_LOOP_STATE → returns null in route).
+- Or WaitStateHandler throws a specific exception? No — suspension isn't failure... but wait: throwing an exception propagates through proctrl → publisher catches → hmm, it would be wrapped/propagated to start() caller as exception. Not what we want; we want start() to return the suspended instance normally.
+
+Better: follow the loop pattern. In TaskStateRouter.route: `if (Boolean.TRUE.equals(context.getVariable(DomainConstants.VAR_NAME_IS_LOOP_STATE))) return null;`. I can add similar: WaitStateHandler sets `context.setVariable(DomainConstants.VAR_NAME_STATEMACHINE_SUSPENDED, true)` (new domain constant) and TaskStateRouter (or a dedicated WaitStateRouter) returns null when set. But cleaner: dedicated `WaitStateRouter implements StateRouter, InterceptableStateRouter` registered for StateType.WAIT whose route() returns null (after the Wait handler already handled everything). Wait but the machine-suspension persistence (status WA, is_running=false) — where to do? In WaitStateHandler.process: record state started with WA + update machine suspended + set stateInstance status WA. Then route returns null → loop ends → publish() returns → startInternal returns instance (status WA).
+
+But careful: `StateMachineProcessRouter.route` has: `if (instruction == null && !stateInstruction.isEnd()) { EngineUtils.endStateMachine(context); }` — if router returns null instruction and not end → ends machine! That's for terminal states without Succeed/Fail... So WaitStateRouter returning null triggers endStateMachine. Not good!
+
+So I need suspension to bypass that. Options:
+- WaitStateHandler sets `instruction.setEnd(true)`? Then router sees `stateInstruction.isEnd()` → TaskStateRouter returns null → then in finally: `if (instruction == null && !stateInstruction.isEnd())` — since end=true, no endStateMachine. Then loop... what does ProcessControllerImpl do when instruction null/end? Let me read ProcessControllerImpl/DefaultRouterHandler.
+
+But `end=true` might have other consequences... After publish returns, `startInternal` returns instance. The instance status was set to WA and is_running=false by our handler; endStateMachine wasn't called, so no TC report, no gmtEnd, no recordStateMachineFinished. 
+
+Wait — but who calls endStateMachine when NOT suspended? The `if (instruction == null && !end)` in StateMachineProcessRouter.route's finally block calls EngineUtils.endStateMachine(context) which does status decision, recordStateMachineFinished (TC report), callback, gmtEnd, setRunning(false). So setting end=true on the instruction bypasses endStateMachine → suspension semantics. Hmm, but does anything else check isEnd()? TaskStateRouter.route checks `if (stateInstruction.isEnd()) return null` — good. ProcessControllerImpl: let me read it — `ProcessControllerImpl.process(context)`: 
+
+```java
+public void process(ProcessContext context) throws FrameworkException {
+    try {
+        processHandler.process(context);
+        if (context.getInstruction() != null ...) {
+            Instruction instruction = routerHandler.route(context);
+            ... recursively process
+```
+
+Let me read the actual proctrl files now. Also `ProcessContextBuilder`. Also check whether `end=true` interferes with `AsyncCallback` — we don't set callback for sync start.
+
+Alternative approach: don't use a router returning null; instead WaitStateHandler throws a dedicated `StateMachineWaitException`? The proctrl eventing might catch exceptions and log; then startInternal... `publish` might wrap exception into EventProcessor... In sync mode, exceptions propagate to caller of publish — start() would throw → bad. So the `end=true` trick + null route is cleanest.
+
+Hmm wait — actually let me reconsider: maybe simpler — after WaitStateHandler.process returns, router for WAIT type: I register `WaitStateRouter` for WAIT in StateMachineProcessRouter.initStateRouters... but the `instruction == null && !end` → endStateMachine problem persists. So EITHER set end=true in handler, or have WaitStateRouter set... hmm the route() could return a special "null-like" instruction? No.
+
+OK so design: 
+- WaitStateHandler.process(context): create state instance (WA), record it, update machine instance in-memory to WA/running=false, persist machine suspension (new store method or reuse), set `context.getInstruction(StateInstruction.class).setEnd(true)`? Hmm wait — but StateMachineProcessHandler.process calls handler THEN StateMachineProcessRouter.route is called by... whom? Let me look at how process/route are wired: `CustomizeBusinessProcessor` probably wires StateMachineProcessHandler as ProcessHandler and StateMachineProcessRouter as ProcessRouter into the bus. Read those files.
+
+Also check `EndStateRouter` and `EndStateRouterInterceptor` for end-state pattern:
+- EndStateRouter.route probably: `instruction.setEnd(true); return null;` then the finally `!end` check passes (end=true → skip endStateMachine)? Wait no — for SUCCEED states, endStateMachine SHOULD be called (machine ends). Hmm: `if (instruction == null && !stateInstruction.isEnd())` — for EndStateRouter returning null with end... let me read EndStateRouter. SucceedEndStateHandler.process is empty (no-op). So who ends the machine for Succeed states? EndStateRouter must call EngineUtils.endStateMachine(context) itself and set end=true. Let me read it.
+
+So for Wait: I mimic EndStateRouter but call `EngineUtils.suspendStateMachine?` — hmm, actually better: WaitStateHandler does the suspension work, then set end=true (or a dedicated flag), router returns null.
+
+Wait, actually simpler: put ALL logic in WaitStateHandler.process (create+record state inst WA, persist machine WA+is_running=false+gmtEnd null), set instruction.setEnd(true). Then TaskStateRouter (registered for WAIT) returns null because isEnd(). Then finally: `instruction == null && !end` → end is true → skip endStateMachine. 
+
+But hmm — `StateInstruction.isEnd()` returning true for a Wait... Does anything else react to end? ProcessCtrlEventPublisher loop: after route returns null, does controller re-publish? Let me read. Also AsyncCallback not triggered (VAR_NAME_ASYNC_CALLBACK null) — fine, no callback on suspension.
+
+One more consideration — `clearUp(processContext)` in startInternal finally: `stateMachineConfig.getStateLogStore().clearUp(processContext)` — DbAndReportTcStateLogStore.clearUp probably cleans ThreadLocal (like XID). Fine.
+
+Now — nested SubStateMachine: parent context runs SubStateMachineHandler.process → calls engine.start(child) inline (sync publisher in same thread) → child suspends at Wait (child's own machine instance status WA, is_running=false) → start returns child instance (WA) → back in SubStateMachineHandler.process: `subStateMachineInstance.getEndParams()` → getStatus() == WA → decideStatus returns WA (compensationStatus null → returns status) → stateInstance.setStatus(WA) → outputParams... then returns normally → then TaskStateRouter routes to parent's next state! NO WAIT — we need parent to SUSPEND, not continue!
+
+So SubStateMachineHandler must be modified: after callSubStateMachine returns, if `ExecutionStatus.WA.equals(subStateMachineInstance.getStatus())` → suspend parent: set stateInstance status WA, record state "started but not finished" (status WA), set machine WA + running false + persist, set instruction end=true, and RETURN without continuing. The parent's ServiceTaskHandlerInterceptor.postProcess would then run (it's the interceptor for SubStateMachineHandler too — `match()` covers SubStateMachineHandler!) → postProcess: `decideExecutionStatus`, recordStateFinished... That would mark parent state instance SU/FA and recordStateFinished → wrong for suspension.
+
+Hmm. So postProcess must detect the wait case: stateInstance status WA / machine not running → skip. postProcess already has: `if (stateInstance == null || !stateMachineInstance.isRunning()) { LOGGER.warn(... is end. stop running); return; }` — after our suspension sets `stateMachineInstance.setRunning(false)`, postProcess returns early! 
+
+And `recordStateStarted` already happened in interceptor preProcess (status RU at that point). Then we set status WA in handler; but the state_inst row in DB was recorded with status RU. We then need to persist status WA. `stateLogStore.updateStateExecutionStatus?` hmm — there's `UPDATE_STATE_EXECUTION_STATUS_SQL` — is there a `StateLogStore.updateStateExecutionStatus`? No! The interface doesn't have it... The SQL exists but unused by interface? It's used by... hmm, `recordStateFinished` uses RECORD_STATE_FINISHED_SQL. UPDATE_STATE_EXECUTION_STATUS_SQL — grep needed. Maybe used by `DbAndReportTcStateLogStore.recordStateStarted`? No... Let me grep later. Anyway for a WAIT state instance, I'll insert via recordStateStarted (with status WA set before the call) — for WaitStateHandler flow I create the state instance myself (no interceptor on WaitStateHandler since it won't be InterceptableStateHandler... or I make it InterceptableStateHandler with no interceptors).
+
+For the SUB_STATE_MACHINE parent case: state instance was recorded RU by interceptor preProcess (before handler). Then child suspends → I update parent state instance status → WA in DB. Need a store method `updateStateExecutionStatus`? There IS the SQL. Hmm — is there an existing StateLogStore method? The interface (read above) has only record/get/query/clearUp. No update method! But UPDATE_STATE_EXECUTION_STATUS_SQL exists in Sqls — maybe DbAndReportTcStateLogStore uses it internally in some method like... `recordStateFinished`? no. Let me grep usage. Maybe it's dead code or used by tests. Whatever — I'll add methods to StateLogStore interface + impl:
+
+```java
+// engine-store StateLogStore additions
+boolean updateStateMachineExecutionStatus(StateMachineInstance machineInstance, ProcessContext context);  // status WA persist on suspend
+boolean updateStateExecutionStatus(StateInstance stateInstance, ProcessContext context); // status WA/SU/SK on wait state inst
+```
+
+Hmm wait, but DbAndReportTcStateLogStore methods return void currently... For claim semantics I need affected-rows booleans. Adding new methods to the interface with boolean returns is fine (interface additions are source-compatible for implementers? NO — adding methods to an interface breaks implementers unless default. StateLogStore is an internal SPI; the only impl is DbAndReportTcStateLogStore (+ any test mock impls — let me check test impls of StateLogStore!). There might be a `MockStateLogStore` in tests. Grep for "implements StateLogStore".
+
+For the claim operations, I'll design store methods:
+
+```java
+boolean claimWaitStateActivation(String machineInstanceId, String stateInstanceId, ExecutionStatus claimStatus, Map<String, Object> outputParams);  // CAS WA->claimStatus, sets output_params
+List<StateMachineInstance> queryStateMachineInstancesByStatus(ExecutionStatus status)?  // hmm params...
+```
+
+Hmm — wait. Actually maybe I should keep claim logic in DbAndReportTcStateLogStore via generic new methods:
+
+```java
+// StateLogStore
+int updateStateExecutionStatusWithExpect(String machineInstId, String stateInstId, ExecutionStatus expect, ExecutionStatus target, Map<String,Object> outputParams, ProcessContext context);
+List<StateMachineInstance> queryStateMachineInstancesByStatus(ExecutionStatus status);
+```
+
+Hmm, but ProcessContext param is unused by DB impl (used by TC-reporting impls?)... The existing signatures carry `(…, ProcessContext context)` mostly for the TC branch reporting (clearUp?). I'll keep context param off for the new claim methods (they never report to TC — "Wait entry must skip completion reporting to the transaction coordinator" applies to suspension; claim of wait→SU/SK — should claim report to TC? Requirement only says Wait entry skips TC report. Signal continuation: after resuming, the machine continues; when machine eventually finishes (Succeed end state), recordStateMachineFinished reports to TC as usual.
+
+Hmm wait — actually there's a subtlety: DbAndReportTcStateLogStore.recordStateMachineFinished reports branch status to TC (GlobalStatus/BranchStatus via TM). The whole wait saga: start registers branch? Actually saga RM... The TC reporting happens at machine finish — fine.
+
+But here's another subtlety: `recordStateMachineRestarted` — used by forward/compensate to set machine back running. For signal resume I can reuse `recordStateMachineRestarted`! Let me read DbAndReportTcStateLogStore.recordStateMachineRestarted implementation — probably `UPDATE ... SET is_running=?, gmt_updated=?` via updateStateMachineRunningStatusSql. But I ALSO need to set status column RU (from WA). Let me read the Db impl now, then decide: maybe add `recordStateMachineResumed`-style SQL setting status+is_running.
+
+Now the machine in-memory status flow for signal:
+1. signal() → reload machine instance (status WA, is_running=false in DB).
+2. Claim state activation CAS in DB (state_inst: WA→SU + output_params=payload). If won:
+3. Continue machine: build ProcessContext like compensateInternal does:
+   - contextBuilder with stateMachineInstance (reloaded), operationName FORWARD? Hmm — operation name matters: ServiceTaskHandlerInterceptor.preProcess checks `OPERATION_NAME_FORWARD` for retried state detection. For signal continuation, operation name — add `DomainConstants.OPERATION_NAME_SIGNAL`? Hmm, or reuse "start"? Let me look at DomainConstants values (read fully). I'll define OPERATION_NAME_CONTINUE? Let me think: `DomainConstants.OPERATION_NAME_START = "start"`, `OPERATION_NAME_FORWARD = "forward"`, `OPERATION_NAME_COMPENSATE = "compensate"`. I'll add `OPERATION_NAME_SIGNAL = "signal"` and `OPERATION_NAME_TIMEOUT = "timeout"`? Hmm — timeout continuation vs signal continuation: same mechanics (resume along Next vs TimeoutNext). Use "signal"/"timeoutWait" or just one constant "resume"? Requirements don't name constants; keep minimal: add `OPERATION_NAME_SIGNAL` and `OPERATION_NAME_TIMEOUT`? Actually simpler: single `OPERATION_NAME_WAIT_RESUME`? Hmm — but operation name is also persisted? It's context-only. But it affects forward-retry logic in interceptor: with OPERATION_NAME_FORWARD, `stateIdRetriedFor` gets set. For continuation after Wait, the Wait state instance is already SU (not failed) — we're just moving to next state. Setting operationName to "start"? Hmm — semantics: like starting fresh at an arbitrary state. Let me use `DomainConstants.OPERATION_NAME_SIGNAL = "signal"` — clean.
+
+   Actually wait — do I even want to go through ServiceTaskHandlerInterceptor logic for the *next* state? Yes — continuation executes Next state (could be ServiceTask) → interceptor preProcess creates state instance etc. That's all standard.
+
+4. Before publish: set machine status RU, running true, persist (recordStateMachineRestarted sets is_running + gmt_updated — but status column needs RU too). Add SQL for resume.
+
+Wait — one big question: after claim + context rebuild, the continuation from Wait's Next: instruction.stateName = waitState.getNext(). Also apply output mappings: "Evaluate each Output expression using the recorded payload as its root" + "Merge mapped signal outputs into machine context" + "Preserve completed predecessors' outputs when merging" — so contextVariables = replay (startParams + all completed states' outputs) + signal output mappings merged on top. Then continue.
+
+5. publish → sync loop → runs Next... may suspend again at another Wait (WaitStateHandler runs, suspends machine → instance status WA) or end (SucceedEnd → endStateMachine → recordStateMachineFinished → TC report, status SU).
+
+6. After publish returns: signal() checks: if machine has parentId && machine completed/terminal → resume parent chain ("Completing or timing out a child must synchronously resume its parents through multiple nesting levels"). This parent-resume logic: child completed (SU/FA...) → find parent machine instance via parentId — parentId format: `parentMachineInstId:parentStateInstId` (EngineUtils.generateParentId = machineInstanceId + SEPERATOR_PARENT_ID + stateInstance.getId()). Let me check SEPERATOR_PARENT_ID constant — read DomainConstants fully. So child.getParentId() = "parentMachineId:parentStateId" → parse → parent machine id + parent state instance id (the SUB_STATE_MACHINE state instance)! Great — that gives me the exact parent state activation, no guesswork!
+
+So parent resume: reload parent machine instance; find its state instance with id=parentStateId (or use parent's current WA state); set its status = decideStatus(child) (SU/FA/...), outputParams = ParameterUtils.createOutputParams(resolver, subStateMachineState?, child.getEndParams()) — "Apply each nesting level's output mappings during resumption"; recordStateFinished(parentStateInstance); then continue parent from subStateMachine.getNext() (build context for parent: vars = parent replay context + parent state output mappings merged...). Then parent continues; if parent suspends again at Wait → done; if parent ends and parent has parent → recurse.
+
+Hmm — wait. Simpler unified approach: a recursive `resumeParentAfterChildCompletion(childInstance)`:
+
+```java
+private void resumeParents(StateMachineInstance child) {
+    String parentId = child.getParentId();
+    if (blank) return;
+    String[] parts = split(parentId, SEPERATOR);
+    String parentMachineId = parts[0]; String parentStateId = parts[1];
+    StateMachineInstance parent = reloadStateMachineInstance(parentMachineId);
+    StateInstance parentStateInst = parent.getStateInstance? (from state list by id parentStateId);
+    if (parentStateInst == null || !ExecutionStatus.WA.equals(parentStateInst.getStatus())) return; // parent not waiting on this state (maybe already resumed via another path)
+    SubStateMachine subState = (SubStateMachine) parent.getStateMachine().getState(originName(parentStateInst));
+    ExecutionStatus childStatus = decideStatus(child, isForward?);
+    parentStateInst.setStatus(childStatus);
+    // output mapping
+    Map output = ParameterUtils.createOutputParams(resolver, subState, child.getEndParams());
+    context vars of parent = parent replay (getStateMachineContextVariables(parent)) ... merged with output
+    parentStateInst.setOutputParams(child.getEndParams()? or output?)
+    // record parent state finished
+    stateLogStore.recordStateFinished(parentStateInst, context)
+    if (childStatus == FA → exception path? maybe set CURRENT_EXCEPTION? If child failed, parent state fails → parent machine goes to fail? 
+    // continue parent: build context, instruction = next of subState (or exception route), publish sync
+    ...
+    // if parent ends (or fails) → recurse resumeParents(parent)
+}
+```
+
+But wait — the inline case: when child completes inline (no Wait involved), SubStateMachineHandler does this already within the loop; my resumeParents path only triggers when child was SUSPENDED at Wait and later resumed. In that flow, after child machine finishes (say SU), parent must be resumed synchronously — but hold on, could I instead NOT resume parent via special code, but reuse the engine's own machinery? The parent is suspended mid-`SubStateMachineHandler.process`... in DB only (thread returned long ago). To resume parent I must do it manually as above (child machine knows parentId). That's the "synchronously resume its parents through multiple nesting levels".
+
+Now, when child machine *fails* or child Wait *times out*... wait — child timeout → child continues along TimeoutNext (within child machine) — child may then complete (SU at Succeed end or FA at Fail end). Parent resume handles both. If child ends FA: parentStateInst status = FA → and SubStateMachineHandler inline path would have: `callSubMachineStatus=FA` → stateInstance.setStatus(FA) → outputParams → then... route to Next. FA status on parent state → DefaultStatusDecisionStrategy/decideStatus at machine end decides machine FA... Hmm — in inline path, a FA sub-machine state instance → parent machine continues to Next state (not auto-compensation — compensation only triggers via CompensationTrigger states or exception routes... `stateInstance.setStatus(FA)` with exception? `EngineUtils.handleException` sets exception route if subStateMachine has catches. Inline: catch e → context CURRENT_EXCEPTION → handleException → routes via Catch. For resumed path with child FA: mimic: set parent context CURRENT_EXCEPTION? Hmm — simpler: child FA without exception → parent state FA → parent continues to Next? That matches inline behavior for FA-completed-submachine-with-catch-matched-SU. Honestly, edge case; I'll mirror inline semantics: treat child endParams (contains `_statemachine_error_code`? hmm) — keep simple: status FA → if subStateMachine state has Catches configured... I won't overengineer: parent continuation goes to Next; machine-level status decided by status decision strategy at end.
+
+Hmm wait — but there's a wrinkle: `DefaultStatusDecisionStrategy.decideOnEndState` — machine status from state instances. Parent's state list now has the SUB_STATE_MACHINE state inst SU → machine SU → ends → TC report... fine.
+
+Now **compensation** interplay: "Ancestor compensation must cancel active descendant waits, including waits in grandchildren" + "A matching signal and compensation racing for the same Wait activation must have a single winner" + "Cancellation of active descendant waits must precede compensation of any completed predecessor."
+
+Scenario: parent P [A, Sub1, B]; child C [A1, Wait(W), A2]. C suspended at W → P suspended at Sub1. Now operator calls engine.compensate(P). compensateInternal: P reloaded (status WA, is_running false — checkStatus: P not running → OK; compensationStatus null → proceeds). Sets P running=true, recordStateMachineRestarted, context with CompensationTrigger temp state, publishes → CompensationTriggerStateHandler.process → `CompensationHolder.getCurrent(context, true).addStateStack...`? Let me read CompensationTriggerStateHandler + CompensationHolder to understand: trigger builds stack of states to compensate from stateMachineInstance.getStateList() (reverse order, only completed/SU forward states). Then TaskStateRouter.compensateRoute pops states to compensate.
+
+"must precede compensation of any completed predecessor" → the wait-cancel must happen when compensation stack is built (in CompensationTriggerStateHandler) — before executing compensate states. And the waits to cancel: the machine P's *suspended descendants*: P's current state Sub1 is WA (suspended on child C); C's Wait W is WA. Cancelling "active descendant waits" recursively: P → find WA state instances... hmm — P's state inst Sub1 is WA (type SUB_STATE_MACHINE, not WAIT). Its child machine C is found via queryStateMachineInstanceByParentId(generateParentId(Sub1StateInst)). C has WAIT state inst W in WA → cancel (CAS claim → SK). Also recursively: C might itself have a suspended SUB_STATE_MACHINE grandchild with a WAIT → recurse.
+
+After cancelling descendant waits: P's Sub1 state instance is WA — what should it become during compensation? The child machine C is suspended at W... C was cancelled (W→SK). C itself should be... compensated? C's completed predecessors (A1) get compensated? "Ancestor compensation must cancel active descendant waits, including waits in grandchildren. Cancellation of active descendant waits must precede compensation of any completed predecessor." — so yes: compensate(P) → cancels W (grandchild wait... wait, W is child's wait = grandchild of P? P→Sub1→C→W: W is a state of C; from P's perspective it's a descendant wait). Then compensates completed predecessors — P's completed states: [A] → compensate A. What about Sub1 (not completed — WA)? Not a "completed predecessor" — skipped by the stack (only SU states pushed? or all non-compensated?). And C's A1 — does compensating P compensate C's A1? Ideally yes (C is a sub-machine of Sub1; SubStateMachine compensation → `((SubStateMachine) taskState).getCompensateStateObject()` → CompensateSubStateMachineState → which starts child machine in compensate mode...). This existing flow: SubStateMachine compensation exists via `SubStateMachineImpl.getCompensateStateObject()` (a CompensateSubStateMachineStateImpl). How does CompensateSubStateMachineState execute? There's `CompensateSubStateMachineStateParser`/`Impl` and `SubStateMachine` interface. TaskStateRouter.compensateRoute: `compensateState = ((SubStateMachine) taskState).getCompensateStateObject(); instruction.setTemporaryState(compensateState)` — the temporary CompensateSubStateMachineState presumably has ServiceTask semantics? And `ServiceTaskStateHandler`... wait — how does a CompensateSubStateMachineState get executed? `ContextConstants.VAR_NAME_SUB_MACHINE_PARENT_ID` set locally: `compensateState.getName() + VAR_NAME_SUB_MACHINE_PARENT_ID` → hmm. And `SubStateMachine` interface has... Let me read `SubStateMachineImpl.getCompensateStateObject()`. Probably builds a ServiceTaskStateImpl-like compensate state whose ServiceBeanName="stateMachineEngine" serviceMethod="compensate"? Hmm... In Seata statelang docs: SubStateMachine supports `compensateStateObject` auto-generated that calls `StateMachineEngine.compensate` on the sub machine? I recall `SubStateMachineImpl.getCompensateStateObject()` creates a `CompensateSubStateMachineStateImpl` with serviceName="stateMachineEngine", serviceMethod="compensate", and input params passing sub-machine businesskey... So compensating Sub1 → engine.compensate(childMachineId) → child machine compensates its own completed states (A1) → child machine compensationStatus=SU.
+
+BUT — child C is suspended at W (status WA). compensate(C) → C's W active... C's completed state A1 gets compensated; W (WA, not completed) skipped; and W should be cancelled (SK) as part of this. And "A due timeout and compensation racing for the same Wait activation" — cancel via CAS: update W status WA→SK where status=WA — if a signal concurrently claimed it (WA→SU), the CAS fails → compensation "loses" that wait (it's already satisfied → hmm — then what? The requirement says single winner; if signal won, the wait is SU and compensation can't cancel it — it just doesn't cancel; compensation proceeds with predecessors).
+
+OK so the "cancel descendant waits" implementation: recursive function over machine instance: 
+```java
+cancelActiveWaits(machineInstance):
+    for stateInstance in queryStateInstanceListByMachineInstanceId(machine.id):
+        if stateInstance.type == WAIT && stateInstance.status == WA:
+            claim(stateInstance.id, machine.id, expect WA → SK) // CAS
+        if stateInstance.type == SUB_STATE_MACHINE && stateInstance.status == WA:
+            // suspended on child; child machine(s) by parentId = machine.id + SEP + stateInstance.id
+            for child in queryStateMachineInstanceByParentId(generateParentId(stateInstance)):
+                cancelActiveWaits(child)   // recursion → grandchildren waits included
+```
+
+Wait — subtle: claim CAS on state_inst: `UPDATE state_inst SET status='SK', gmt_updated=? WHERE machine_inst_id=? AND id=? AND status='WA'` — affected 0 → lost to signal/timeout.
+
+Where to hook this in? "Ancestor compensation" — compensating P. The CompensationTriggerStateHandler builds the compensation stack from `stateMachineInstance.getStateList()`. I'll add the recursive cancel call there (before stack processing): `WaitStateUtils.cancelActiveDescendantWaits(context, stateMachineInstance)`. Hmm — but wait: compensation of P happens in a fresh context; P's own WA states: none (P's suspended state is Sub1-type WA). If P itself had a WAIT WA state — can P be compensated while suspended at Wait? Only via manual engine.compensate(P) — yes possible. Then P's W cancelled too (loop handles it since P is the root machine passed in).
+
+But ALSO: the trigger handler processes machine P in-memory instance — but the "descendant" walk needs store queries. StateLogStore has queryStateMachineInstanceByParentId + queryStateInstanceListByMachineInstanceId — available on config.getStateLogStore(). But wait — in compensation flow the in-memory state list is loaded (reloaded). For children machines I query store directly. OK.
+
+Hmm — but hold on: does compensateInternal even allow compensating a machine whose status is WA? checkStatus(machine, null, deny={SU}, null, compensationStatus=null, "compensate") — compensationStatus null → checkStatus with compenStatus null & status null → "status and compensationStatus must input at least one" → throws InvalidParameter?? Wait: compensateInternal: `if (stateMachineInstance.getCompensationStatus() != null) { checkStatus(..., compensationStatus, "compensate") }` — if compensationStatus == null (never compensated), checkStatus NOT called. Then proceeds. Good — so compensating a never-compensated suspended machine works.
+
+Then after compensation of P finishes: P's machine status... P's W cancelled; Sub1 compensated via child C compensate... 
+
+Also child machine C compensate flow itself: C reloaded (status WA suspended at W, is_running false) → compensateInternal(C) → trigger → cancelActiveDescendantWaits(C) → C's own W cancelled (SK) → compensate completed predecessors (A1). C machine end: compensationStatus SU, status... decideOnEndState for compensate operation → machine FA? (DefaultStatusDecisionStrategy: on compensate end → if all compensated SU → status FA + compensationStatus SU). Fine.
+
+BUT — the nested Sub1 compensation via `SubStateMachine.getCompensateStateObject()` → that calls engine.compensate(childId) INLINE within P's compensation thread → child C compensation happens within → good, no suspension issues there (C is suspended... compensate(C) reloads C, C not running → OK).
+
+Hmm wait — actually one more check: in compensateInternal(C): `stateMachineInstance.setRunning(true)` + recordStateMachineRestarted — C was suspended (is_running=false, status WA in DB) → restarted → is_running=true... and my "resume" SQL also sets status — recordStateMachineRestarted uses which SQL? If it only sets is_running+gmt_updated, C's status column stays WA while compensating... then endStateMachine → recordStateMachineFinished sets status properly. Minor inconsistency in DB transiently — acceptable? For correctness of fireDueTimeouts: fireDueTimeouts queries machines status='WA'; C status stays WA in DB while compensating → fireDueTimeouts would try to claim C's W → W already SK → CAS fails (0 rows) → no claim. OK safe.
+
+But better: make recordStateMachineRestarted set status too? I need to read its impl. If it uses updateStateMachineRunningStatusSql (is_running, gmt_updated only), I could extend that SQL to also set status='RU'... but that SQL is used in forward flows too where status was FA/UN... setting status RU on forward — forward already sets instance.setStatus(RU) in memory but DB status stays FA until finish. Changing shared SQL could affect other behaviors (e.g., a monitoring tool?). Safer: add dedicated SQLs:
+
+- `UPDATE_STATE_MACHINE_WAIT_SUSPENDED_SQL`: `UPDATE state_machine_inst SET status = 'WA', is_running = 0?, gmt_updated = ? WHERE id = ? and gmt_updated = ?` — hmm is_running column type in DDL? `is_running` boolean. Use setBoolean.
+
+Wait — is there optimistic concurrency needed on machine row? The existing pattern: `WHERE id = ? and gmt_updated = ?` optimistic lock on gmt_updated (Date compare — precision issues in DBs; they handle retry?). For claim semantics I'll do the CAS on the *state* row (status='WA' precondition) — machine row update follows (not CAS-critical; the state claim is the serialization point). For machine suspension update, simple `WHERE id = ?` suffices... but to keep style, maybe keep `gmt_updated` optimistic check with retry like existing code does. Let me read DbAndReportTcStateLogStore impl of recordStateFinished to copy the retry pattern.
+
+Also need new query SQL:
+- `SELECT ... FROM state_machine_inst WHERE status = ?` — for fireDueTimeouts: `QUERY_STATE_MACHINE_INSTANCES_BY_STATUS_SQL`.
+
+Hmm wait — actually, do I even need the machine-status query? Alternative: query state_inst for WAIT+WA states directly: `SELECT machine_inst_id, id, ... FROM state_inst WHERE type='Wait' AND status='WA'` — then per machine load machine instance. This directly finds activations! Simpler and handles the case of a machine whose status somehow isn't WA but has WA wait (shouldn't happen). But ALSO parent machines suspended on child (SUB_STATE_MACHINE WA states) — their waits live in child machines — found via child machine's WA wait states? The child machine has status WA and its WAIT state is found by the state query. So state-level query finds all waits globally. 
+
+But careful: `queryWaitStateInstances...` then for each: load machine instance (getStateMachineInstance), check machine status WA (if machine already resumed by signal concurrently... CAS protects anyway). Compute deadline: need the Wait state definition: machine.getMachineId() → repo.getStateMachineById → getState(stateInstance.getName()) → WaitState.getTimeout() → if null → indefinite → skip. Deadline = stateInstance.getGmtStarted() + timeout. If deadline <= now → claim CAS WA→SK → if won: resume machine along TimeoutNext.
+
+fireDueTimeouts counts claims won. Query SQL:
+
+```sql
+SELECT STATE_INSTANCE_FIELDS FROM state_inst WHERE type = ? AND status = ?
+```
+
+Hmm — but `type` column stores StateType string ("Wait"). status stores enum name "WA". OK.
+
+Now — DDL check: state_inst `type` varchar; the `type` value written by recordStateStarted = stateInstance.getType() — what's stored, enum name "WAIT" or code "Wait"? StateType enum: `getStateType(String stateType)` case-insensitive; values like SERVICE_TASK("ServiceTask")? and `name()` = SERVICE_TASK. stateInstance.setType(StateType) → serialized as `type.name()` or `getTypeString`? In DbAndReportTcStateLogStore.recordStateStarted: `ps.setString(?, stateInstance.getType()...)` — probably `getType().name()` or a getter `getType` returns StateType → getString? Let me check when reading the impl: likely `String.valueOf(stateInstance.getType())`? There's a getter... StateInstanceImpl.getType returns StateType; DB store does `ps.setString(4, stateInstance.getType().name())`? Hmm — wait, in the row-mapper I saw: `stateInstance.setType(StateType.getStateType(resultSet.getString("type")))` — case-insensitive lookup, so DB could store "Wait" or "WAIT". Need to match in my query: use same encoding as recordStateStarted writes. I'll read the impl.
+
+Let me now also read the remaining engine pieces. Next batch:
+1. DbAndReportTcStateLogStore.java full (0-1020)
+2. ProcessControllerImpl + DefaultRouterHandler + CustomizeBusinessProcessor + ProcessCtrlEventPublisher + ProcessCtrlEventConsumer + DirectEventBus
+3. ProcessContextBuilder + ProcessContextImpl
+4. DomainConstants (statelang) full
+5. ParameterUtils full
+6. CompensationHolder + CompensationTriggerStateHandler + DefaultStatusDecisionStrategy
+7. AbstractStateMachineConfig + DbStateMachineConfig (spring) + StateMachineConfig interface
+8. EndStateRouter + EndStateRouterInterceptor
+
+Then statelang files. Then compatible. Then tests. Then implement.
+
+Let me batch read now. DbAndReportTcStateLogStore is 1043 lines — I read 1021-1043. Read 1-700 and 700-1021.
+Now I have the full engine picture. Reading the store implementation, proctrl loop, and supporting utils next.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java", "limit": 340}
+<path>/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.store.db;
+18: 
+19: import org.apache.seata.common.Constants;
+20: import org.apache.seata.common.exception.FrameworkErrorCode;
+21: import org.apache.seata.common.exception.StoreException;
+22: import org.apache.seata.common.util.CollectionUtils;
+23: import org.apache.seata.common.util.StringUtils;
+24: import org.apache.seata.core.context.RootContext;
+25: import org.apache.seata.core.exception.TransactionException;
+26: import org.apache.seata.core.model.BranchStatus;
+27: import org.apache.seata.core.model.BranchType;
+28: import org.apache.seata.core.model.GlobalStatus;
+29: import org.apache.seata.saga.engine.StateMachineConfig;
+30: import org.apache.seata.saga.engine.config.DbStateMachineConfig;
+31: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+32: import org.apache.seata.saga.engine.impl.DefaultStateMachineConfig;
+33: import org.apache.seata.saga.engine.pcext.StateInstruction;
+34: import org.apache.se
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/impl/ProcessControllerImpl.java"}
+<path>/workspace/repo/saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/impl/ProcessControllerImpl.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.proctrl.impl;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.exception.FrameworkException;
+21: import org.apache.seata.saga.proctrl.ProcessContext;
+22: import org.apache.seata.saga.proctrl.ProcessController;
+23: import org.apache.seata.saga.proctrl.process.BusinessProcessor;
+24: import org.slf4j.Logger;
+25: import org.slf4j.LoggerFactory;
+26: 
+27: /**
+28:  * Default implementation of Process controller
+29:  *
+30:  */
+31: public class ProcessControllerImpl implements ProcessController {
+32: 
+33:     private static final Logger LOGGER = LoggerFactory.getLogger(ProcessControllerImpl.class);
+34: 
+35:     private BusinessProcessor businessProcessor;
+36: 
+37:     @Override
+38:     public void process(ProcessContext context) throws FrameworkException {
+39: 
+40:         try {
+41: 
+42:             businessProcessor.process(context);
+43: 
+44:             businessProcessor.route(context);
+[truncated]
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/process/impl/CustomizeBusinessProcessor.java"}
+<path>/workspace/repo/saga/seata-saga-processctrl/src/main/java/org/apache/seata/saga/proctrl/process/impl/CustomizeBusinessProcessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.proctrl.process.impl;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.exception.FrameworkException;
+21: import org.apache.seata.saga.proctrl.ProcessContext;
+22: import org.apache.seata.saga.proctrl.ProcessType;
+23: import org.apache.seata.saga.proctrl.handler.ProcessHandler;
+24: import org.apache.seata.saga.proctrl.handler.RouterHandler;
+25: import org.apache.seata.saga.proctrl.process.BusinessProcessor;
+26: import org.slf4j.Logger;
+27: import org.slf4j.LoggerFactory;
+28: 
+29: import java.util.Map;
+30: 
+31: /**
+32:  * Customizable Business Processor
+33:  *
+34:  */
+35: public class CustomizeBusinessProcessor implements BusinessProcessor {
+36: 
+37:     private static final Logger LOGGER = LoggerFactory.getLogger(CustomizeBusinessProcessor.class);
+38: 
+39:     private Map<String, ProcessHandler> processHandlers;
+40: 
+41:     private Map<String, RouterHandler> routerHan
+[truncated]

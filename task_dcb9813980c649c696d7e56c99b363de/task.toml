@@ -1,0 +1,52 @@
+# =============================================================================
+# DeepSWE v1.1 task.toml TEMPLATE (pipeline-adapted)
+# CONSTANT lines are left as-is. {{PLACEHOLDER}} lines are per-task and must be
+# filled in. Adapted from the DeepSWE delivery template: the docker_image pull
+# line is dropped (Harbor/Lighthouse builds environment/Dockerfile directly),
+# [environment] workdir is pinned to /app, and the delivery template's
+# verifier.environment table is dropped — Harbor rejects it together with
+# environment_mode="shared", and a task it rejects silently falls off the
+# native-Harbor grading path.
+# =============================================================================
+schema_version = "1.1"                                  # CONSTANT
+artifacts = ["/logs/artifacts/model.patch"]             # CONSTANT
+
+[task]
+name = "mercor/druid-value-range-window-framing-engine"                              # always "mercor/<task_id>"
+description = ""                                         # CONSTANT (always empty)
+authors = []                                            # CONSTANT
+keywords = []                                           # CONSTANT
+
+[metadata]
+ext_id              = "a984f721c5b8e309d412760e15264b38"                       # 32-char lowercase hex id
+task_id             = "druid-value-range-window-framing-engine"                      # lowercase kebab-case, <=56 chars
+display_title       = "Support Value-Based RANGE Window Framing in Druid Window Functions"               # human title, <=120 chars
+display_description = "Add native value-based RANGE window framing support across the window operator query engine, framed on-heap aggregation, first/last value processors, and SQL planner/validator."         # one sentence, <=240 chars
+original_title      = "Support Value-Based (RANGE) Window Framing in Druid Window Functions"             # human-authored spec/feature title
+category            = "feature_request"   # ~94% feature_request
+language            = "java"
+repository_url       = "https://github.com/apache/druid"
+base_commit_hash    = "ba8da866530d3897a31381fbb5c3c7a9c5dd0f43"                  # must equal tests/config.json base_commit
+
+[verifier]
+environment_mode = "shared"                           # CONSTANT (v1.1 grades in a pristine container)
+timeout_sec      = 1800.0                                # CONSTANT (verifier grading timeout, 30 min)
+
+[verifier.env]                                          # CONSTANT (always empty)
+
+[agent]
+timeout_sec = 5400.0                                    # CONSTANT (agent work budget, 90 min)
+
+[environment]
+build_timeout_sec = 1800.0                              # CONSTANT
+workdir      = "/app"                                    # CONSTANT (the repo clone)
+os           = "linux"                                   # CONSTANT
+cpus         = 2                                         # CONSTANT
+memory_mb    = 8192                                      # CONSTANT
+storage_mb   = 20480                                     # CONSTANT
+gpus         = 0                                         # CONSTANT
+allow_internet = false                                   # CONSTANT
+mcp_servers  = []                                        # CONSTANT
+
+[environment.env]                                       # CONSTANT (always empty)
+[solution.env]                                          # CONSTANT (always empty)

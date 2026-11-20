@@ -1,0 +1,1497 @@
+diff --git a/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java b/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java
+new file mode 100644
+index 0000000000..4a63d126c0
+--- /dev/null
++++ b/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java
+@@ -0,0 +1,284 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one
++ * or more contributor license agreements.  See the NOTICE file
++ * distributed with this work for additional information
++ * regarding copyright ownership.  The ASF licenses this file
++ * to you under the Apache License, Version 2.0 (the
++ * "License"); you may not use this file except in compliance
++ * with the License.  You may obtain a copy of the License at
++ *
++ *   http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing,
++ * software distributed under the License is distributed on an
++ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
++ * KIND, either express or implied.  See the License for the
++ * specific language governing permissions and limitations
++ * under the License.
++ */
++
++package org.apache.druid.query.operator.window;
++
++import com.google.common.collect.ImmutableList;
++import org.apache.druid.error.DruidException;
++import org.apache.druid.query.rowsandcols.RowsAndColumns;
++import org.apache.druid.query.rowsandcols.column.Column;
++import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
++import org.apache.druid.query.rowsandcols.semantic.ClusteredGroupPartitioner;
++
++/**
++ * Resolves the frame boundaries of a value-based {@link WindowFrame.Range} frame.
++ * <p>
++ * The input must already be sorted, within each partition, by the ordering column of the frame.  Rows whose
++ * ordering value is null are expected to be clustered at the start (ascending) or end (descending) of the
++ * partition, as produced by the standard sort machinery.
++ * <p>
++ * Rows are grouped into peer groups (rows that share the same ordering value).  All rows of a peer group get
++ * the same frame: the contiguous run of rows whose value falls between the current row's value plus the
++ * lower offset and the current row's value plus the upper offset.  A row whose ordering value is null
++ * resolves any finite bound to the corresponding edge of the null run.
++ */
++public class RangeFrameResolver
++{
++  /**
++   * Boundary positions of the peer groups; group {@code g} covers rows [{@code groupBoundaries[g]},
++   * {@code groupBoundaries[g + 1]}).
++   */
++  private final int[] groupBoundaries;
++  /**
++   * Frame start (inclusive) of each peer group.
++   */
++  private final int[] frameStarts;
++  /**
++   * Frame end (exclusive, never smaller than the frame start) of each peer group.
++   */
++  private final int[] frameEnds;
++
++  public RangeFrameResolver(final RowsAndColumns rac, final WindowFrame.Range frame)
++  {
++    final String orderColumn = frame.getOrderBy().getColumn();
++    final Column orderColumnObj = rac.findColumn(orderColumn);
++    if (orderColumnObj == null) {
++      throw DruidException.defensive(
++          "Column [%s] specified in WindowFrame [%s] does not exist",
++          orderColumn,
++          frame
++      );
++    }
++    final ColumnAccessor accessor = orderColumnObj.toAccessor();
++    final int numRows = accessor.numRows();
++
++    final boolean hasFiniteBound = frame.getLowerOffset() != null || frame.getUpperOffset() != null;
++    if (hasFiniteBound && !accessor.getType().isNumeric()) {
++      throw DruidException.defensive(
++          "WindowFrame [%s] requires a numeric ordering column, found column [%s] of type [%s]",
++          frame,
++          orderColumn,
++          accessor.getType()
++      );
++    }
++
++    this.groupBoundaries = ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(ImmutableList.of(orderColumn));
++    final int numGroups = groupBoundaries.length == 0 ? 0 : groupBoundaries.length - 1;
++    this.frameStarts = new int[numGroups];
++    this.frameEnds = new int[numGroups];
++
++    final boolean ascending = frame.getOrderBy().getDirection()
++                                                     .getDirectionInt() > 0;
++    final Double lowerOffset = frame.getLowerOffset();
++    final Double upperOffset = frame.getUpperOffset();
++
++    // Null values sort before all non-null values when ascending and after all non-null values when
++    // descending, so the null run is a prefix (ascending) or suffix (descending) of the partition.
++    final int nullRunStart;
++    final int nullRunEnd;
++    if (ascending) {
++      nullRunStart = 0;
++      nullRunEnd = countLeadingNulls(accessor, numRows);
++    } else {
++      nullRunEnd = numRows;
++      nullRunStart = numRows - countTrailingNulls(accessor, numRows);
++    }
++
++    for (int g = 0; g < numGroups; g++) {
++      final int groupStart = groupBoundaries[g];
++      if (accessor.isNull(groupStart)) {
++        // The current row's value is null; finite bounds resolve to the edges of the null run.
++        frameStarts[g] = lowerOffset == null ? 0 : nullRunStart;
++        frameEnds[g] = upperOffset == null ? numRows : nullRunEnd;
++        continue;
++      }
++
++      final double value = accessor.getDouble(groupStart);
++      if (ascending) {
++        frameStarts[g] = lowerOffset == null
++                        ? 0
++                        : lowerBoundAscending(accessor, nullRunEnd, numRows, value + lowerOffset);
++        frameEnds[g] = upperOffset == null
++                        ? numRows
++                        : upperBoundAscending(accessor, nullRunEnd, numRows, value + upperOffset);
++      } else {
++        frameStarts[g] = lowerOffset == null
++                        ? 0
++                        : lowerBoundDescending(accessor, 0, nullRunStart, value - lowerOffset);
++        frameEnds[g] = upperOffset == null
++                        ? numRows
++                        : upperBoundDescending(accessor, 0, nullRunStart, value - upperOffset);
++      }
++      // The frame can be empty (and the bounds can even be inverted) if the offset interval does not
++      // contain any value; normalize so that the frame end is never before the frame start.
++      frameEnds[g] = Math.max(frameStarts[g], frameEnds[g]);
++    }
++  }
++
++  public int getNumGroups()
++  {
++    return groupBoundaries.length == 0 ? 0 : groupBoundaries.length - 1;
++  }
++
++  /**
++   * First row (inclusive) of peer group {@code group}.
++   */
++  public int getGroupStart(int group)
++  {
++    return groupBoundaries[group];
++  }
++
++  /**
++   * One past the last row (exclusive) of peer group {@code group}.
++   */
++  public int getGroupEnd(int group)
++  {
++    return groupBoundaries[group + 1];
++  }
++
++  /**
++   * First row (inclusive) of the frame of peer group {@code group}.
++   */
++  public int getFrameStart(int group)
++  {
++    return frameStarts[group];
++  }
++
++  /**
++   * One past the last row (exclusive) of the frame of peer group {@code group}.
++   */
++  public int getFrameEnd(int group)
++  {
++    return frameEnds[group];
++  }
++
++  private static int countLeadingNulls(final ColumnAccessor accessor, final int numRows)
++  {
++    int nulls = 0;
++    while (nulls < numRows && accessor.isNull(nulls)) {
++      nulls++;
++    }
++    return nulls;
++  }
++
++  private static int countTrailingNulls(final ColumnAccessor accessor, final int numRows)
++  {
++    int nulls = 0;
++    while (nulls < numRows && accessor.isNull(numRows - 1 - nulls)) {
++      nulls++;
++    }
++    return nulls;
++  }
++
++  /**
++   * First row in [{@code lo}, {@code hi}) whose value is at least {@code target}, assuming the region is
++   * sorted ascending.  Returns {@code hi} if there is no such row.
++   */
++  private static int lowerBoundAscending(
++      final ColumnAccessor accessor,
++      final int lo,
++      final int hi,
++      final double target
++  )
++  {
++    int low = lo;
++    int high = hi;
++    while (low < high) {
++      final int mid = (low + high) >>> 1;
++      if (accessor.getDouble(mid) < target) {
++        low = mid + 1;
++      } else {
++        high = mid;
++      }
++    }
++    return low;
++  }
++
++  /**
++   * First row in [{@code lo}, {@code hi}) whose value is greater than {@code target}, assuming the region is
++   * sorted ascending.  Returns {@code hi} if there is no such row.
++   */
++  private static int upperBoundAscending(
++      final ColumnAccessor accessor,
++      final int lo,
++      final int hi,
++      final double target
++  )
++  {
++    int low = lo;
++    int high = hi;
++    while (low < high) {
++      final int mid = (low + high) >>> 1;
++      if (accessor.getDouble(mid) <= target) {
++        low = mid + 1;
++      } else {
++        high = mid;
++      }
++    }
++    return low;
++  }
++
++  /**
++   * First row in [{@code lo}, {@code hi}) whose value is at most {@code target}, assuming the region is
++   * sorted descending.  Returns {@code hi} if there is no such row.
++   */
++  private static int lowerBoundDescending(
++      final ColumnAccessor accessor,
++      final int lo,
++      final int hi,
++      final double target
++  )
++  {
++    int low = lo;
++    int high = hi;
++    while (low < high) {
++      final int mid = (low + high) >>> 1;
++      if (accessor.getDouble(mid) > target) {
++        low = mid + 1;
++      } else {
++        high = mid;
++      }
++    }
++    return low;
++  }
++
++  /**
++   * First row in [{@code lo}, {@code hi}) whose value is less than {@code target}, assuming the region is
++   * sorted descending.  Returns {@code hi} if there is no such row.
++   */
++  private static int upperBoundDescending(
++      final ColumnAccessor accessor,
++      final int lo,
++      final int hi,
++      final double target
++  )
++  {
++    int low = lo;
++    int high = hi;
++    while (low < high) {
++      final int mid = (low + high) >>> 1;
++      if (accessor.getDouble(mid) >= target) {
++        low = mid + 1;
++      } else {
++        high = mid;
++      }
++    }
++    return low;
++  }
++}
+diff --git a/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java b/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
+index 2dd827d323..a97c22f5a4 100644
+--- a/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
++++ b/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
+@@ -26,6 +26,7 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo;
+ import com.google.common.collect.ImmutableList;
+ import com.google.common.collect.Lists;
+ import org.apache.druid.annotations.SubclassesMustOverrideEqualsAndHashCode;
++import org.apache.druid.query.operator.ColumnWithDirection;
+ 
+ import javax.annotation.Nullable;
+ 
+@@ -36,6 +37,7 @@ import java.util.Objects;
+ @JsonSubTypes(value = {
+     @JsonSubTypes.Type(name = "rows", value = WindowFrame.Rows.class),
+     @JsonSubTypes.Type(name = "groups", value = WindowFrame.Groups.class),
++    @JsonSubTypes.Type(name = "range", value = WindowFrame.Range.class),
+ })
+ @SubclassesMustOverrideEqualsAndHashCode
+ public interface WindowFrame
+@@ -55,6 +57,22 @@ public interface WindowFrame
+     return new WindowFrame.Groups(lowerOffset, upperOffset, orderByColumns);
+   }
+ 
++  /**
++   * Creates a value-based RANGE frame.
++   *
++   * @param lowerOffset signed distance, in the value space of the ordering column, from the current row's
++   *                    value to the frame's lower edge; negative for PRECEDING, positive for FOLLOWING,
++   *                    null if the frame is unbounded on the lower side
++   * @param upperOffset signed distance, in the value space of the ordering column, from the current row's
++   *                    value to the frame's upper edge; negative for PRECEDING, positive for FOLLOWING,
++   *                    null if the frame is unbounded on the upper side
++   * @param orderBy     the single ordering column that the offsets apply to
++   */
++  static Range range(@Nullable Double lowerOffset, @Nullable Double upperOffset, ColumnWithDirection orderBy)
++  {
++    return new Range(lowerOffset, upperOffset, orderBy);
++  }
++
+   static WindowFrame forOrderBy(String... orderByColumns)
+   {
+     return groups(null, 0, Lists.newArrayList(orderByColumns));
+@@ -200,6 +218,84 @@ public interface WindowFrame
+     }
+   }
+ 
++  /**
++   * A value-based RANGE frame.  The frame of a row is the set of rows whose value in the single ordering
++   * column falls between the current row's value plus the lower offset and the current row's value plus the
++   * upper offset.  A null offset means the frame is unbounded (positionally) on that side.  Rows whose
++   * ordering value is null resolve finite bounds to the edges of the contiguous run of null values.
++   */
++  class Range implements WindowFrame
++  {
++    @JsonProperty
++    private final Double lowerOffset;
++    @JsonProperty
++    private final Double upperOffset;
++    @JsonProperty
++    private final ColumnWithDirection orderBy;
++
++    @JsonCreator
++    public Range(
++        @JsonProperty("lowerOffset") @Nullable Double lowerOffset,
++        @JsonProperty("upperOffset") @Nullable Double upperOffset,
++        @JsonProperty("orderBy") ColumnWithDirection orderBy
++    )
++    {
++      this.lowerOffset = lowerOffset;
++      this.upperOffset = upperOffset;
++      this.orderBy = orderBy;
++    }
++
++    @Nullable
++    public Double getLowerOffset()
++    {
++      return lowerOffset;
++    }
++
++    @Nullable
++    public Double getUpperOffset()
++    {
++      return upperOffset;
++    }
++
++    public ColumnWithDirection getOrderBy()
++    {
++      return orderBy;
++    }
++
++    @Override
++    public int hashCode()
++    {
++      return Objects.hash(lowerOffset, upperOffset, orderBy);
++    }
++
++    @Override
++    public boolean equals(Object obj)
++    {
++      if (this == obj) {
++        return true;
++      }
++      if (obj == null) {
++        return false;
++      }
++      if (getClass() != obj.getClass()) {
++        return false;
++      }
++      Range other = (Range) obj;
++      return Objects.equals(lowerOffset, other.lowerOffset)
++          && Objects.equals(upperOffset, other.upperOffset)
++          && Objects.equals(orderBy, other.orderBy);
++    }
++
++    @Override
++    public String toString()
++    {
++      return "WindowFrame.Range [" +
++          "lowerOffset=" + lowerOffset +
++          ", upperOffset=" + upperOffset +
++          ", orderBy=" + orderBy + "]";
++    }
++  }
++
+   @SuppressWarnings("unchecked")
+   @Nullable
+   default <T extends WindowFrame> T unwrap(Class<T> clazz)
+diff --git a/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java b/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java
+index ce209fc064..6d0cac36c0 100644
+--- a/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java
++++ b/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java
+@@ -23,6 +23,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
+ import org.apache.druid.error.DruidException;
+ import org.apache.druid.java.util.common.ISE;
+ import org.apache.druid.query.operator.window.Processor;
++import org.apache.druid.query.operator.window.RangeFrameResolver;
+ import org.apache.druid.query.operator.window.WindowFrame;
+ import org.apache.druid.query.rowsandcols.RowsAndColumns;
+ import org.apache.druid.query.rowsandcols.column.Column;
+@@ -142,10 +143,9 @@ public abstract class WindowValueProcessorBase implements Processor
+       return;
+     }
+ 
+-    // Note that this logic would not be correct for SQL like:
+-    //   FIRST_VALUE(x) OVER (ORDER BY t RANGE BETWEEN 1 PRECEDING AND CURRENT ROW)
+-    // The SQL validator will reject queries with offset-based RANGE frames such as this.
+-    // See https://github.com/apache/druid/issues/15767 for more details.
++    // Note that Groups-based framing is not exactly the same as value-based RANGE framing: two rows that
++    // share all the ordering column values form one peer group, and GROUPS offsets are counted in peer
++    // groups instead of in the value space of the ordering column.
+     final WindowFrame.Groups groupsFrame = frame.unwrap(WindowFrame.Groups.class);
+     if (groupsFrame != null) {
+       final int[] boundaries =
+@@ -169,6 +169,25 @@ public abstract class WindowValueProcessorBase implements Processor
+       return;
+     }
+ 
++    final WindowFrame.Range rangeFrame = frame.unwrap(WindowFrame.Range.class);
++    if (rangeFrame != null) {
++      final RangeFrameResolver resolver = new RangeFrameResolver(rac, rangeFrame);
++      final int numGroups = resolver.getNumGroups();
++      for (int g = 0; g < numGroups; g++) {
++        final int frameStart = resolver.getFrameStart(g);
++        final int frameEnd = resolver.getFrameEnd(g);
++        if (frameStart < frameEnd) {
++          final Object value = first
++              ? accessor.getObject(frameStart)
++              : accessor.getObject(frameEnd - 1);
++          for (int i = resolver.getGroupStart(g); i < resolver.getGroupEnd(g); i++) {
++            results[i] = value;
++          }
++        }
++      }
++      return;
++    }
++
+     throw DruidException.defensive("Unable to handle WindowFrame[%s]", frame);
+   }
+ }
+diff --git a/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java b/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java
+index 7520f6ea0a..f9a15241a7 100644
+--- a/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java
++++ b/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java
+@@ -28,6 +28,7 @@ import org.apache.druid.query.aggregation.Aggregator;
+ import org.apache.druid.query.aggregation.AggregatorFactory;
+ import org.apache.druid.query.dimension.DimensionSpec;
+ import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
++import org.apache.druid.query.operator.window.RangeFrameResolver;
+ import org.apache.druid.query.operator.window.WindowFrame;
+ import org.apache.druid.query.operator.window.WindowFrame.Groups;
+ import org.apache.druid.query.operator.window.WindowFrame.OffsetFrame;
+@@ -121,11 +122,20 @@ public class DefaultFramedOnHeapAggregatable implements FramedOnHeapAggregatable
+     if (groupsFrame != null) {
+       return buildGroupIteratorFor(rac, groupsFrame);
+     }
++    WindowFrame.Range rangeFrame = frame.unwrap(WindowFrame.Range.class);
++    if (rangeFrame != null) {
++      return buildRangeIteratorFor(rac, rangeFrame);
++    }
+     throw DruidException.defensive("Unable to handle WindowFrame [%s]!", frame);
+   }
+ 
+   private static boolean isEffectivelyUnbounded(WindowFrame frame, int numRows)
+   {
++    WindowFrame.Range rangeFrame = frame.unwrap(WindowFrame.Range.class);
++    if (rangeFrame != null) {
++      // A value-based frame that does not exclude any value covers the whole partition.
++      return rangeFrame.getLowerOffset() == null && rangeFrame.getUpperOffset() == null;
++    }
+     OffsetFrame offsetFrame = frame.unwrap(WindowFrame.OffsetFrame.class);
+     if (offsetFrame.getLowerOffsetClamped(numRows) == -numRows
+         && offsetFrame.getUpperOffsetClamped(numRows) == numRows) {
+@@ -156,6 +166,41 @@ public class DefaultFramedOnHeapAggregatable implements FramedOnHeapAggregatable
+     return new GroupIteratorForWindowFrame(frame, groupBoundaries);
+   }
+ 
++  private static Iterable<AggInterval> buildRangeIteratorFor(AppendableRowsAndColumns rac, WindowFrame.Range frame)
++  {
++    final RangeFrameResolver resolver = new RangeFrameResolver(rac, frame);
++    final int numGroups = resolver.getNumGroups();
++    return () -> new Iterator<AggInterval>()
++    {
++      int currentGroupIndex = 0;
++
++      @Override
++      public boolean hasNext()
++      {
++        return currentGroupIndex < numGroups;
++      }
++
++      @Override
++      public AggInterval next()
++      {
++        if (!hasNext()) {
++          throw new IllegalStateException();
++        }
++        int groupId = currentGroupIndex++;
++        return new AggInterval(
++            Interval.of(
++                resolver.getGroupStart(groupId),
++                resolver.getGroupEnd(groupId)
++            ),
++            Interval.of(
++                resolver.getFrameStart(groupId),
++                resolver.getFrameEnd(groupId)
++            )
++        );
++      }
++    };
++  }
++
+   static class GroupIteratorForWindowFrame implements Iterable<AggInterval>
+   {
+     private final int[] groupBoundaries;
+diff --git a/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java b/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java
+index 855f4694f4..1f843c4a17 100644
+--- a/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java
++++ b/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java
+@@ -43,6 +43,14 @@ public class WindowFrameTest
+         .verify();
+   }
+ 
++  @Test
++  public void testEqualsRange()
++  {
++    EqualsVerifier.forClass(WindowFrame.Range.class)
++        .usingGetClass()
++        .verify();
++  }
++
+   @Test
+   public void testOffsetFrameUnbounded()
+   {
+diff --git a/processing/src/test/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessorTest.java b/processing/src/test/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessorTest.java
+index b0db3424f8..cdde85431f 100644
+--- a/processing/src/test/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessorTest.java
++++ b/processing/src/test/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessorTest.java
+@@ -26,15 +26,22 @@ import org.apache.druid.query.aggregation.AggregatorFactory;
+ import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
+ import org.apache.druid.query.aggregation.LongMaxAggregatorFactory;
+ import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
++import org.apache.druid.query.operator.ColumnWithDirection;
+ import org.apache.druid.query.rowsandcols.AsOnlyTestRowsAndColumns;
+ import org.apache.druid.query.rowsandcols.MapOfColumnsRowsAndColumns;
+ import org.apache.druid.query.rowsandcols.NoAsRowsAndColumns;
+ import org.apache.druid.query.rowsandcols.RowsAndColumns;
++import org.apache.druid.query.rowsandcols.column.Column;
+ import org.apache.druid.query.rowsandcols.column.IntArrayColumn;
++import org.apache.druid.query.rowsandcols.column.ObjectArrayColumn;
+ import org.apache.druid.query.rowsandcols.semantic.FramedOnHeapAggregatable;
++import org.apache.druid.segment.column.ColumnType;
+ import org.junit.jupiter.api.Assertions;
+ import org.junit.jupiter.api.Test;
+ 
++import java.util.LinkedHashMap;
++import java.util.Map;
++
+ @SuppressWarnings("unchecked")
+ public class WindowFramedAggregateProcessorTest
+ {
+@@ -92,6 +99,152 @@ public class WindowFramedAggregateProcessorTest
+         .validate(processed);
+   }
+ 
++  @Test
++  public void testRangeFrameWithSum()
++  {
++    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING
++    // Keys sorted ascending: 1, 2, 2, 4, 7
++    final WindowFrame theFrame = WindowFrame.range(null, 1.0, ColumnWithDirection.ascending("k"));
++    final AggregatorFactory[] theAggs = {
++        new LongSumAggregatorFactory("sum", "val")
++    };
++    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);
++
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(ImmutableMap.of(
++        "k", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}),
++        "val", new IntArrayColumn(new int[]{1, 2, 3, 4, 5})
++    ));
++
++    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));
++
++    // k=1 (row 0): frame = rows with value in [-inf, 2] -> rows 0, 1, 2 -> sum 1 + 2 + 3 = 6
++    // k=2 (rows 1, 2): frame = rows with value in [-inf, 3] -> rows 0, 1, 2 -> sum 6
++    // k=4 (row 3): frame = rows with value in [-inf, 5] -> rows 0..3 -> sum 1 + 2 + 3 + 4 = 10
++    // k=7 (row 4): frame = all rows -> sum 1 + 2 + 3 + 4 + 5 = 15
++    // Rows 1 and 2 are peers (both k=2) and get identical output.
++    new RowsAndColumnsHelper()
++        .expectColumn("k", new int[]{1, 2, 2, 4, 7})
++        .expectColumn("val", new int[]{1, 2, 3, 4, 5})
++        .expectColumn("sum", new int[]{6, 6, 6, 10, 15})
++        .allColumnsRegistered()
++        .validate(processed);
++  }
++
++  @Test
++  public void testRangeFrameWithSumEmptyFrames()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 2 PRECEDING AND 1 PRECEDING — frame can exclude the current row
++    final WindowFrame theFrame = WindowFrame.range(-2.0, -1.0, ColumnWithDirection.ascending("k"));
++    final AggregatorFactory[] theAggs = {
++        new LongSumAggregatorFactory("sum", "val")
++    };
++    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);
++
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(ImmutableMap.of(
++        "k", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}),
++        "val", new IntArrayColumn(new int[]{1, 2, 3, 4, 5})
++    ));
++
++    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));
++
++    // k=1 (row 0): frame = rows with value in [-1, 0] -> empty -> aggregation of zero rows (sum = null)
++    // k=2 (rows 1, 2): frame = rows with value in [0, 1] -> row 0 -> sum 1
++    // k=4 (row 3): frame = rows with value in [2, 3] -> rows 1, 2 -> sum 2 + 3 = 5
++    // k=7 (row 4): frame = rows with value in [5, 6] -> empty -> sum null
++    // This matches the zero-row aggregation of the existing ROWS frame machinery.
++    new RowsAndColumnsHelper()
++        .expectColumn("k", new int[]{1, 2, 2, 4, 7})
++        .expectColumn("val", new int[]{1, 2, 3, 4, 5})
++        .expectColumn("sum", new Object[]{null, 1L, 1L, 5L, null}, ColumnType.LONG)
++        .allColumnsRegistered()
++        .validate(processed);
++  }
++
++  @Test
++  public void testRangeFrameWithSumDescending()
++  {
++    // ORDER BY k DESC RANGE BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING
++    // Keys sorted descending: 7, 4, 2, 2, 1
++    final WindowFrame theFrame = WindowFrame.range(null, 1.0, ColumnWithDirection.descending("k"));
++    final AggregatorFactory[] theAggs = {
++        new LongSumAggregatorFactory("sum", "val")
++    };
++    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);
++
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(ImmutableMap.of(
++        "k", new IntArrayColumn(new int[]{7, 4, 2, 2, 1}),
++        "val", new IntArrayColumn(new int[]{1, 2, 3, 4, 5})
++    ));
++
++    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));
++
++    // k=7 (row 0): frame = rows with value in [6, +inf) in descending order -> row 0 -> sum 1
++    // k=4 (row 1): frame = rows with value in [3, +inf) -> rows 0, 1 -> sum 1 + 2 = 3
++    // k=2 (rows 2, 3): frame = rows with value in [1, +inf) -> rows 0..4 -> sum 1 + 2 + 3 + 4 + 5 = 15
++    // k=1 (row 4): frame = rows with value in [0, +inf) -> all rows -> sum 15
++    new RowsAndColumnsHelper()
++        .expectColumn("k", new int[]{7, 4, 2, 2, 1})
++        .expectColumn("val", new int[]{1, 2, 3, 4, 5})
++        .expectColumn("sum", new int[]{1, 3, 15, 15, 15})
++        .allColumnsRegistered()
++        .validate(processed);
++  }
++
++  @Test
++  public void testRangeFrameWholePartition()
++  {
++    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
++    // A Range frame without offsets covers the whole partition, like WindowFrame.unbounded().
++    final WindowFrame theFrame = WindowFrame.range(null, null, ColumnWithDirection.ascending("k"));
++    final AggregatorFactory[] theAggs = {
++        new LongSumAggregatorFactory("sum", "val")
++    };
++    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);
++
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(ImmutableMap.of(
++        "k", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}),
++        "val", new IntArrayColumn(new int[]{1, 2, 3, 4, 5})
++    ));
++
++    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));
++
++    new RowsAndColumnsHelper()
++        .expectColumn("k", new int[]{1, 2, 2, 4, 7})
++        .expectColumn("val", new int[]{1, 2, 3, 4, 5})
++        .expectColumn("sum", new int[]{15, 15, 15, 15, 15})
++        .allColumnsRegistered()
++        .validate(processed);
++  }
++
++  @Test
++  public void testRangeFrameWithNulls()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING; nulls sort first
++    final WindowFrame theFrame = WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending("k"));
++    final AggregatorFactory[] theAggs = {
++        new LongSumAggregatorFactory("sum", "val")
++    };
++    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);
++
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG));
++    map.put("val", new IntArrayColumn(new int[]{1, 2, 3, 4, 5}));
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));
++
++    // Null rows (rows 0, 1): finite bounds resolve to the null run, [0, 2) -> sum 1 + 2 = 3
++    // k=2 (row 2): frame = rows with value in [1, 3] -> row 2 -> sum 3
++    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> sum 4
++    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> sum 5
++    new RowsAndColumnsHelper()
++        .expectColumn("k", ColumnType.LONG, null, null, 2, 4, 7)
++        .expectColumn("val", new int[]{1, 2, 3, 4, 5})
++        .expectColumn("sum", new int[]{3, 3, 3, 4, 5})
++        .allColumnsRegistered()
++        .validate(processed);
++  }
++
+   @Test
+   public void testEquals()
+   {
+diff --git a/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java b/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java
+index 4cb43d8a1d..c582dc4682 100644
+--- a/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java
++++ b/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java
+@@ -20,6 +20,7 @@
+ package org.apache.druid.query.operator.window.value;
+ 
+ import com.google.common.collect.ImmutableList;
++import org.apache.druid.query.operator.ColumnWithDirection;
+ import org.apache.druid.query.operator.window.ComposingProcessor;
+ import org.apache.druid.query.operator.window.RowsAndColumnsHelper;
+ import org.apache.druid.query.operator.window.WindowFrame;
+@@ -262,10 +263,233 @@ public class WindowFirstProcessorTest
+         .validate(results);
+   }
+ 
++  @Test
++  public void testFirstWithRangeFrame()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING
++    // Keys sorted ascending: 1, 2, 2, 4, 7
++    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=1 (row 0): frame = rows with value in [0, 2] -> rows 0, 1, 2 -> first "v1"
++    // k=2 (rows 1, 2): frame = rows with value in [1, 3] -> rows 0, 1, 2 -> first "v1"
++    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> first "v4"
++    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> first "v5"
++    // Rows 1 and 2 are peers (both k=2) and get identical output.
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v1", "v1", "v4", "v5")
++        .validate(results);
++  }
++
++  @Test
++  public void testFirstWithRangeFrameUnboundedPreceding()
++  {
++    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING
++    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(null, 1.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // Every frame starts at row 0, so FIRST_VALUE is always "v1".
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v1", "v1", "v1", "v1")
++        .validate(results);
++  }
++
++  @Test
++  public void testFirstWithRangeFrameCurrentRowUpper()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND CURRENT ROW
++    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-1.0, 0.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=1 (row 0): frame = rows with value in [0, 1] -> row 0 -> "v1"
++    // k=2 (rows 1, 2): frame = rows with value in [1, 2] -> rows 0, 1, 2 -> "v1"
++    // k=4 (row 3): frame = rows with value in [3, 4] -> row 3 -> "v4"
++    // k=7 (row 4): frame = rows with value in [6, 7] -> row 4 -> "v5"
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v1", "v1", "v4", "v5")
++        .validate(results);
++  }
++
++  @Test
++  public void testFirstWithRangeFrameEmptyFrames()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 2 PRECEDING AND 1 PRECEDING — frame can exclude the current row
++    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-2.0, -1.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=1 (row 0): frame = rows with value in [-1, 0] -> empty -> null
++    // k=2 (rows 1, 2): frame = rows with value in [0, 1] -> row 0 -> "v1"
++    // k=4 (row 3): frame = rows with value in [2, 3] -> rows 1, 2 -> "v2"
++    // k=7 (row 4): frame = rows with value in [5, 6] -> empty -> null
++    new RowsAndColumnsHelper()
++        .expectColumn("out", new Object[]{null, "v1", "v1", "v2", null}, ColumnType.STRING)
++        .validate(results);
++  }
++
++  @Test
++  public void testFirstWithRangeFrameNulls()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING; nulls sort first
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG));
++    map.put("val", new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5"}, ColumnType.STRING));
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // Null rows (rows 0, 1): finite bounds resolve to the null run, [0, 2) -> first "v1"
++    // k=2 (row 2): frame = rows with value in [1, 3] -> row 2 -> "v3"
++    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> "v4"
++    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> "v5"
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v1", "v3", "v4", "v5")
++        .validate(results);
++  }
++
++  @Test
++  public void testFirstWithRangeFrameNullsAndUnboundedPreceding()
++  {
++    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW; nulls sort first
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG));
++    map.put("val", new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5"}, ColumnType.STRING));
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(null, 0.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // Every frame starts at row 0 (nulls included, unbounded side reaches the partition edge),
++    // so FIRST_VALUE is always "v1".
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v1", "v1", "v1", "v1")
++        .validate(results);
++  }
++
++  @Test
++  public void testFirstWithRangeFrameDescending()
++  {
++    // ORDER BY k DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING
++    // Keys sorted descending: 7, 4, 2, 2, 1
++    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{7, 4, 2, 2, 1});
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.descending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=7 (row 0): frame = rows with value in [6, 8] -> row 0 -> "v1"
++    // k=4 (row 1): frame = rows with value in [3, 5] -> row 1 -> "v2"
++    // k=2 (rows 2, 3): frame = rows with value in [1, 3] -> rows 2, 3 -> "v3"
++    // k=1 (row 4): frame = rows with value in [0, 2] -> rows 2, 3, 4 -> "v3"
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v2", "v3", "v3", "v3")
++        .validate(results);
++  }
++
++  @Test
++  public void testFirstWithRangeFrameDescendingNulls()
++  {
++    // ORDER BY k DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING; nulls sort last
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new ObjectArrayColumn(new Integer[]{7, 4, 2, 1, null, null}, ColumnType.LONG));
++    map.put(
++        "val",
++        new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5", "v6"}, ColumnType.STRING)
++    );
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.descending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=7 (row 0): frame = rows with value in [6, 8] -> row 0 -> "v1"
++    // k=4 (row 1): frame = rows with value in [3, 5] -> row 1 -> "v2"
++    // k=2 (row 2): frame = rows with value in [1, 3] -> row 2 -> "v3"
++    // k=1 (row 3): frame = rows with value in [0, 2] -> rows 2, 3 -> "v3"
++    // Null rows (rows 4, 5): finite bounds resolve to the null run, [4, 6) -> first "v5"
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v2", "v3", "v3", "v5", "v5")
++        .validate(results);
++  }
++
++  @Test
++  public void testFirstWithRangeFrameWholePartition()
++  {
++    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
++    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});
++    final WindowFirstProcessor processor = new WindowFirstProcessor(
++        "val",
++        "out",
++        WindowFrame.range(null, null, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // A Range frame without offsets covers the whole partition, like WindowFrame.unbounded().
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v1", "v1", "v1", "v1")
++        .validate(results);
++  }
++
+   private static MapOfColumnsRowsAndColumns makeStringRac(String[] values)
+   {
+     final Map<String, Column> map = new LinkedHashMap<>();
+     map.put("col", new ObjectArrayColumn(values, ColumnType.STRING));
+     return MapOfColumnsRowsAndColumns.fromMap(map);
+   }
++
++  private static MapOfColumnsRowsAndColumns makeKeyValueRac(int[] keys)
++  {
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new IntArrayColumn(keys));
++    map.put(
++        "val",
++        new ObjectArrayColumn(
++            new String[]{"v1", "v2", "v3", "v4", "v5"},
++            ColumnType.STRING
++        )
++    );
++    return MapOfColumnsRowsAndColumns.fromMap(map);
++  }
+ }
+diff --git a/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java b/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java
+index 0a853d4d71..3594df7346 100644
+--- a/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java
++++ b/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java
+@@ -20,6 +20,7 @@
+ package org.apache.druid.query.operator.window.value;
+ 
+ import com.google.common.collect.ImmutableList;
++import org.apache.druid.query.operator.ColumnWithDirection;
+ import org.apache.druid.query.operator.window.ComposingProcessor;
+ import org.apache.druid.query.operator.window.RowsAndColumnsHelper;
+ import org.apache.druid.query.operator.window.WindowFrame;
+@@ -259,6 +260,139 @@ public class WindowLastProcessorTest
+         .validate(results);
+   }
+ 
++  @Test
++  public void testLastWithRangeFrame()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING
++    // Keys sorted ascending: 1, 2, 2, 4, 7
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}));
++    map.put("val", new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5"}, ColumnType.STRING));
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final WindowLastProcessor processor = new WindowLastProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=1 (row 0): frame = rows with value in [0, 2] -> rows 0, 1, 2 -> last "v3"
++    // k=2 (rows 1, 2): frame = rows with value in [1, 3] -> rows 0, 1, 2 -> last "v3"
++    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> last "v4"
++    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> last "v5"
++    // Rows 1 and 2 are peers (both k=2) and get identical output.
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v3", "v3", "v3", "v4", "v5")
++        .validate(results);
++  }
++
++  @Test
++  public void testLastWithRangeFrameUnboundedPreceding()
++  {
++    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}));
++    map.put("val", new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5"}, ColumnType.STRING));
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final WindowLastProcessor processor = new WindowLastProcessor(
++        "val",
++        "out",
++        WindowFrame.range(null, 0.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=1 (row 0): frame = rows with value <= 1 -> row 0 -> "v1"
++    // k=2 (rows 1, 2): frame = rows with value <= 2 -> rows 0, 1, 2 -> "v3"
++    // k=4 (row 3): frame = rows with value <= 4 -> rows 0..3 -> "v4"
++    // k=7 (row 4): frame = all rows -> "v5"
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v3", "v3", "v4", "v5")
++        .validate(results);
++  }
++
++  @Test
++  public void testLastWithRangeFrameEmptyFrames()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 2 PRECEDING AND 1 PRECEDING — frame can exclude the current row
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}));
++    map.put("val", new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5"}, ColumnType.STRING));
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final WindowLastProcessor processor = new WindowLastProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-2.0, -1.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=1 (row 0): frame = rows with value in [-1, 0] -> empty -> null
++    // k=2 (rows 1, 2): frame = rows with value in [0, 1] -> row 0 -> last "v1"
++    // k=4 (row 3): frame = rows with value in [2, 3] -> rows 1, 2 -> last "v3"
++    // k=7 (row 4): frame = rows with value in [5, 6] -> empty -> null
++    new RowsAndColumnsHelper()
++        .expectColumn("out", new Object[]{null, "v1", "v1", "v3", null}, ColumnType.STRING)
++        .validate(results);
++  }
++
++  @Test
++  public void testLastWithRangeFrameNulls()
++  {
++    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING; nulls sort first
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG));
++    map.put("val", new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5"}, ColumnType.STRING));
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final WindowLastProcessor processor = new WindowLastProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // Null rows (rows 0, 1): finite bounds resolve to the null run, [0, 2) -> last "v2"
++    // k=2 (row 2): frame = rows with value in [1, 3] -> row 2 -> "v3"
++    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> "v4"
++    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> "v5"
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v2", "v2", "v3", "v4", "v5")
++        .validate(results);
++  }
++
++  @Test
++  public void testLastWithRangeFrameDescending()
++  {
++    // ORDER BY k DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING
++    // Keys sorted descending: 7, 4, 2, 2, 1
++    final Map<String, Column> map = new LinkedHashMap<>();
++    map.put("k", new IntArrayColumn(new int[]{7, 4, 2, 2, 1}));
++    map.put("val", new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5"}, ColumnType.STRING));
++    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
++
++    final WindowLastProcessor processor = new WindowLastProcessor(
++        "val",
++        "out",
++        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.descending("k"))
++    );
++
++    final RowsAndColumns results = processor.process(rac);
++
++    // k=7 (row 0): frame = rows with value in [6, 8] -> row 0 -> last "v1"
++    // k=4 (row 1): frame = rows with value in [3, 5] -> row 1 -> last "v2"
++    // k=2 (rows 2, 3): frame = rows with value in [1, 3] -> rows 2, 3, 4 -> last "v5"
++    // k=1 (row 4): frame = rows with value in [0, 2] -> rows 2, 3, 4 -> last "v5"
++    new RowsAndColumnsHelper()
++        .expectColumn("out", ColumnType.STRING, "v1", "v2", "v5", "v5", "v5")
++        .validate(results);
++  }
++
+   private static MapOfColumnsRowsAndColumns makeStringRac(String[] values)
+   {
+     final Map<String, Column> map = new LinkedHashMap<>();
+diff --git a/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java b/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java
+index 135b3284b4..5b220316f1 100644
+--- a/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java
++++ b/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java
+@@ -32,9 +32,11 @@ import org.apache.calcite.sql.SqlAggFunction;
+ import org.apache.calcite.sql.SqlCall;
+ import org.apache.calcite.sql.SqlIdentifier;
+ import org.apache.calcite.sql.SqlInsert;
++import org.apache.calcite.sql.SqlIntervalLiteral;
+ import org.apache.calcite.sql.SqlKind;
+ import org.apache.calcite.sql.SqlNode;
+ import org.apache.calcite.sql.SqlNodeList;
++import org.apache.calcite.sql.SqlNumericLiteral;
+ import org.apache.calcite.sql.SqlOperatorTable;
+ import org.apache.calcite.sql.SqlSelect;
+ import org.apache.calcite.sql.SqlSelectKeyword;
+@@ -152,11 +154,18 @@ public class DruidSqlValidator extends BaseDruidSqlValidator
+ 
+     if (!targetWindow.isRows() &&
+         (!isUnboundedOrCurrent(lowerBound) || !isUnboundedOrCurrent(upperBound))) {
+-      // this limitation can be lifted when https://github.com/apache/druid/issues/15767 is addressed
+-      throw buildCalciteContextException(
+-          "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.",
+-          windowOrId
+-      );
++      // Offset-based RANGE frames are supported when ORDER BY has exactly one key and the bounds are
++      // numeric or day-time interval literals; https://github.com/apache/druid/issues/15767
++      final SqlNodeList orderList = targetWindow.getOrderList();
++      final boolean supportedRange =
++          orderList != null && orderList.size() == 1
++          && isValidRangeBound(lowerBound) && isValidRangeBound(upperBound);
++      if (!supportedRange) {
++        throw buildCalciteContextException(
++            "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.",
++            windowOrId
++        );
++      }
+     }
+ 
+     super.validateWindow(windowOrId, scope, call);
+@@ -727,6 +736,31 @@ public class DruidSqlValidator extends BaseDruidSqlValidator
+         || SqlWindow.isUnboundedPreceding(bound);
+   }
+ 
++  /**
++   * Checks if the given endpoint is valid for an offset-based RANGE window frame: UNBOUNDED and CURRENT ROW
++   * endpoints are always valid, and PRECEDING/FOLLOWING endpoints must be numeric or day-time interval
++   * literals.
++   */
++  private boolean isValidRangeBound(@Nullable SqlNode bound)
++  {
++    if (isUnboundedOrCurrent(bound)) {
++      return true;
++    }
++    if (bound.getKind() == SqlKind.FOLLOWING || bound.getKind() == SqlKind.PRECEDING) {
++      final SqlNode boundVal = ((SqlCall) bound).operand(0);
++      if (boundVal instanceof SqlNumericLiteral) {
++        return true;
++      }
++      if (boundVal instanceof SqlIntervalLiteral
++          && !((SqlIntervalLiteral.IntervalValue) ((SqlIntervalLiteral) boundVal).getValue())
++              .getIntervalQualifier().isYearMonth()) {
++        // day-time intervals map to a millisecond offset; year-month intervals cannot
++        return true;
++      }
++    }
++    return false;
++  }
++
+   /**
+    * Checks if any bound is null and updates with CURRENT ROW
+    */
+diff --git a/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java b/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java
+index b5c01fa83a..f0aa890da2 100644
+--- a/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java
++++ b/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java
+@@ -56,6 +56,7 @@ import org.apache.druid.query.operator.window.ranking.WindowRowNumberProcessor;
+ import org.apache.druid.query.operator.window.value.WindowFirstProcessor;
+ import org.apache.druid.query.operator.window.value.WindowLastProcessor;
+ import org.apache.druid.query.operator.window.value.WindowOffsetProcessor;
++import org.apache.druid.segment.column.ColumnType;
+ import org.apache.druid.segment.column.RowSignature;
+ import org.apache.druid.sql.calcite.aggregation.Aggregation;
+ import org.apache.druid.sql.calcite.expression.DruidExpression;
+@@ -450,6 +451,8 @@ public class Windowing
+       }
+       if (group.isRows) {
+         return WindowFrame.rows(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound));
++      } else if (isOffsetBound(group.lowerBound) || isOffsetBound(group.upperBound)) {
++        return buildRangeFrame();
+       } else {
+         /* Right now we support GROUPS based framing in the native layer;
+          * but the SQL layer doesn't accept that as of now.
+@@ -458,6 +461,52 @@ public class Windowing
+       }
+     }
+ 
++    /**
++     * Returns whether the given bound is a bounded PRECEDING/FOLLOWING offset, as opposed to UNBOUNDED or
++     * CURRENT ROW.
++     */
++    private static boolean isOffsetBound(RexWindowBound bound)
++    {
++      return bound.isPreceding() || bound.isFollowing();
++    }
++
++    private WindowFrame buildRangeFrame()
++    {
++      final List<RelFieldCollation> fields = group.orderKeys.getFieldCollations();
++      if (fields.size() != 1) {
++        throw new QueryException(
++            QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,
++            StringUtils.format(
++                "Order By with RANGE clause with offset-based bounds requires exactly one ordering key, found [%d]",
++                fields.size()
++            ),
++            null,
++            null
++        );
++      }
++      final RelFieldCollation field = fields.get(0);
++      final String columnName = sig.getColumnName(field.getFieldIndex());
++      final ColumnType columnType = sig.getColumnType(field.getFieldIndex()).orElse(null);
++      if (columnType == null || !columnType.isNumeric()) {
++        throw new QueryException(
++            QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,
++            StringUtils.format(
++                "Order By with RANGE clause with offset-based bounds requires a numeric or timestamp ordering key, "
++                + "found column [%s] of type [%s]",
++                columnName,
++                columnType == null ? "UNKNOWN" : columnType
++            ),
++            null,
++            null
++        );
++      }
++      return WindowFrame.range(
++          getBoundAsDouble(group.lowerBound),
++          getBoundAsDouble(group.upperBound),
++          new ColumnWithDirection(columnName, getOrdering().get(0).getDirection())
++      );
++    }
++
+     private Integer getBoundAsInteger(RexWindowBound bound)
+     {
+       if (bound.isUnbounded()) {
+@@ -471,10 +520,28 @@ public class Windowing
+       return bound.isPreceding() ? -value : value;
+     }
+ 
++    private Double getBoundAsDouble(RexWindowBound bound)
++    {
++      if (bound.isUnbounded()) {
++        return null;
++      }
++      if (bound.isCurrentRow()) {
++        return 0.0d;
++      }
++
++      final double value = getConstantAsDouble(((RexInputRef) bound.getOffset()).getIndex());
++      return bound.isPreceding() ? -value : value;
++    }
++
+     private int getConstant(int refIndex)
+     {
+       return ((Number) window.constants.get(refIndex - sig.size()).getValue()).intValue();
+     }
++
++    private double getConstantAsDouble(int refIndex)
++    {
++      return ((Number) window.constants.get(refIndex - sig.size()).getValue()).doubleValue();
++    }
+   }
+ 
+   private static class WindowAggregate
+diff --git a/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java b/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java
+index 66cf266a4e..db09ced918 100644
+--- a/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java
++++ b/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java
+@@ -47,6 +47,7 @@ import org.apache.druid.query.Order;
+ import org.apache.druid.query.Query;
+ import org.apache.druid.query.QueryContexts;
+ import org.apache.druid.query.QueryDataSource;
++import org.apache.druid.query.QueryException;
+ import org.apache.druid.query.TableDataSource;
+ import org.apache.druid.query.UnionDataSource;
+ import org.apache.druid.query.WindowOperatorQueryBuilder;
+@@ -15621,12 +15622,166 @@ public class CalciteQueryTest extends BaseCalciteQueryTest
+   {
+     assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
+ 
++    // Multiple ORDER BY keys cannot form a value-based RANGE frame.
+     DruidException e = assertThrows(DruidException.class, () -> testBuilder()
+-        .sql("SELECT dim1,ROW_NUMBER() OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo")
++        .sql("SELECT dim1,ROW_NUMBER() OVER (ORDER BY dim1, dim2 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo")
+         .run());
+     assertDruidException(e, invalidSqlIs("Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead. (line [1], column [31])"));
+   }
+ 
++  @Test
++  public void testUnSupportedRangeBoundsOnStringKey()
++  {
++    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
++
++    // A single STRING ORDER BY key with offset-based RANGE bounds passes validation but is rejected
++    // during planning: the ordering key must be numeric or a timestamp.
++    QueryException e = assertThrows(QueryException.class, () -> testBuilder()
++        .sql("SELECT dim1,SUM(m2) OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo")
++        .run());
++    Assertions.assertEquals(
++        QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,
++        e.getErrorCode()
++    );
++  }
++
++  @Test
++  public void testRangeFrameAsc()
++  {
++    msqIncompatible();
++    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
++    testBuilder()
++        .sql("SELECT m1, SUM(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM foo")
++        .expectedResults(
++            ImmutableList.of(
++                new Object[]{1.0f, 3.0D},
++                new Object[]{2.0f, 6.0D},
++                new Object[]{3.0f, 9.0D},
++                new Object[]{4.0f, 12.0D},
++                new Object[]{5.0f, 15.0D},
++                new Object[]{6.0f, 11.0D}
++            )
++        )
++        .run();
++  }
++
++  @Test
++  public void testRangeFrameDesc()
++  {
++    msqIncompatible();
++    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
++    testBuilder()
++        .sql(
++            "SELECT m1, SUM(m2) OVER (ORDER BY m1 DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM foo"
++        )
++        .expectedResults(
++            ImmutableList.of(
++                new Object[]{6.0f, 11.0D},
++                new Object[]{5.0f, 15.0D},
++                new Object[]{4.0f, 12.0D},
++                new Object[]{3.0f, 9.0D},
++                new Object[]{2.0f, 6.0D},
++                new Object[]{1.0f, 3.0D}
++            )
++        )
++        .run();
++  }
++
++  @Test
++  public void testRangeFrameUnboundedPrecedingAndCurrentRow()
++  {
++    msqIncompatible();
++    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
++    testBuilder()
++        .sql(
++            "SELECT m1, SUM(m2) OVER (ORDER BY m1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM foo"
++        )
++        .expectedResults(
++            ImmutableList.of(
++                new Object[]{1.0f, 1.0D},
++                new Object[]{2.0f, 3.0D},
++                new Object[]{3.0f, 6.0D},
++                new Object[]{4.0f, 10.0D},
++                new Object[]{5.0f, 15.0D},
++                new Object[]{6.0f, 21.0D}
++            )
++        )
++        .run();
++  }
++
++  @Test
++  public void testRangeFrameCurrentRowAndUnboundedFollowing()
++  {
++    msqIncompatible();
++    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
++    testBuilder()
++        .sql(
++            "SELECT m1, SUM(m2) OVER (ORDER BY m1 RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM foo"
++        )
++        .expectedResults(
++            ImmutableList.of(
++                new Object[]{1.0f, 21.0D},
++                new Object[]{2.0f, 20.0D},
++                new Object[]{3.0f, 18.0D},
++                new Object[]{4.0f, 15.0D},
++                new Object[]{5.0f, 11.0D},
++                new Object[]{6.0f, 6.0D}
++            )
++        )
++        .run();
++  }
++
++  @Test
++  public void testRangeFrameInterval()
++  {
++    msqIncompatible();
++    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
++    // A day-time INTERVAL bound maps to its millisecond magnitude as a value offset on the
++    // (long valued) __time ordering key.
++    testBuilder()
++        .sql(
++            "SELECT __time, SUM(cnt) OVER ("
++            + "ORDER BY __time RANGE BETWEEN INTERVAL '1' DAY PRECEDING AND INTERVAL '1' DAY FOLLOWING"
++            + ") FROM foo"
++        )
++        .expectedResults(
++            ImmutableList.of(
++                new Object[]{946684800000L, 2L},
++                new Object[]{946771200000L, 3L},
++                new Object[]{946857600000L, 2L},
++                new Object[]{978307200000L, 2L},
++                new Object[]{978393600000L, 3L},
++                new Object[]{978480000000L, 2L}
++            )
++        )
++        .run();
++  }
++
++  @Test
++  public void testRangeFrameFirstLastValue()
++  {
++    msqIncompatible();
++    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
++    testBuilder()
++        .sql(
++            "SELECT m1, "
++            + "FIRST_VALUE(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING), "
++            + "LAST_VALUE(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) "
++            + "FROM foo"
++        )
++        .expectedResults(
++            ImmutableList.of(
++                new Object[]{1.0f, 1.0D, 2.0D},
++                new Object[]{2.0f, 1.0D, 3.0D},
++                new Object[]{3.0f, 2.0D, 4.0D},
++                new Object[]{4.0f, 3.0D, 5.0D},
++                new Object[]{5.0f, 4.0D, 6.0D},
++                new Object[]{6.0f, 5.0D, 6.0D}
++            )
++        )
++        .run();
++  }
++
+   @Test
+   public void testUnSupportedWindowBoundExpressions()
+   {

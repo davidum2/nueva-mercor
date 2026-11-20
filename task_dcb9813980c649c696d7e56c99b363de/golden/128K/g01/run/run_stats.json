@@ -1,0 +1,121 @@
+{
+  "authoring": {
+    "edit": {
+      "baseline_chars": 8664,
+      "golden_chars": 9353
+    }
+  },
+  "call_ids": [
+    "fc-01M77Q0H4YN5QXMTGR9FZ9TD0Y",
+    "fc-01M77Q0HEVBWAJKEK9NXSFT6Q1",
+    "fc-01M77Q0HTE42P86DE86F4KQQJV",
+    "fc-01M77Q0J5BJHYQ1PC7CED3373M"
+  ],
+  "compaction_count": 7,
+  "compactor_model": "openai/modal-glm53/zai-org/GLM-5.3",
+  "context_window": 128000,
+  "evaluated": 2,
+  "n": 4,
+  "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/a4a3578d-c384-421e-af74-125a38f7e1e6/output-artifacts.tar.gz",
+  "passes": 1,
+  "prior_status_id": "5eed0000-0000-4000-8000-000000000001",
+  "rollouts": [
+    {
+      "call_id": "fc-01M77Q0H4YN5QXMTGR9FZ9TD0Y",
+      "compaction_count": null,
+      "duration_s": 1807,
+      "error_message": "EnvironmentStartTimeoutError: Environment start timed out after 1800.0 seconds [root cause: asyncio.exceptions.CancelledError]",
+      "f2p_pass_rate": null,
+      "f2p_passed": null,
+      "f2p_total": null,
+      "golden_ineligible": "broken: no graded test result",
+      "index": 0,
+      "is_429": false,
+      "outcome": "error",
+      "output_artifacts_s3_uri": null,
+      "p2p_passed": null,
+      "p2p_total": null,
+      "passed": false,
+      "score": 0.0,
+      "status": "failed",
+      "tests_failed": 1,
+      "tests_failing": [
+        "reward"
+      ],
+      "tests_other": 0,
+      "tests_passed": 0,
+      "total_tokens": 0
+    },
+    {
+      "call_id": "fc-01M77Q0HEVBWAJKEK9NXSFT6Q1",
+      "ceiling_hit": [],
+      "compaction_count": 7,
+      "context_limit": 128000,
+      "duration_s": 5593,
+      "error_message": null,
+      "f2p_pass_rate": 1.0,
+      "f2p_passed": 21,
+      "f2p_total": 21,
+      "finish_reasons": {
+        "stop": 8
+      },
+      "hit_context_window": false,
+      "hit_output_cap": false,
+      "index": 1,
+      "is_429": false,
+      "max_reasoning": 21392,
+      "max_step_tokens": 21545,
+      "median_reasoning": 52,
+      "n_steps": 330,
+      "outcome": "completed",
+      "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/a4a3578d-c384-421e-af74-125a38f7e1e6/output-artifacts.tar.gz",
+      "output_cap": 64000,
+      "p2p_passed": 316,
+      "p2p_total": 316,
+      "passed": true,
+      "peak_context": 96953,
+      "score": 1.0,
+      "status": "completed",
+      "steps_at_cap": 0,
+      "tests_failed": 0,
+      "tests_failing": [],
+      "tests_other": 0,
+      "tests_passed": 337,
+      "total_tokens": 21120975,
+      "truncated_invalid": false
+    },
+    {
+      "call_id": "fc-01M77Q0HTE42P86DE86F4KQQJV",
+      "index": 2,
+      "passed": false,
+      "status": "cancelled"
+    },
+    {
+      "call_id": "fc-01M77Q0J5BJHYQ1PC7CED3373M",
+      "index": 3,
+      "passed": false,
+      "status": "cancelled"
+    }
+  ],
+  "round": 1,
+  "solver_model": "openai/modal-glm53/zai-org/GLM-5.3",
+  "task_id": "task_dcb9813980c649c696d7e56c99b363de",
+  "trigger_tokens": 97009,
+  "verifier": {
+    "checks": null,
+    "failed": [],
+    "incomplete": false,
+    "not_unanimous": [],
+    "ok": true,
+    "reason": "round 1: no prior summary to grade",
+    "review_errors": [],
+    "rules": null,
+    "rules_score": null,
+    "score": null,
+    "split": []
+  },
+  "winner_f2p_rate": 1.0,
+  "winner_index": 1,
+  "winner_passed": true,
+  "winner_test_pass_rate": 1.0
+}

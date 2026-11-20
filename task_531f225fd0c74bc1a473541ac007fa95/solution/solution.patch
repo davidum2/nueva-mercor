@@ -1,0 +1,1553 @@
+diff --git a/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java b/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java
+index 227b68da1..812763fc5 100644
+--- a/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java
++++ b/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/StateLogStore.java
+@@ -114,4 +114,27 @@ public interface StateLogStore {
+      * clear the LocalThread
+      */
+     void clearUp(ProcessContext context);
++
++    /**
++     * Query state instances currently in WA (Waiting) status.
++     *
++     * @param tenantId the tenant id
++     * @return list of waiting state instances
++     */
++    List<StateInstance> queryWaitingStateInstances(String tenantId);
++
++    /**
++     * Atomically claim a waiting state instance from WA to a target status.
++     *
++     * @param stateInstanceId the state instance id
++     * @param machineInstanceId the machine instance id
++     * @param newStatus the new status (SU, SK, or FA)
++     * @param outputParams the optional output params / payload
++     * @return true if claim succeeded (status was WA and updated), false otherwise
++     */
++    boolean claimWaitStateInstance(
++            String stateInstanceId,
++            String machineInstanceId,
++            org.apache.seata.saga.statelang.domain.ExecutionStatus newStatus,
++            Object outputParams);
+ }
+diff --git a/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/db/StateLogStoreSqls.java b/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/db/StateLogStoreSqls.java
+index a190c8d05..3c1404a3d 100644
+--- a/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/db/StateLogStoreSqls.java
++++ b/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/db/StateLogStoreSqls.java
+@@ -84,6 +84,13 @@ public class StateLogStoreSqls {
+     private static final String GET_STATE_INSTANCE_BY_ID_AND_MACHINE_INSTANCE_ID_SQL =
+             "SELECT " + STATE_INSTANCE_FIELDS + " FROM ${TABLE_PREFIX}state_inst WHERE machine_inst_id = ? AND id = ?";
+ 
++    private static final String QUERY_WAITING_STATE_INSTANCES_SQL = "SELECT " + STATE_INSTANCE_FIELDS
++            + " FROM ${TABLE_PREFIX}state_inst WHERE status = 'WA' ORDER BY gmt_started ASC";
++
++    private static final String CLAIM_WAIT_STATE_INSTANCE_SQL =
++            "UPDATE ${TABLE_PREFIX}state_inst SET status = ?, output_params = ?, gmt_updated = ?, gmt_end = ? "
++                    + "WHERE id = ? AND machine_inst_id = ? AND status = 'WA'";
++
+     private static final String TABLE_PREFIX_REGEX = "\\$\\{TABLE_PREFIX}";
+ 
+     private String tablePrefix;
+@@ -116,6 +123,10 @@ public class StateLogStoreSqls {
+ 
+     private String getStateInstanceByIdAndMachineInstanceIdSql;
+ 
++    private String queryWaitingStateInstancesSql;
++
++    private String claimWaitStateInstanceSql;
++
+     public StateLogStoreSqls(String tablePrefix) {
+         this.tablePrefix = tablePrefix;
+         init();
+@@ -140,6 +151,8 @@ public class StateLogStoreSqls {
+                 QUERY_STATE_INSTANCES_BY_MACHINE_INSTANCE_ID_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+         getStateInstanceByIdAndMachineInstanceIdSql =
+                 GET_STATE_INSTANCE_BY_ID_AND_MACHINE_INSTANCE_ID_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
++        queryWaitingStateInstancesSql = QUERY_WAITING_STATE_INSTANCES_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
++        claimWaitStateInstanceSql = CLAIM_WAIT_STATE_INSTANCE_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+     }
+ 
+     public String getRecordStateMachineStartedSql(String dbType) {
+@@ -186,6 +199,14 @@ public class StateLogStoreSqls {
+         return getStateInstanceByIdAndMachineInstanceIdSql;
+     }
+ 
++    public String getQueryWaitingStateInstancesSql(String dbType) {
++        return queryWaitingStateInstancesSql;
++    }
++
++    public String getClaimWaitStateInstanceSql(String dbType) {
++        return claimWaitStateInstanceSql;
++    }
++
+     public String getTablePrefix() {
+         return tablePrefix;
+     }
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java
+index b25c5ccf8..11b43c336 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/StateMachineEngine.java
+@@ -170,4 +170,27 @@ public interface StateMachineEngine {
+      * @return the state machine instance
+      */
+     StateMachineInstance reloadStateMachineInstance(String instId);
++
++    /**
++     * Deliver an event to one exact wait activation and synchronously advance the machine.
++     *
++     * @param stateMachineInstanceId the state machine instance id
++     * @param waitStateInstanceId the wait state instance id
++     * @param event the external event name
++     * @param payload the signal payload
++     * @return the state machine instance
++     * @throws EngineExecutionException the engine execution exception
++     */
++    StateMachineInstance signal(
++            String stateMachineInstanceId, String waitStateInstanceId, String event, Map<String, Object> payload)
++            throws EngineExecutionException;
++
++    /**
++     * Atomically claim and advance all persisted wait instances whose calculated deadline is at or before now.
++     *
++     * @param now the reference instant
++     * @return the number of timeout claims won
++     * @throws EngineExecutionException the engine execution exception
++     */
++    int fireDueTimeouts(java.time.Instant now) throws EngineExecutionException;
+ }
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java
+index 1e33226d0..cb3bc2954 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/impl/ProcessCtrlStateMachineEngine.java
+@@ -402,7 +402,7 @@ public class ProcessCtrlStateMachineEngine implements StateMachineEngine {
+         for (StateInstance stateInstance : stateInstanceList) {
+             Object serviceOutputParams = stateInstance.getOutputParams();
+             if (serviceOutputParams != null) {
+-                ServiceTaskStateImpl state = (ServiceTaskStateImpl)
++                State state =
+                         stateMachineInstance.getStateMachine().getState(EngineUtils.getOriginStateName(stateInstance));
+                 if (state == null) {
+                     throw new EngineExecutionException(
+@@ -410,10 +410,17 @@ public class ProcessCtrlStateMachineEngine implements StateMachineEngine {
+                             FrameworkErrorCode.ObjectNotExists);
+                 }
+ 
+-                if (CollectionUtils.isNotEmpty(state.getOutput())) {
++                Map<String, Object> outputConfig = null;
++                if (state instanceof ServiceTaskStateImpl) {
++                    outputConfig = ((ServiceTaskStateImpl) state).getOutput();
++                } else if (state instanceof org.apache.seata.saga.statelang.domain.WaitState) {
++                    outputConfig = ((org.apache.seata.saga.statelang.domain.WaitState) state).getOutput();
++                }
++
++                if (CollectionUtils.isNotEmpty(outputConfig)) {
+                     try {
+                         Map<String, Object> outputVariablesToContext = ParameterUtils.createOutputParams(
+-                                stateMachineConfig.getExpressionResolver(), state, serviceOutputParams);
++                                stateMachineConfig.getExpressionResolver(), outputConfig, serviceOutputParams);
+                         if (CollectionUtils.isNotEmpty(outputVariablesToContext)) {
+                             contextVariables.putAll(outputVariablesToContext);
+                         }
+@@ -515,6 +522,8 @@ public class ProcessCtrlStateMachineEngine implements StateMachineEngine {
+                     "StateMachineInstance is not exits", FrameworkErrorCode.StateMachineInstanceNotExists);
+         }
+ 
++        cancelDescendantWaits(stateMachineInstance);
++
+         if (ExecutionStatus.SU.equals(stateMachineInstance.getCompensationStatus())) {
+             return stateMachineInstance;
+         }
+@@ -773,4 +782,420 @@ public class ProcessCtrlStateMachineEngine implements StateMachineEngine {
+     public void setStateMachineConfig(StateMachineConfig stateMachineConfig) {
+         this.stateMachineConfig = stateMachineConfig;
+     }
++
++    @Override
++    public StateMachineInstance signal(
++            String stateMachineInstanceId, String waitStateInstanceId, String event, Map<String, Object> payload)
++            throws EngineExecutionException {
++
++        if (StringUtils.isBlank(stateMachineInstanceId)
++                || StringUtils.isBlank(waitStateInstanceId)
++                || StringUtils.isBlank(event)) {
++            throw new EngineExecutionException(
++                    "stateMachineInstanceId, waitStateInstanceId, and event must not be blank",
++                    FrameworkErrorCode.InvalidParameter);
++        }
++
++        StateMachineInstance stateMachineInstance = reloadStateMachineInstance(stateMachineInstanceId);
++        if (stateMachineInstance == null) {
++            throw new EngineExecutionException(
++                    "StateMachineInstance[id:" + stateMachineInstanceId + "] is not exists",
++                    FrameworkErrorCode.ObjectNotExists);
++        }
++
++        StateInstance waitStateInst = null;
++        if (stateMachineInstance.getStateMap() != null) {
++            waitStateInst = stateMachineInstance.getStateMap().get(waitStateInstanceId);
++        }
++        if (waitStateInst == null && stateMachineInstance.getStateList() != null) {
++            for (StateInstance si : stateMachineInstance.getStateList()) {
++                if (waitStateInstanceId.equals(si.getId())) {
++                    waitStateInst = si;
++                    break;
++                }
++            }
++        }
++
++        if (waitStateInst == null) {
++            throw new EngineExecutionException(
++                    "WaitStateInstance[id:" + waitStateInstanceId + "] not found in StateMachineInstance["
++                            + stateMachineInstanceId + "]",
++                    FrameworkErrorCode.OperationDenied);
++        }
++
++        State stateDef = stateMachineInstance.getStateMachine().getState(EngineUtils.getOriginStateName(waitStateInst));
++        if (!(stateDef instanceof org.apache.seata.saga.statelang.domain.WaitState)) {
++            throw new EngineExecutionException(
++                    "State [" + waitStateInst.getName() + "] is not a WaitState", FrameworkErrorCode.OperationDenied);
++        }
++
++        org.apache.seata.saga.statelang.domain.WaitState waitState =
++                (org.apache.seata.saga.statelang.domain.WaitState) stateDef;
++
++        if (ExecutionStatus.SU.equals(waitStateInst.getStatus())) {
++            if (event.equals(waitState.getEvent())) {
++                return stateMachineInstance;
++            } else {
++                throw new EngineExecutionException(
++                        "Wait state already satisfied with different event", FrameworkErrorCode.OperationDenied);
++            }
++        }
++
++        if (ExecutionStatus.SK.equals(waitStateInst.getStatus())
++                || ExecutionStatus.FA.equals(waitStateInst.getStatus())
++                || stateMachineInstance.getCompensationStatus() != null) {
++            throw new EngineExecutionException(
++                    "Wait state activation already claimed by timeout or compensation",
++                    FrameworkErrorCode.OperationDenied);
++        }
++
++        if (!ExecutionStatus.WA.equals(waitStateInst.getStatus())) {
++            throw new EngineExecutionException(
++                    "Wait state is not in WA status: " + waitStateInst.getStatus(), FrameworkErrorCode.OperationDenied);
++        }
++
++        if (!event.equals(waitState.getEvent())) {
++            throw new EngineExecutionException(
++                    "Event[" + event + "] does not match expected event[" + waitState.getEvent() + "]",
++                    FrameworkErrorCode.OperationDenied);
++        }
++
++        Map<String, Object> actualPayload = payload != null ? payload : new HashMap<>();
++
++        if (stateMachineConfig.getStateLogStore() != null) {
++            boolean claimed = stateMachineConfig
++                    .getStateLogStore()
++                    .claimWaitStateInstance(
++                            waitStateInst.getId(), stateMachineInstance.getId(), ExecutionStatus.SU, actualPayload);
++            if (!claimed) {
++                StateMachineInstance refreshed = reloadStateMachineInstance(stateMachineInstanceId);
++                StateInstance refreshedWait = refreshed != null && refreshed.getStateMap() != null
++                        ? refreshed.getStateMap().get(waitStateInstanceId)
++                        : null;
++                if (refreshedWait != null && ExecutionStatus.SU.equals(refreshedWait.getStatus())) {
++                    return refreshed;
++                }
++                throw new EngineExecutionException(
++                        "Failed to claim wait state activation, race lost", FrameworkErrorCode.OperationDenied);
++            }
++        }
++
++        waitStateInst.setStatus(ExecutionStatus.SU);
++        waitStateInst.setOutputParams(actualPayload);
++
++        ProcessContextBuilder contextBuilder = ProcessContextBuilder.create()
++                .withProcessType(ProcessType.STATE_LANG)
++                .withOperationName(DomainConstants.OPERATION_NAME_FORWARD)
++                .withStateMachineInstance(stateMachineInstance)
++                .withStateInstance(waitStateInst)
++                .withStateMachineConfig(getStateMachineConfig())
++                .withStateMachineEngine(this)
++                .withIsAsyncExecution(false);
++
++        ProcessContext context = contextBuilder.build();
++
++        Map<String, Object> contextVariables = getStateMachineContextVariables(stateMachineInstance);
++
++        if (CollectionUtils.isNotEmpty(waitState.getOutput())) {
++            try {
++                Map<String, Object> outputVariablesToContext = ParameterUtils.createOutputParams(
++                        stateMachineConfig.getExpressionResolver(), waitState.getOutput(), actualPayload);
++                if (CollectionUtils.isNotEmpty(outputVariablesToContext)) {
++                    contextVariables.putAll(outputVariablesToContext);
++                }
++            } catch (Exception e) {
++                throw new EngineExecutionException(
++                        e, "Output variables mapping failed", FrameworkErrorCode.ContextVariableReplayFailed);
++            }
++        }
++
++        putBusinessKeyToContextVariables(stateMachineInstance, contextVariables);
++        ConcurrentHashMap<String, Object> concurrentContextVariables = new ConcurrentHashMap<>(contextVariables.size());
++        nullSafeCopy(contextVariables, concurrentContextVariables);
++        context.setVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONTEXT, concurrentContextVariables);
++        stateMachineInstance.setContext(concurrentContextVariables);
++
++        try {
++            StateInstruction inst = new StateInstruction();
++            inst.setTenantId(stateMachineInstance.getTenantId());
++            inst.setStateMachineName(stateMachineInstance.getStateMachine().getName());
++            String next = waitState.getNext();
++            if (StringUtils.isEmpty(next)) {
++                EngineUtils.endStateMachine(context);
++                if (StringUtils.hasText(stateMachineInstance.getParentId())) {
++                    unwindParentIfFinished(stateMachineInstance);
++                }
++                return reloadStateMachineInstance(stateMachineInstanceId);
++            }
++
++            inst.setStateName(next);
++            context.setInstruction(inst);
++
++            stateMachineInstance.setStatus(ExecutionStatus.RU);
++            stateMachineInstance.setRunning(true);
++
++            if (stateMachineInstance.getStateMachine().isPersist() && stateMachineConfig.getStateLogStore() != null) {
++                stateMachineConfig.getStateLogStore().recordStateMachineRestarted(stateMachineInstance, context);
++            }
++
++            stateMachineConfig.getProcessCtrlEventPublisher().publish(context);
++
++            if (StringUtils.hasText(stateMachineInstance.getParentId())) {
++                unwindParentIfFinished(stateMachineInstance);
++            }
++
++        } catch (EngineExecutionException e) {
++            LOGGER.error("Operation [signal] failed", e);
++            throw e;
++        }
++
++        return reloadStateMachineInstance(stateMachineInstanceId);
++    }
++
++    @Override
++    public int fireDueTimeouts(java.time.Instant now) throws EngineExecutionException {
++        if (now == null) {
++            throw new EngineExecutionException("now cannot be null", FrameworkErrorCode.InvalidParameter);
++        }
++
++        if (stateMachineConfig.getStateLogStore() == null) {
++            return 0;
++        }
++
++        List<StateInstance> waitingInstances =
++                stateMachineConfig.getStateLogStore().queryWaitingStateInstances(null);
++        if (CollectionUtils.isEmpty(waitingInstances)) {
++            return 0;
++        }
++
++        int claimedCount = 0;
++        for (StateInstance waitInst : waitingInstances) {
++            StateMachineInstance machineInst = reloadStateMachineInstance(waitInst.getMachineInstanceId());
++            if (machineInst == null || !ExecutionStatus.WA.equals(machineInst.getStatus())) {
++                continue;
++            }
++
++            State stateDef = machineInst.getStateMachine().getState(EngineUtils.getOriginStateName(waitInst));
++            if (!(stateDef instanceof org.apache.seata.saga.statelang.domain.WaitState)) {
++                continue;
++            }
++
++            org.apache.seata.saga.statelang.domain.WaitState waitState =
++                    (org.apache.seata.saga.statelang.domain.WaitState) stateDef;
++            if (waitState.getTimeout() == null) {
++                continue;
++            }
++
++            java.time.Instant deadline = waitInst.getGmtStarted().toInstant().plus(waitState.getTimeout());
++            if (deadline.compareTo(now) <= 0) {
++                boolean claimed = stateMachineConfig
++                        .getStateLogStore()
++                        .claimWaitStateInstance(waitInst.getId(), machineInst.getId(), ExecutionStatus.SK, null);
++                if (claimed) {
++                    claimedCount++;
++                    waitInst.setStatus(ExecutionStatus.SK);
++
++                    ProcessContextBuilder contextBuilder = ProcessContextBuilder.create()
++                            .withProcessType(ProcessType.STATE_LANG)
++                            .withOperationName(DomainConstants.OPERATION_NAME_FORWARD)
++                            .withStateMachineInstance(machineInst)
++                            .withStateInstance(waitInst)
++                            .withStateMachineConfig(getStateMachineConfig())
++                            .withStateMachineEngine(this)
++                            .withIsAsyncExecution(false);
++
++                    ProcessContext context = contextBuilder.build();
++
++                    Map<String, Object> contextVariables = getStateMachineContextVariables(machineInst);
++                    putBusinessKeyToContextVariables(machineInst, contextVariables);
++                    ConcurrentHashMap<String, Object> concurrentContextVariables =
++                            new ConcurrentHashMap<>(contextVariables.size());
++                    nullSafeCopy(contextVariables, concurrentContextVariables);
++                    context.setVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONTEXT, concurrentContextVariables);
++                    machineInst.setContext(concurrentContextVariables);
++
++                    String timeoutNext = waitState.getTimeoutNext();
++                    if (StringUtils.isEmpty(timeoutNext)) {
++                        EngineUtils.endStateMachine(context);
++                        if (StringUtils.hasText(machineInst.getParentId())) {
++                            unwindParentIfFinished(machineInst);
++                        }
++                        continue;
++                    }
++
++                    StateInstruction inst = new StateInstruction();
++                    inst.setTenantId(machineInst.getTenantId());
++                    inst.setStateMachineName(machineInst.getStateMachine().getName());
++                    inst.setStateName(timeoutNext);
++                    context.setInstruction(inst);
++
++                    machineInst.setStatus(ExecutionStatus.RU);
++                    machineInst.setRunning(true);
++
++                    if (machineInst.getStateMachine().isPersist() && stateMachineConfig.getStateLogStore() != null) {
++                        stateMachineConfig.getStateLogStore().recordStateMachineRestarted(machineInst, context);
++                    }
++
++                    try {
++                        stateMachineConfig.getProcessCtrlEventPublisher().publish(context);
++                        if (StringUtils.hasText(machineInst.getParentId())) {
++                            unwindParentIfFinished(machineInst);
++                        }
++                    } catch (EngineExecutionException e) {
++                        LOGGER.error("Operation [fireDueTimeouts] failed for machine: " + machineInst.getId(), e);
++                    }
++                }
++            }
++        }
++
++        return claimedCount;
++    }
++
++    private void cancelDescendantWaits(StateMachineInstance machine) {
++        if (machine == null || stateMachineConfig.getStateLogStore() == null) {
++            return;
++        }
++        if (machine.getStateList() != null) {
++            for (StateInstance stateInst : machine.getStateList()) {
++                if (StateType.WAIT.equals(stateInst.getType()) && ExecutionStatus.WA.equals(stateInst.getStatus())) {
++                    stateMachineConfig
++                            .getStateLogStore()
++                            .claimWaitStateInstance(stateInst.getId(), machine.getId(), ExecutionStatus.FA, null);
++                    stateInst.setStatus(ExecutionStatus.FA);
++                }
++                if (StateType.SUB_STATE_MACHINE.equals(stateInst.getType())) {
++                    List<StateMachineInstance> children = stateMachineConfig
++                            .getStateLogStore()
++                            .queryStateMachineInstanceByParentId(EngineUtils.generateParentId(stateInst));
++                    if (CollectionUtils.isNotEmpty(children)) {
++                        for (StateMachineInstance child : children) {
++                            StateMachineInstance reloadedChild = reloadStateMachineInstance(child.getId());
++                            cancelDescendantWaits(reloadedChild);
++                        }
++                    }
++                }
++            }
++        }
++    }
++
++    private void unwindParentIfFinished(StateMachineInstance childMachine) {
++        StateMachineInstance reloadedChild = reloadStateMachineInstance(childMachine.getId());
++        if (reloadedChild == null
++                || (!ExecutionStatus.SU.equals(reloadedChild.getStatus())
++                        && !ExecutionStatus.FA.equals(reloadedChild.getStatus()))) {
++            return;
++        }
++        childMachine = reloadedChild;
++
++        String parentId = childMachine.getParentId();
++        if (StringUtils.isBlank(parentId) || !parentId.contains(DomainConstants.SEPERATOR_PARENT_ID)) {
++            return;
++        }
++        String[] parts = parentId.split(DomainConstants.SEPERATOR_PARENT_ID);
++        String parentMachineId = parts[0];
++        String parentStateInstId = parts.length > 1 ? parts[1] : null;
++
++        StateMachineInstance parentMachine = reloadStateMachineInstance(parentMachineId);
++        if (parentMachine == null || !ExecutionStatus.WA.equals(parentMachine.getStatus())) {
++            return;
++        }
++
++        StateInstance parentStateInst = parentStateInstId != null && parentMachine.getStateMap() != null
++                ? parentMachine.getStateMap().get(parentStateInstId)
++                : null;
++        if (parentStateInst == null && parentMachine.getStateList() != null) {
++            for (StateInstance si : parentMachine.getStateList()) {
++                if (parentStateInstId != null && parentStateInstId.equals(si.getId())) {
++                    parentStateInst = si;
++                    break;
++                }
++            }
++        }
++        if (parentStateInst == null) {
++            return;
++        }
++
++        ExecutionStatus childStatus = childMachine.getStatus();
++        parentStateInst.setStatus(childStatus);
++
++        Map<String, Object> outputParams =
++                childMachine.getEndParams() != null ? childMachine.getEndParams() : new HashMap<>();
++        outputParams.put(DomainConstants.VAR_NAME_SUB_STATEMACHINE_EXEC_STATUE, childStatus.toString());
++        parentStateInst.setOutputParams(outputParams);
++
++        State parentStateDef =
++                parentMachine.getStateMachine().getState(EngineUtils.getOriginStateName(parentStateInst));
++        if (parentStateDef == null) {
++            return;
++        }
++
++        ProcessContextBuilder contextBuilder = ProcessContextBuilder.create()
++                .withProcessType(ProcessType.STATE_LANG)
++                .withOperationName(DomainConstants.OPERATION_NAME_FORWARD)
++                .withStateMachineInstance(parentMachine)
++                .withStateInstance(parentStateInst)
++                .withStateMachineConfig(getStateMachineConfig())
++                .withStateMachineEngine(this)
++                .withIsAsyncExecution(false);
++
++        ProcessContext parentContext = contextBuilder.build();
++
++        if (stateMachineConfig.getStateLogStore() != null
++                && parentMachine.getStateMachine().isPersist()) {
++            stateMachineConfig.getStateLogStore().recordStateFinished(parentStateInst, parentContext);
++        }
++        Map<String, Object> contextVariables = getStateMachineContextVariables(parentMachine);
++
++        if (parentStateDef instanceof org.apache.seata.saga.statelang.domain.impl.SubStateMachineImpl) {
++            org.apache.seata.saga.statelang.domain.impl.SubStateMachineImpl subState =
++                    (org.apache.seata.saga.statelang.domain.impl.SubStateMachineImpl) parentStateDef;
++            if (CollectionUtils.isNotEmpty(subState.getOutput())) {
++                try {
++                    Map<String, Object> outMap = ParameterUtils.createOutputParams(
++                            stateMachineConfig.getExpressionResolver(), subState.getOutput(), outputParams);
++                    if (CollectionUtils.isNotEmpty(outMap)) {
++                        contextVariables.putAll(outMap);
++                    }
++                } catch (Exception ignored) {
++                }
++            }
++        }
++
++        putBusinessKeyToContextVariables(parentMachine, contextVariables);
++        ConcurrentHashMap<String, Object> concurrentContextVariables = new ConcurrentHashMap<>(contextVariables.size());
++        nullSafeCopy(contextVariables, concurrentContextVariables);
++        parentContext.setVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONTEXT, concurrentContextVariables);
++        parentMachine.setContext(concurrentContextVariables);
++
++        String next = parentStateDef.getNext();
++        if (StringUtils.isEmpty(next)) {
++            EngineUtils.endStateMachine(parentContext);
++            if (StringUtils.hasText(parentMachine.getParentId())) {
++                unwindParentIfFinished(parentMachine);
++            }
++            return;
++        }
++
++        StateInstruction parentInstruction = new StateInstruction();
++        parentInstruction.setTenantId(parentMachine.getTenantId());
++        parentInstruction.setStateMachineName(parentMachine.getStateMachine().getName());
++        parentInstruction.setStateName(next);
++        parentContext.setInstruction(parentInstruction);
++
++        parentMachine.setStatus(ExecutionStatus.RU);
++        parentMachine.setRunning(true);
++
++        if (parentMachine.getStateMachine().isPersist() && stateMachineConfig.getStateLogStore() != null) {
++            stateMachineConfig.getStateLogStore().recordStateMachineRestarted(parentMachine, parentContext);
++        }
++
++        try {
++            stateMachineConfig.getProcessCtrlEventPublisher().publish(parentContext);
++            if (StringUtils.hasText(parentMachine.getParentId())) {
++                unwindParentIfFinished(parentMachine);
++            }
++        } catch (EngineExecutionException e) {
++            LOGGER.error("Unwind parent failed", e);
++        }
++    }
+ }
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java
+index 94f35ad7a..bb728240e 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java
+@@ -26,6 +26,7 @@ import org.apache.seata.saga.engine.pcext.handlers.ScriptTaskStateHandler;
+ import org.apache.seata.saga.engine.pcext.handlers.ServiceTaskStateHandler;
+ import org.apache.seata.saga.engine.pcext.handlers.SubStateMachineHandler;
+ import org.apache.seata.saga.engine.pcext.handlers.SucceedEndStateHandler;
++import org.apache.seata.saga.engine.pcext.handlers.WaitStateHandler;
+ import org.apache.seata.saga.proctrl.ProcessContext;
+ import org.apache.seata.saga.proctrl.handler.ProcessHandler;
+ import org.apache.seata.saga.statelang.domain.State;
+@@ -97,6 +98,7 @@ public class StateMachineProcessHandler implements ProcessHandler {
+         stateHandlers.put(StateType.FAIL, new FailEndStateHandler());
+         stateHandlers.put(StateType.COMPENSATION_TRIGGER, new CompensationTriggerStateHandler());
+         stateHandlers.put(StateType.LOOP_START, new LoopStartStateHandler());
++        stateHandlers.put(StateType.WAIT, new WaitStateHandler());
+     }
+ 
+     public Map<StateType, StateHandler> getStateHandlers() {
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java
+index 41ea3bcf2..de91c3c12 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessRouter.java
+@@ -21,6 +21,7 @@ import org.apache.seata.common.util.CollectionUtils;
+ import org.apache.seata.saga.engine.StateMachineConfig;
+ import org.apache.seata.saga.engine.pcext.routers.EndStateRouter;
+ import org.apache.seata.saga.engine.pcext.routers.TaskStateRouter;
++import org.apache.seata.saga.engine.pcext.routers.WaitStateRouter;
+ import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+ import org.apache.seata.saga.proctrl.Instruction;
+ import org.apache.seata.saga.proctrl.ProcessContext;
+@@ -119,6 +120,7 @@ public class StateMachineProcessRouter implements ProcessRouter {
+         stateRouters.put(StateType.SUB_STATE_MACHINE, taskStateRouter);
+         stateRouters.put(StateType.SUB_MACHINE_COMPENSATION, taskStateRouter);
+         stateRouters.put(StateType.LOOP_START, taskStateRouter);
++        stateRouters.put(StateType.WAIT, new WaitStateRouter());
+ 
+         stateRouters.put(StateType.SUCCEED, new EndStateRouter());
+         stateRouters.put(StateType.FAIL, new EndStateRouter());
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SubStateMachineHandler.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SubStateMachineHandler.java
+index dbf752d0a..60a820a22 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SubStateMachineHandler.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/SubStateMachineHandler.java
+@@ -102,6 +102,9 @@ public class SubStateMachineHandler implements StateHandler, InterceptableStateH
+                     callSubStateMachine(startParams, engine, context, stateInstance, subStateMachine);
+ 
+             Map<String, Object> outputParams = subStateMachineInstance.getEndParams();
++            if (outputParams == null) {
++                outputParams = new HashMap<>();
++            }
+             boolean isForward = DomainConstants.OPERATION_NAME_FORWARD.equals(
+                     context.getVariable(DomainConstants.VAR_NAME_OPERATION_NAME));
+             ExecutionStatus callSubMachineStatus = decideStatus(subStateMachineInstance, isForward);
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/WaitStateHandler.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/WaitStateHandler.java
+new file mode 100644
+index 000000000..b46164ee2
+--- /dev/null
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/WaitStateHandler.java
+@@ -0,0 +1,118 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.seata.saga.engine.pcext.handlers;
++
++import org.apache.seata.saga.engine.StateMachineConfig;
++import org.apache.seata.saga.engine.exception.EngineExecutionException;
++import org.apache.seata.saga.engine.pcext.InterceptableStateHandler;
++import org.apache.seata.saga.engine.pcext.StateHandler;
++import org.apache.seata.saga.engine.pcext.StateHandlerInterceptor;
++import org.apache.seata.saga.engine.pcext.StateInstruction;
++import org.apache.seata.saga.proctrl.HierarchicalProcessContext;
++import org.apache.seata.saga.proctrl.ProcessContext;
++import org.apache.seata.saga.statelang.domain.DomainConstants;
++import org.apache.seata.saga.statelang.domain.ExecutionStatus;
++import org.apache.seata.saga.statelang.domain.StateInstance;
++import org.apache.seata.saga.statelang.domain.StateMachineInstance;
++import org.apache.seata.saga.statelang.domain.StateType;
++import org.apache.seata.saga.statelang.domain.WaitState;
++import org.apache.seata.saga.statelang.domain.impl.StateInstanceImpl;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++import java.util.ArrayList;
++import java.util.Date;
++import java.util.List;
++
++/**
++ * StateHandler for {@link WaitState}.
++ */
++public class WaitStateHandler implements StateHandler, InterceptableStateHandler {
++
++    private static final Logger LOGGER = LoggerFactory.getLogger(WaitStateHandler.class);
++
++    private List<StateHandlerInterceptor> interceptors = new ArrayList<>();
++
++    @Override
++    public void process(ProcessContext context) throws EngineExecutionException {
++        StateInstruction instruction = context.getInstruction(StateInstruction.class);
++        WaitState state = (WaitState) instruction.getState(context);
++
++        StateMachineInstance stateMachineInstance =
++                (StateMachineInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INST);
++        StateMachineConfig stateMachineConfig =
++                (StateMachineConfig) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
++
++        StateInstance stateInstance = (StateInstance) context.getVariable(DomainConstants.VAR_NAME_STATE_INST);
++        if (stateInstance == null
++                || !state.getName().equals(stateInstance.getName())
++                || !ExecutionStatus.WA.equals(stateInstance.getStatus())) {
++            StateInstanceImpl newInst = new StateInstanceImpl();
++            newInst.setName(state.getName());
++            newInst.setType(StateType.WAIT);
++            newInst.setStatus(ExecutionStatus.WA);
++            long startMillis = System.currentTimeMillis();
++            if (stateMachineInstance.getStateList() != null
++                    && !stateMachineInstance.getStateList().isEmpty()) {
++                for (StateInstance prev : stateMachineInstance.getStateList()) {
++                    if (prev.getGmtStarted() != null && prev.getGmtStarted().getTime() >= startMillis) {
++                        startMillis = prev.getGmtStarted().getTime() + 1;
++                    }
++                }
++            }
++            newInst.setGmtStarted(new Date(startMillis));
++            newInst.setGmtUpdated(newInst.getGmtStarted());
++            newInst.setMachineInstanceId(stateMachineInstance.getId());
++            newInst.setStateMachineInstance(stateMachineInstance);
++
++            if (stateMachineConfig.getSeqGenerator() != null) {
++                newInst.setId(stateMachineConfig.getSeqGenerator().generate(DomainConstants.SEQ_ENTITY_STATE_INST));
++            }
++
++            stateMachineInstance.putStateInstance(newInst.getId(), newInst);
++            ((HierarchicalProcessContext) context).setVariableLocally(DomainConstants.VAR_NAME_STATE_INST, newInst);
++            stateInstance = newInst;
++
++            if (stateMachineInstance.getStateMachine().isPersist() && stateMachineConfig.getStateLogStore() != null) {
++                stateMachineConfig.getStateLogStore().recordStateStarted(stateInstance, context);
++            }
++        }
++
++        stateMachineInstance.setStatus(ExecutionStatus.WA);
++        stateMachineInstance.setRunning(false);
++
++        if (stateMachineInstance.getStateMachine().isPersist() && stateMachineConfig.getStateLogStore() != null) {
++            stateMachineConfig.getStateLogStore().recordStateMachineFinished(stateMachineInstance, context);
++        }
++    }
++
++    @Override
++    public List<StateHandlerInterceptor> getInterceptors() {
++        return interceptors;
++    }
++
++    @Override
++    public void addInterceptor(StateHandlerInterceptor interceptor) {
++        if (interceptors != null && !interceptors.contains(interceptor)) {
++            interceptors.add(interceptor);
++        }
++    }
++
++    public void setInterceptors(List<StateHandlerInterceptor> interceptors) {
++        this.interceptors = interceptors;
++    }
++}
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java
+index a71c72012..938334148 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java
+@@ -258,7 +258,7 @@ public class ServiceTaskHandlerInterceptor implements StateHandlerInterceptor {
+         Map<String, Object> contextVariables =
+                 (Map<String, Object>) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONTEXT);
+         Object serviceOutputParams = context.getVariable(DomainConstants.VAR_NAME_OUTPUT_PARAMS);
+-        if (serviceOutputParams != null) {
++        if (serviceOutputParams != null && !ExecutionStatus.WA.equals(stateInstance.getStatus())) {
+             try {
+                 Map<String, Object> outputVariablesToContext = ParameterUtils.createOutputParams(
+                         stateMachineConfig.getExpressionResolver(), state, serviceOutputParams);
+@@ -289,12 +289,14 @@ public class ServiceTaskHandlerInterceptor implements StateHandlerInterceptor {
+         context.removeVariable(DomainConstants.VAR_NAME_OUTPUT_PARAMS);
+         context.removeVariable(DomainConstants.VAR_NAME_INPUT_PARAMS);
+ 
+-        stateInstance.setGmtEnd(new Date());
++        if (!ExecutionStatus.WA.equals(stateInstance.getStatus())) {
++            stateInstance.setGmtEnd(new Date());
+ 
+-        if (stateMachineInstance.getStateMachine().isPersist()
+-                && state.isPersist()
+-                && stateMachineConfig.getStateLogStore() != null) {
+-            stateMachineConfig.getStateLogStore().recordStateFinished(stateInstance, context);
++            if (stateMachineInstance.getStateMachine().isPersist()
++                    && state.isPersist()
++                    && stateMachineConfig.getStateLogStore() != null) {
++                stateMachineConfig.getStateLogStore().recordStateFinished(stateInstance, context);
++            }
+         }
+ 
+         if (exp != null
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/TaskStateRouter.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/TaskStateRouter.java
+index 2f3ef8248..dbb6e2fd6 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/TaskStateRouter.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/TaskStateRouter.java
+@@ -33,6 +33,7 @@ import org.apache.seata.saga.statelang.domain.ExecutionStatus;
+ import org.apache.seata.saga.statelang.domain.State;
+ import org.apache.seata.saga.statelang.domain.StateInstance;
+ import org.apache.seata.saga.statelang.domain.StateMachine;
++import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+ import org.apache.seata.saga.statelang.domain.SubStateMachine;
+ import org.apache.seata.saga.statelang.domain.impl.AbstractTaskState;
+ import org.apache.seata.saga.statelang.domain.impl.LoopStartStateImpl;
+@@ -68,6 +69,26 @@ public class TaskStateRouter implements StateRouter {
+             return null;
+         }
+ 
++        StateInstance stateInstance = (StateInstance) context.getVariable(DomainConstants.VAR_NAME_STATE_INST);
++        if (stateInstance != null && ExecutionStatus.WA.equals(stateInstance.getStatus())) {
++            StateMachineInstance stateMachineInstance =
++                    (StateMachineInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INST);
++            if (stateMachineInstance != null) {
++                stateMachineInstance.setStatus(ExecutionStatus.WA);
++                stateMachineInstance.setRunning(false);
++                org.apache.seata.saga.engine.StateMachineConfig stateMachineConfig =
++                        (org.apache.seata.saga.engine.StateMachineConfig)
++                                context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
++                if (stateMachineInstance.getStateMachine().isPersist()
++                        && stateMachineConfig != null
++                        && stateMachineConfig.getStateLogStore() != null) {
++                    stateMachineConfig.getStateLogStore().recordStateMachineFinished(stateMachineInstance, context);
++                }
++            }
++            stateInstruction.setEnd(true);
++            return null;
++        }
++
+         // The current CompensationTriggerState can mark the compensation process is started and perform compensation
+         // route processing.
+         State compensationTriggerState =
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/WaitStateRouter.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/WaitStateRouter.java
+new file mode 100644
+index 000000000..c325cd128
+--- /dev/null
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/routers/WaitStateRouter.java
+@@ -0,0 +1,81 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.seata.saga.engine.pcext.routers;
++
++import org.apache.seata.common.exception.FrameworkErrorCode;
++import org.apache.seata.common.util.StringUtils;
++import org.apache.seata.saga.engine.exception.EngineExecutionException;
++import org.apache.seata.saga.engine.pcext.StateInstruction;
++import org.apache.seata.saga.engine.pcext.StateRouter;
++import org.apache.seata.saga.engine.pcext.utils.LoopTaskUtils;
++import org.apache.seata.saga.proctrl.Instruction;
++import org.apache.seata.saga.proctrl.ProcessContext;
++import org.apache.seata.saga.statelang.domain.DomainConstants;
++import org.apache.seata.saga.statelang.domain.ExecutionStatus;
++import org.apache.seata.saga.statelang.domain.State;
++import org.apache.seata.saga.statelang.domain.StateInstance;
++import org.apache.seata.saga.statelang.domain.StateMachine;
++import org.apache.seata.saga.statelang.domain.WaitState;
++import org.apache.seata.saga.statelang.domain.impl.LoopStartStateImpl;
++
++/**
++ * StateRouter for {@link WaitState}.
++ */
++public class WaitStateRouter implements StateRouter {
++
++    @Override
++    public Instruction route(ProcessContext context, State state) throws EngineExecutionException {
++        StateInstruction stateInstruction = context.getInstruction(StateInstruction.class);
++
++        StateInstance stateInstance = (StateInstance) context.getVariable(DomainConstants.VAR_NAME_STATE_INST);
++
++        if (stateInstance == null || ExecutionStatus.WA.equals(stateInstance.getStatus())) {
++            // Suspended: mark instruction as end so ProcessRouter doesn't call endStateMachine
++            stateInstruction.setEnd(true);
++            return null;
++        }
++
++        WaitState waitState = (WaitState) state;
++        String next;
++        if (ExecutionStatus.SK.equals(stateInstance.getStatus())) {
++            // Timed out -> route along TimeoutNext
++            next = waitState.getTimeoutNext();
++        } else {
++            // Signaled / SU -> route along Next
++            next = waitState.getNext();
++        }
++
++        if (StringUtils.isBlank(next)) {
++            return null;
++        }
++
++        StateMachine stateMachine = state.getStateMachine();
++        State nextState = stateMachine.getState(next);
++        if (nextState == null) {
++            throw new EngineExecutionException(
++                    "Next state[" + next + "] is not exists", FrameworkErrorCode.ObjectNotExists);
++        }
++
++        stateInstruction.setStateName(next);
++
++        if (null != LoopTaskUtils.getLoopConfig(context, nextState)) {
++            stateInstruction.setTemporaryState(new LoopStartStateImpl());
++        }
++
++        return stateInstruction;
++    }
++}
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/CompensationHolder.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/CompensationHolder.java
+index dfb669a08..207e07160 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/CompensationHolder.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/CompensationHolder.java
+@@ -118,7 +118,9 @@ public class CompensationHolder {
+                         throw exception;
+                     }
+ 
+-                    if (taskState != null && StringUtils.isNotBlank(taskState.getCompensateState())) {
++                    if (taskState != null
++                            && (StringUtils.isNotBlank(taskState.getCompensateState())
++                                    || taskState instanceof org.apache.seata.saga.statelang.domain.SubStateMachine)) {
+                         stateListToBeCompensated.add(stateInstance);
+                     }
+                 }
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/ParameterUtils.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/ParameterUtils.java
+index 4c015827b..c3cb2fb59 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/ParameterUtils.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/utils/ParameterUtils.java
+@@ -99,6 +99,20 @@ public class ParameterUtils {
+         return outputValues;
+     }
+ 
++    public static Map<String, Object> createOutputParams(
++            ExpressionResolver expressionResolver, Map<String, Object> outputAssignments, Object variablesFrom) {
++        if (CollectionUtils.isEmpty(outputAssignments)) {
++            return new LinkedHashMap<>(0);
++        }
++
++        Map<String, Object> outputValues = new LinkedHashMap<>(outputAssignments.size());
++        for (Map.Entry<String, Object> entry : outputAssignments.entrySet()) {
++            Object expr = createValueExpression(expressionResolver, entry.getValue());
++            outputValues.put(entry.getKey(), getValue(expr, variablesFrom, null));
++        }
++        return outputValues;
++    }
++
+     public static Object getValue(Object valueExpression, Object variablesFrom, StateInstance stateInstance) {
+         if (valueExpression instanceof Expression) {
+             Object value = ((Expression) valueExpression).getValue(variablesFrom);
+diff --git a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/strategy/impl/DefaultStatusDecisionStrategy.java b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/strategy/impl/DefaultStatusDecisionStrategy.java
+index f2c552ac1..83fe3ea99 100644
+--- a/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/strategy/impl/DefaultStatusDecisionStrategy.java
++++ b/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/strategy/impl/DefaultStatusDecisionStrategy.java
+@@ -117,7 +117,8 @@ public class DefaultStatusDecisionStrategy implements StatusDecisionStrategy {
+                             hasSuccessUpdateService = true;
+                         }
+                     }
+-                } else if (ExecutionStatus.SK.equals(stateInstance.getStatus())) {
++                } else if (ExecutionStatus.SK.equals(stateInstance.getStatus())
++                        || ExecutionStatus.WA.equals(stateInstance.getStatus())) {
+                     // ignore
+                 } else {
+                     hasUnsuccessService = true;
+diff --git a/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/expression/spel/SpringELExpressionFactory.java b/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/expression/spel/SpringELExpressionFactory.java
+index f72f75115..7d351b9c0 100644
+--- a/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/expression/spel/SpringELExpressionFactory.java
++++ b/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/expression/spel/SpringELExpressionFactory.java
+@@ -19,6 +19,7 @@ package org.apache.seata.saga.engine.expression.spel;
+ import org.apache.seata.saga.engine.expression.Expression;
+ import org.apache.seata.saga.engine.expression.ExpressionFactory;
+ import org.springframework.context.ApplicationContext;
++import org.springframework.context.expression.MapAccessor;
+ import org.springframework.expression.AccessException;
+ import org.springframework.expression.BeanResolver;
+ import org.springframework.expression.EvaluationContext;
+@@ -52,6 +53,7 @@ public class SpringELExpressionFactory implements ExpressionFactory {
+ 
+     private StandardEvaluationContext createRestrictedEvaluationContext() {
+         StandardEvaluationContext context = new StandardEvaluationContext();
++        context.addPropertyAccessor(new MapAccessor());
+         context.setTypeLocator(new DenyAllTypeLocator());
+         context.setBeanResolver(new AppContextBeanResolver());
+         return context;
+diff --git a/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java b/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java
+index 0b6e3cbc3..ce2d4c278 100644
+--- a/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java
++++ b/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java
+@@ -41,6 +41,7 @@ import org.apache.seata.saga.engine.tm.SagaTransactionalTemplate;
+ import org.apache.seata.saga.proctrl.ProcessContext;
+ import org.apache.seata.saga.statelang.domain.DomainConstants;
+ import org.apache.seata.saga.statelang.domain.ExecutionStatus;
++import org.apache.seata.saga.statelang.domain.State;
+ import org.apache.seata.saga.statelang.domain.StateInstance;
+ import org.apache.seata.saga.statelang.domain.StateMachine;
+ import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+@@ -200,9 +201,10 @@ public class DbAndReportTcStateLogStore extends AbstractStore implements StateLo
+                         LOGGER.warn(
+                                 "StateMachineInstance[{}] is execution timeout, skip report transaction finished to server.",
+                                 machineInstance.getId());
+-                    } else if (StringUtils.isEmpty(machineInstance.getParentId())) {
++                    } else if (StringUtils.isEmpty(machineInstance.getParentId())
++                            && !ExecutionStatus.WA.equals(machineInstance.getStatus())) {
+                         // if parentId is not null, machineInstance is a SubStateMachine, do not report global
+-                        // transaction.
++                        // transaction. Also if status is WA, machine is suspended, do not report finished.
+                         reportTransactionFinished(machineInstance, context);
+                     }
+                 }
+@@ -485,13 +487,14 @@ public class DbAndReportTcStateLogStore extends AbstractStore implements StateLo
+         DefaultStateMachineConfig stateMachineConfig =
+                 (DefaultStateMachineConfig) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
+         StateInstruction instruction = context.getInstruction(StateInstruction.class);
+-        ServiceTaskStateImpl state = (ServiceTaskStateImpl) instruction.getState(context);
++        State state = instruction != null ? instruction.getState(context) : null;
+         StateMachine stateMachine = stateInstance.getStateMachineInstance().getStateMachine();
+ 
+         if (StringUtils.hasLength(stateInstance.getStateIdRetriedFor())) {
+ 
+-            if (null != state.isRetryPersistModeUpdate()) {
+-                return state.isRetryPersistModeUpdate();
++            if (state instanceof ServiceTaskStateImpl
++                    && null != ((ServiceTaskStateImpl) state).isRetryPersistModeUpdate()) {
++                return ((ServiceTaskStateImpl) state).isRetryPersistModeUpdate();
+             } else if (null != stateMachine.isRetryPersistModeUpdate()) {
+                 return stateMachine.isRetryPersistModeUpdate();
+             }
+@@ -507,8 +510,9 @@ public class DbAndReportTcStateLogStore extends AbstractStore implements StateLo
+                         stateInstance.getStateMachineInstance().getStateList().get(i);
+                 if (aStateInstance.isForCompensation()
+                         && aStateInstance.getName().equals(stateInstance.getName())) {
+-                    if (null != state.isCompensatePersistModeUpdate()) {
+-                        return state.isCompensatePersistModeUpdate();
++                    if (state instanceof ServiceTaskStateImpl
++                            && null != ((ServiceTaskStateImpl) state).isCompensatePersistModeUpdate()) {
++                        return ((ServiceTaskStateImpl) state).isCompensatePersistModeUpdate();
+                     } else if (null != stateMachine.isCompensatePersistModeUpdate()) {
+                         return stateMachine.isCompensatePersistModeUpdate();
+                     }
+@@ -785,7 +789,7 @@ public class DbAndReportTcStateLogStore extends AbstractStore implements StateLo
+             return stateInstanceList;
+         }
+         StateInstance lastStateInstance = CollectionUtils.getLast(stateInstanceList);
+-        if (lastStateInstance.getGmtEnd() == null) {
++        if (lastStateInstance.getGmtEnd() == null && !ExecutionStatus.WA.equals(lastStateInstance.getStatus())) {
+             lastStateInstance.setStatus(ExecutionStatus.RU);
+         }
+         Map<String, StateInstance> originStateMap = new HashMap<>();
+@@ -820,6 +824,37 @@ public class DbAndReportTcStateLogStore extends AbstractStore implements StateLo
+         return stateInstanceList;
+     }
+ 
++    @Override
++    public List<StateInstance> queryWaitingStateInstances(String tenantId) {
++        List<StateInstance> stateInstanceList =
++                selectList(stateLogStoreSqls.getQueryWaitingStateInstancesSql(dbType), RESULT_SET_TO_STATE_INSTANCE);
++        if (CollectionUtils.isNotEmpty(stateInstanceList)) {
++            for (StateInstance stateInstance : stateInstanceList) {
++                deserializeParamsAndException(stateInstance);
++            }
++        }
++        return stateInstanceList;
++    }
++
++    @Override
++    public boolean claimWaitStateInstance(
++            String stateInstanceId, String machineInstanceId, ExecutionStatus newStatus, Object outputParams) {
++        String serializedOutput = null;
++        if (outputParams != null) {
++            serializedOutput = paramsSerializer.serialize(outputParams);
++        }
++        java.sql.Timestamp now = new java.sql.Timestamp(System.currentTimeMillis());
++        int updated = executeUpdate(
++                stateLogStoreSqls.getClaimWaitStateInstanceSql(dbType),
++                newStatus.name(),
++                serializedOutput,
++                now,
++                now,
++                stateInstanceId,
++                machineInstanceId);
++        return updated > 0;
++    }
++
+     @Override
+     public void clearUp(ProcessContext context) {
+         RootContext.unbind();
+@@ -856,7 +891,9 @@ public class DbAndReportTcStateLogStore extends AbstractStore implements StateLo
+     private void putLastStateToMap(Map<String, StateInstance> resultMap, StateInstance newState, String key) {
+         if (!resultMap.containsKey(key)) {
+             resultMap.put(key, newState);
+-        } else if (newState.getGmtEnd().after(resultMap.get(key).getGmtEnd())) {
++        } else if (newState.getGmtEnd() != null
++                && resultMap.get(key).getGmtEnd() != null
++                && newState.getGmtEnd().after(resultMap.get(key).getGmtEnd())) {
+             StateInstance oldState = resultMap.remove(key);
+             oldState.setIgnoreStatus(true);
+ 
+@@ -928,7 +965,10 @@ public class DbAndReportTcStateLogStore extends AbstractStore implements StateLo
+         public void toStatement(StateMachineInstance stateMachineInstance, PreparedStatement statement)
+                 throws SQLException {
+             statement.setTimestamp(
+-                    1, new Timestamp(stateMachineInstance.getGmtEnd().getTime()));
++                    1,
++                    stateMachineInstance.getGmtEnd() != null
++                            ? new Timestamp(stateMachineInstance.getGmtEnd().getTime())
++                            : null);
+             statement.setBytes(
+                     2,
+                     stateMachineInstance.getSerializedException() != null
+@@ -975,12 +1015,23 @@ public class DbAndReportTcStateLogStore extends AbstractStore implements StateLo
+     private static class StateInstanceToStatementForUpdate implements ObjectToStatement<StateInstance> {
+         @Override
+         public void toStatement(StateInstance stateInstance, PreparedStatement statement) throws SQLException {
+-            statement.setTimestamp(1, new Timestamp(stateInstance.getGmtEnd().getTime()));
++            statement.setTimestamp(
++                    1,
++                    stateInstance.getGmtEnd() != null
++                            ? new Timestamp(stateInstance.getGmtEnd().getTime())
++                            : null);
+             statement.setBytes(
+                     2, stateInstance.getException() != null ? (byte[]) stateInstance.getSerializedException() : null);
+             statement.setString(3, stateInstance.getStatus().name());
+             statement.setObject(4, stateInstance.getSerializedOutputParams());
+-            statement.setTimestamp(5, new Timestamp(stateInstance.getGmtEnd().getTime()));
++            statement.setTimestamp(
++                    5,
++                    stateInstance.getGmtEnd() != null
++                            ? new Timestamp(stateInstance.getGmtEnd().getTime())
++                            : (stateInstance.getGmtUpdated() != null
++                                    ? new Timestamp(
++                                            stateInstance.getGmtUpdated().getTime())
++                                    : new Timestamp(System.currentTimeMillis())));
+             statement.setString(6, stateInstance.getId());
+             statement.setString(7, stateInstance.getMachineInstanceId());
+         }
+diff --git a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/ExecutionStatus.java b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/ExecutionStatus.java
+index 247f48d3d..627bc33ff 100644
+--- a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/ExecutionStatus.java
++++ b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/ExecutionStatus.java
+@@ -45,7 +45,12 @@ public enum ExecutionStatus {
+     /**
+      * Skipped
+      */
+-    SK("Skipped");
++    SK("Skipped"),
++
++    /**
++     * Waiting
++     */
++    WA("Waiting");
+ 
+     private String statusString;
+ 
+diff --git a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/StateType.java b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/StateType.java
+index e8e8ac251..b019af7b8 100644
+--- a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/StateType.java
++++ b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/StateType.java
+@@ -65,7 +65,12 @@ public enum StateType {
+     /**
+      * LoopStart State
+      */
+-    LOOP_START("LoopStart");
++    LOOP_START("LoopStart"),
++
++    /**
++     * Wait State
++     */
++    WAIT("Wait");
+ 
+     private String value;
+ 
+diff --git a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/WaitState.java b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/WaitState.java
+new file mode 100644
+index 000000000..ea540ef2f
+--- /dev/null
++++ b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/WaitState.java
+@@ -0,0 +1,82 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.seata.saga.statelang.domain;
++
++import java.time.Duration;
++import java.util.Map;
++
++/**
++ * Public domain representation of a parsed Wait state.
++ */
++public interface WaitState extends State {
++
++    /**
++     * Get the required external event name matched by signal delivery.
++     *
++     * @return the event name
++     */
++    String getEvent();
++
++    /**
++     * Set the event name.
++     *
++     * @param event the event name
++     */
++    void setEvent(String event);
++
++    /**
++     * Get the optional output mapping applied to the winning signal payload.
++     *
++     * @return the output mapping
++     */
++    Map<String, Object> getOutput();
++
++    /**
++     * Set the output mapping.
++     *
++     * @param output the output mapping
++     */
++    void setOutput(Map<String, Object> output);
++
++    /**
++     * Get the optional strictly positive ISO-8601 duration, or null for an indefinite wait.
++     *
++     * @return the timeout duration
++     */
++    Duration getTimeout();
++
++    /**
++     * Set the timeout duration.
++     *
++     * @param timeout the timeout duration
++     */
++    void setTimeout(Duration timeout);
++
++    /**
++     * Get the timeout successor, present exactly when getTimeout() is present.
++     *
++     * @return the timeout successor state name
++     */
++    String getTimeoutNext();
++
++    /**
++     * Set the timeout successor state name.
++     *
++     * @param timeoutNext the timeout successor state name
++     */
++    void setTimeoutNext(String timeoutNext);
++}
+diff --git a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/WaitStateImpl.java b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/WaitStateImpl.java
+new file mode 100644
+index 000000000..51c5dae28
+--- /dev/null
++++ b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/impl/WaitStateImpl.java
+@@ -0,0 +1,78 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.seata.saga.statelang.domain.impl;
++
++import org.apache.seata.saga.statelang.domain.StateType;
++import org.apache.seata.saga.statelang.domain.WaitState;
++
++import java.time.Duration;
++import java.util.Map;
++
++/**
++ * Domain implementation of {@link WaitState}.
++ */
++public class WaitStateImpl extends BaseState implements WaitState {
++
++    private String event;
++    private Map<String, Object> output;
++    private Duration timeout;
++    private String timeoutNext;
++
++    public WaitStateImpl() {
++        setType(StateType.WAIT);
++    }
++
++    @Override
++    public String getEvent() {
++        return event;
++    }
++
++    @Override
++    public void setEvent(String event) {
++        this.event = event;
++    }
++
++    @Override
++    public Map<String, Object> getOutput() {
++        return output;
++    }
++
++    @Override
++    public void setOutput(Map<String, Object> output) {
++        this.output = output;
++    }
++
++    @Override
++    public Duration getTimeout() {
++        return timeout;
++    }
++
++    @Override
++    public void setTimeout(Duration timeout) {
++        this.timeout = timeout;
++    }
++
++    @Override
++    public String getTimeoutNext() {
++        return timeoutNext;
++    }
++
++    @Override
++    public void setTimeoutNext(String timeoutNext) {
++        this.timeoutNext = timeoutNext;
++    }
++}
+diff --git a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/StateParserFactory.java b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/StateParserFactory.java
+index 5d4d8dc2a..9b85e1f6c 100644
+--- a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/StateParserFactory.java
++++ b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/StateParserFactory.java
+@@ -25,6 +25,7 @@ import org.apache.seata.saga.statelang.parser.impl.ScriptTaskStateParser;
+ import org.apache.seata.saga.statelang.parser.impl.ServiceTaskStateParser;
+ import org.apache.seata.saga.statelang.parser.impl.SubStateMachineParser;
+ import org.apache.seata.saga.statelang.parser.impl.SucceedEndStateParser;
++import org.apache.seata.saga.statelang.parser.impl.WaitStateParser;
+ 
+ import java.util.Map;
+ import java.util.concurrent.ConcurrentHashMap;
+@@ -46,6 +47,7 @@ public class StateParserFactory {
+         stateParserMap.put(StateType.SUB_STATE_MACHINE, new SubStateMachineParser());
+         stateParserMap.put(StateType.SUB_MACHINE_COMPENSATION, new CompensateSubStateMachineStateParser());
+         stateParserMap.put(StateType.SCRIPT_TASK, new ScriptTaskStateParser());
++        stateParserMap.put(StateType.WAIT, new WaitStateParser());
+     }
+ 
+     public static StateParser getStateParser(StateType stateType) {
+diff --git a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/WaitStateParser.java b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/WaitStateParser.java
+new file mode 100644
+index 000000000..2a4b0abf5
+--- /dev/null
++++ b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/impl/WaitStateParser.java
+@@ -0,0 +1,80 @@
++/*
++ * Licensed to the Apache Software Foundation (ASF) under one or more
++ * contributor license agreements.  See the NOTICE file distributed with
++ * this work for additional information regarding copyright ownership.
++ * The ASF licenses this file to You under the Apache License, Version 2.0
++ * (the "License"); you may not use this file except in compliance with
++ * the License.  You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++package org.apache.seata.saga.statelang.parser.impl;
++
++import org.apache.seata.common.util.StringUtils;
++import org.apache.seata.saga.statelang.domain.WaitState;
++import org.apache.seata.saga.statelang.domain.impl.WaitStateImpl;
++import org.apache.seata.saga.statelang.parser.StateParser;
++
++import java.time.Duration;
++import java.util.Map;
++
++/**
++ * Parser for {@link WaitState}.
++ */
++public class WaitStateParser extends BaseStateParser implements StateParser<WaitState> {
++
++    @Override
++    public WaitState parse(Object node) {
++        WaitStateImpl waitState = new WaitStateImpl();
++        parseBaseAttributes(waitState, node);
++
++        Map<String, Object> nodeMap = (Map<String, Object>) node;
++
++        String event = (String) nodeMap.get("Event");
++        if (StringUtils.isBlank(event)) {
++            throw new IllegalArgumentException("Wait state requires a non-blank Event property");
++        }
++        waitState.setEvent(event);
++
++        Object outputObj = nodeMap.get("Output");
++        if (outputObj instanceof Map) {
++            waitState.setOutput((Map<String, Object>) outputObj);
++        }
++
++        String timeoutStr = (String) nodeMap.get("Timeout");
++        String timeoutNext = (String) nodeMap.get("TimeoutNext");
++
++        boolean hasTimeout = StringUtils.isNotBlank(timeoutStr);
++        boolean hasTimeoutNext = StringUtils.isNotBlank(timeoutNext);
++
++        if (hasTimeout != hasTimeoutNext) {
++            throw new IllegalArgumentException(
++                    "Wait state Timeout and TimeoutNext must either both be present or both absent");
++        }
++
++        if (hasTimeout) {
++            Duration duration;
++            try {
++                duration = Duration.parse(timeoutStr);
++            } catch (Exception e) {
++                throw new IllegalArgumentException("Invalid ISO-8601 Timeout duration: " + timeoutStr, e);
++            }
++
++            if (duration.isZero() || duration.isNegative()) {
++                throw new IllegalArgumentException(
++                        "Wait state Timeout must be a strictly positive duration: " + timeoutStr);
++            }
++
++            waitState.setTimeout(duration);
++            waitState.setTimeoutNext(timeoutNext);
++        }
++
++        return waitState;
++    }
++}
+diff --git a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/utils/StateMachineUtils.java b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/utils/StateMachineUtils.java
+index 74e4f744c..4cdbd0801 100644
+--- a/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/utils/StateMachineUtils.java
++++ b/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/parser/utils/StateMachineUtils.java
+@@ -20,6 +20,7 @@ import org.apache.seata.common.util.StringUtils;
+ import org.apache.seata.saga.statelang.domain.ChoiceState;
+ import org.apache.seata.saga.statelang.domain.State;
+ import org.apache.seata.saga.statelang.domain.TaskState;
++import org.apache.seata.saga.statelang.domain.WaitState;
+ 
+ import java.util.HashSet;
+ import java.util.Optional;
+@@ -52,6 +53,12 @@ public class StateMachineUtils {
+                 // Default choice
+                 subsequentStates.add(((ChoiceState) state).getDefault());
+                 break;
++
++            case WAIT:
++                if (state instanceof WaitState) {
++                    subsequentStates.add(((WaitState) state).getTimeoutNext());
++                }
++                break;
+             default:
+                 // Otherwise do nothing
+         }
+diff --git a/compatible/src/main/java/io/seata/saga/statelang/domain/ExecutionStatus.java b/compatible/src/main/java/io/seata/saga/statelang/domain/ExecutionStatus.java
+index 6350d1d45..37a0504ce 100644
+--- a/compatible/src/main/java/io/seata/saga/statelang/domain/ExecutionStatus.java
++++ b/compatible/src/main/java/io/seata/saga/statelang/domain/ExecutionStatus.java
+@@ -45,7 +45,12 @@ public enum ExecutionStatus {
+     /**
+      * Skipped
+      */
+-    SK("Skipped");
++    SK("Skipped"),
++
++    /**
++     * Waiting
++     */
++    WA("Waiting");
+ 
+     private String statusString;
+ 
+@@ -72,6 +77,8 @@ public enum ExecutionStatus {
+                 return UN;
+             case SK:
+                 return SK;
++            case WA:
++                return WA;
+             default:
+                 throw new IllegalArgumentException("Cannot convert " + target.name());
+         }
+@@ -89,6 +96,8 @@ public enum ExecutionStatus {
+                 return org.apache.seata.saga.statelang.domain.ExecutionStatus.UN;
+             case SK:
+                 return org.apache.seata.saga.statelang.domain.ExecutionStatus.SK;
++            case WA:
++                return org.apache.seata.saga.statelang.domain.ExecutionStatus.WA;
+             default:
+                 throw new IllegalArgumentException("Cannot convert " + this.name());
+         }
+diff --git a/compatible/src/main/java/io/seata/saga/statelang/domain/StateType.java b/compatible/src/main/java/io/seata/saga/statelang/domain/StateType.java
+index 1015787c9..b5d394f99 100644
+--- a/compatible/src/main/java/io/seata/saga/statelang/domain/StateType.java
++++ b/compatible/src/main/java/io/seata/saga/statelang/domain/StateType.java
+@@ -65,7 +65,12 @@ public enum StateType {
+     /**
+      * LoopStart State
+      */
+-    LOOP_START("LoopStart");
++    LOOP_START("LoopStart"),
++
++    /**
++     * Wait State
++     */
++    WAIT("Wait");
+ 
+     private String value;
+ 
+@@ -110,6 +115,8 @@ public enum StateType {
+                 return SCRIPT_TASK;
+             case LOOP_START:
+                 return LOOP_START;
++            case WAIT:
++                return WAIT;
+             default:
+                 throw new IllegalArgumentException("Cannot convert " + target.name());
+         }
+@@ -135,6 +142,8 @@ public enum StateType {
+                 return org.apache.seata.saga.statelang.domain.StateType.SCRIPT_TASK;
+             case LOOP_START:
+                 return org.apache.seata.saga.statelang.domain.StateType.LOOP_START;
++            case WAIT:
++                return org.apache.seata.saga.statelang.domain.StateType.WAIT;
+             default:
+                 throw new IllegalArgumentException("Cannot convert " + this.name());
+         }

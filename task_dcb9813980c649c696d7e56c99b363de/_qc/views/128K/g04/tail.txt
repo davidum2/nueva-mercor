@@ -1,0 +1,392 @@
+[195] assistant: [reasoning]
+Confirmed: `WindowFramedAggregateProcessor.process` falls back to `DefaultFramedOnHeapAggregatable` when the input doesn't implement `FramedOnHeapAggregatable`. So `proc.process(rac)` with a `MapOfColumnsRowsAndColumns`... wait — `MapOfColumnsRowsAndColumns` might implement FramedOnHeapAggregatable itself (it's appendable). Either way it exercises RangeFrameResolver via buildRangeIteratorFor. 
+
+Note: `aggregateAll(frame, aggregations)` — aggregations could be null (emptyToNull)! With null aggregations → NPE... existing tests pass non-empty. Fine.
+
+Now — one important check on `DefaultFramedOnHeapAggregatable.aggregateAll` → `buildIteratorFor(rac, frame)` — my Range branch is AFTER Groups — order: isEffectivelyUnbounded → Rows → Groups → Range → throw ✓.
+
+But WAIT — `unwrap(WindowFrame.Rows.class)`: Range.unwrap(Rows.class) → not instance → null ✓ falls through to Range ✓.
+
+Now let me also double check `AppendableRowsAndColumns` (interface passed to buildIteratorFor) vs `RowsAndColumns` in RangeFrameResolver ctor — `buildRangeIteratorFor(AppendableRowsAndColumns rac, ...)` — resolver takes RowsAndColumns — AppendableRowsAndColumns extends RowsAndColumns ✓.
+
+Hmm — also in the resolver: `rac.findColumn(orderColumn)` — RowsAndColumns.findColumn ✓ exists (WindowValueProcessorBase uses input.findColumn ✓).
+
+Also `ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(...)` — from existing code ✓.
+
+Now — one more critical review of the resolver's group computation: `computeBoundaries(ImmutableList.of(orderColumn))` — the order of boundaries must match the sorted order of the RAC. computeBoundaries computes run boundaries of equal values via compareRows — groups must be contiguous ✓ (sorted input assumption, same as Groups path ✓).
+
+BUT — null handling in computeBoundaries: compareRows(null, null) == 0 → nulls form one group ✓ (verified for LongColumnAccessorBase). For IntArrayColumn (IntArrayColumn → IntColumnAccessorBase?) — compareRows null semantics: summary said verified only for Long. For INT columns — IntColumnAccessorBase.compareRows — probably same pattern (nulls first). Since all nulls are contiguous anyway (sorted), even if compareRows(null,null) returned non-zero, the boundaries would just split the null run into multiple single-row groups — each null row would get frame [nullRunStart, nullRunEnd) — same result ✓ (each null row resolves to the same null-run edges). And peers (equal non-null values) → compareRows returns 0 ✓ standard. So correctness doesn't depend on compareRows null semantics ✓ (my null-run detection uses accessor.isNull directly ✓).
+
+Wait — one subtlety: if compareRows treats null-vs-null as 0 → one group ✓. If not → multiple adjacent null groups, each resolving to the same frame ✓ same output. 
+
+Now — `IntColumnAccessorBase.compareRows` — let me check quickly that it exists / pattern matches (it's used by computeBoundaries for int columns in my aggregate test). Actually the aggregate test uses IntArrayColumn — computeBoundaries requires the RAC to implement ClusteredGroupPartitioner semantic — `ClusteredGroupPartitioner.fromRAC(rac)` — MapOfColumnsRowsAndColumns → DefaultClusteredGroupPartitioner ✓ (existing Groups tests use the same path with String columns; IntArrayColumn→IntColumnAccessorBase presumably implements nullsFirst compare like Long ✓).
+
+OK — now also check `ColumnAccessor.isNull` and `getDouble` exist on ColumnAccessor interface. From summary: "ColumnAccessor: isNull/getDouble/getObject/numRows/getType" ✓ verified earlier.
+
+Now write the native tests.
+
+WindowFrameTest — add testEqualsRange.
+
+WindowFirstProcessorTest — add tests. Let me now write them.
+
+Also — RowsAndColumnsHelper.expectColumn signatures: let me check RowsAndColumnsHelper quickly for `expectColumn(String, ColumnType, Object...)` and `expectColumn(String, Object[], ColumnType)` variants used in WindowFirstProcessorTest — from the file: `.expectColumn("out", ColumnType.STRING, "a", "a", ...)` and `.expectColumn("out", new Object[]{null, "a", ...}, ColumnType.STRING)` ✓ both exist.
+
+For WindowFirstProcessorTest I need imports: ColumnWithDirection. Check current imports of WindowFirstProcessorTest — it has org.apache.druid.query.operator.window.WindowFrame, ColumnType, etc. Need to add `import org.apache.druid.query.operator.ColumnWithDirection;`.
+
+Let me write all the native test edits now.
+Now writing the native tests. First `WindowFrameTest`:
+[tool:edit] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java", "newString": "  @Test\n  public void testEqualsGroups()\n  {\n    EqualsVerifier.forClass(WindowFrame.Groups.class)\n        .usingGetClass()\n        .verify();\n  }\n\n  @Test\n  public void testEqualsRange()\n  {\n    EqualsVerifier.forClass(WindowFrame.Range.class)\n        .usingGetClass()\n        .verify();\n  }", "oldString": "  @Test\n  public void testEqualsGroups()\n  {\n    EqualsVerifier.forClass(WindowFrame.Groups.class)\n        .usingGetClass()\n        .verify();\n  }"}
+Edit applied successfully.
+[patch] /app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java
+[196] assistant: [reasoning]
+Now WindowFirstProcessorTest — add range tests. I'll append test methods before the `makeStringRac` helper. Need imports: `org.apache.druid.query.operator.ColumnWithDirection` and `org.apache.druid.query.rowsandcols.column.IntArrayColumn` (not imported yet — current imports: DoubleArrayColumn, IntArrayColumn ✓ both imported). IntArrayColumn IS imported (line 33). Need ColumnWithDirection import.
+Now `WindowFirstProcessorTest` — add range frame tests:
+[tool:edit] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java", "newString": "import com.google.common.collect.ImmutableList;\nimport org.apache.druid.query.operator.ColumnWithDirection;\nimport org.apache.druid.query.operator.window.ComposingProcessor;\nimport org.apache.druid.query.operator.window.RowsAndColumnsHelper;\nimport org.apache.druid.query.operator.window.WindowFrame;", "oldString": "import com.google.common.collect.ImmutableList;\nimport org.apache.druid.query.operator.window.ComposingProcessor;\nimport org.apache.druid.query.operator.window.RowsAndColumnsHelper;\nimport org.apache.druid.query.operator.window.WindowFrame;"}
+Edit applied successfully.
+[patch] /app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java
+[197] assistant: [tool:edit] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java", "newString": "  @Test\n  public void testFirstWithRangeFrame()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING\n    // Keys sorted ascending: 1, 2, 2, 4, 7\n    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=1 (row 0): frame = rows with value in [0, 2] -> rows 0, 1 -> first \"v1\"\n    // k=2 (rows 1, 2): frame = rows with value in [1, 3] -> rows 1, 2 -> first \"v2\"\n    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> first \"v4\"\n    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> first \"v5\"\n    // Rows 1 and 2 are peers (both k=2) and get identical output.\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v2\", \"v2\", \"v4\", \"v5\")\n        .validate(results);\n  }\n\n  @Test\n  public void testFirstWithRangeFrameUnboundedPreceding()\n  {\n    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING\n    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(null, 1.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // Every frame starts at row 0, so FIRST_VALUE is always \"v1\".\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v1\", \"v1\", \"v1\", \"v1\")\n        .validate(results);\n  }\n\n  @Test\n  public void testFirstWithRangeFrameCurrentRowUpper()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND CURRENT ROW\n    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-1.0, 0.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=1 (row 0): frame = rows with value in [0, 1] -> row 0 -> \"v1\"\n    // k=2 (rows 1, 2): frame = rows with value in [1, 2] -> rows 1, 2 -> \"v2\"\n    // k=4 (row 3): frame = rows with value in [3, 4] -> row 3 -> \"v4\"\n    // k=7 (row 4): frame = rows with value in [6, 7] -> row 4 -> \"v5\"\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v2\", \"v2\", \"v4\", \"v5\")\n        .validate(results);\n  }\n\n  @Test\n  public void testFirstWithRangeFrameEmptyFrames()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 2 PRECEDING AND 1 PRECEDING — frame can exclude the current row\n    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-2.0, -1.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=1 (row 0): frame = rows with value in [-1, 0] -> empty -> null\n    // k=2 (rows 1, 2): frame = rows with value in [0, 1] -> empty -> null\n    // k=4 (row 3): frame = rows with value in [2, 3] -> rows 1, 2 -> \"v2\"\n    // k=7 (row 4): frame = rows with value in [5, 6] -> empty -> null\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", new Object[]{null, null, null, \"v2\", null}, ColumnType.STRING)\n        .validate(results);\n  }\n\n  @Test\n  public void testFirstWithRangeFrameNulls()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING; nulls sort first\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG));\n    map.put(\"val\", new ObjectArrayColumn(new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\"}, ColumnType.STRING));\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // Null rows (rows 0, 1): finite bounds resolve to the null run, [0, 2) -> first \"v1\"\n    // k=2 (row 2): frame = rows with value in [1, 3] -> row 2 -> \"v3\"\n    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> \"v4\"\n    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> \"v5\"\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v1\", \"v3\", \"v4\", \"v5\")\n        .validate(results);\n  }\n\n  @Test\n  public void testFirstWithRangeFrameNullsAndUnboundedPreceding()\n  {\n    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW; nulls sort first\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG));\n    map.put(\"val\", new ObjectArrayColumn(new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\"}, ColumnType.STRING));\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(null, 0.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // Every frame starts at row 0 (nulls included, unbounded side reaches the partition edge),\n    // so FIRST_VALUE is always \"v1\".\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v1\", \"v1\", \"v1\", \"v1\")\n        .validate(results);\n  }\n\n  @Test\n  public void testFirstWithRangeFrameDescending()\n  {\n    // ORDER BY k DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING\n    // Keys sorted descending: 7, 4, 2, 2, 1\n    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{7, 4, 2, 2, 1});\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.descending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=7 (row 0): frame = rows with value in [6, 8] -> row 0 -> \"v1\"\n    // k=4 (row 1): frame = rows with value in [3, 5] -> row 1 -> \"v2\"\n    // k=2 (rows 2, 3): frame = rows with value in [1, 3] -> rows 2, 3 -> \"v3\"\n    // k=1 (row 4): frame = rows with value in [0, 2] -> rows 2, 3, 4 -> \"v3\"\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v2\", \"v3\", \"v3\", \"v3\")\n        .validate(results);\n  }\n\n  @Test\n  public void testFirstWithRangeFrameDescendingNulls()\n  {\n    // ORDER BY k DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING; nulls sort last\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new ObjectArrayColumn(new Integer[]{7, 4, 2, 1, null, null}, ColumnType.LONG));\n    map.put(\n        \"val\",\n        new ObjectArrayColumn(new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\", \"v6\"}, ColumnType.STRING)\n    );\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.descending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=7 (row 0): frame = rows with value in [6, 8] -> row 0 -> \"v1\"\n    // k=4 (row 1): frame = rows with value in [3, 5] -> row 1 -> \"v2\"\n    // k=2 (row 2): frame = rows with value in [1, 3] -> row 2 -> \"v3\"\n    // k=1 (row 3): frame = rows with value in [0, 2] -> rows 2, 3 -> \"v3\"\n    // Null rows (rows 4, 5): finite bounds resolve to the null run, [4, 6) -> first \"v5\"\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v2\", \"v3\", \"v3\", \"v5\", \"v5\")\n        .validate(results);\n  }\n\n  @Test\n  public void testFirstWithRangeFrameWholePartition()\n  {\n    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING\n    final MapOfColumnsRowsAndColumns rac = makeKeyValueRac(new int[]{1, 2, 2, 4, 7});\n    final WindowFirstProcessor processor = new WindowFirstProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(null, null, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // A Range frame without offsets covers the whole partition, like WindowFrame.unbounded().\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v1\", \"v1\", \"v1\", \"v1\")\n        .validate(results);\n  }\n\n  private static MapOfColumnsRowsAndColumns makeStringRac(String[] values)\n  {\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"col\", new ObjectArrayColumn(values, ColumnType.STRING));\n    return MapOfColumnsRowsAndColumns.fromMap(map);\n  }\n\n  private static MapOfColumnsRowsAndColumns makeKeyValueRac(int[] keys)\n  {\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new IntArrayColumn(keys));\n    map.put(\n        \"val\",\n        new ObjectArrayColumn(\n            new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\"},\n            ColumnType.STRING\n        )\n    );\n    return MapOfColumnsRowsAndColumns.fromMap(map);\n  }\n}", "oldString": "  private static MapOfColumnsRowsAndColumns makeStringRac(String[] values)\n  {\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"col\", new ObjectArrayColumn(values, ColumnType.STRING));\n    return MapOfColumnsRowsAndColumns.fromMap(map);\n  }\n}"}
+Edit applied successfully.
+[patch] /app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java
+[198] assistant: [reasoning]
+Wait — there's an issue with `makeKeyValueRac`: the DESC test uses 5 rows ✓ v1..v5 ✓. But `testFirstWithRangeFrameDescendingNulls` uses its own inline map with 6 rows ✓. And in `makeKeyValueRac` the "val" array is hardcoded to v1..v5 — all my uses with makeKeyValueRac have 5 rows ✓.
+
+But hold on — `ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG)` — ObjectArrayColumn with boxed Integers and ColumnType.LONG — getDouble on boxed Integer works? ColumnAccessor for ObjectArrayColumn → ObjectArrayAccessor? getDouble would do ((Number) object).doubleValue() probably ✓. isNull → object == null ✓. getDouble on null → hmm — ColumnAccessorBase.getDouble returns 0.0 for null? Summary said "getDouble on a null row gives 0.0" — but for ObjectArrayColumn... ObjectArrayAccessor.getDouble — let me check ColumnAccessorBase base impl. Actually the binary searches never touch nulls (search region excludes nulls) ✓. But wait — for the ObjectArrayColumn case, does `getDouble` throw on null instead of returning 0.0? Doesn't matter — never called on nulls ✓.
+
+Hmm — but also: `ObjectArrayColumn` with `ColumnType.LONG` and Integer values — fine (Number.doubleValue ✓).
+
+Wait, actually there's a subtlety in `testFirstWithRangeFrameDescendingNulls`: null group detection — computeBoundaries groups nulls as one group ✓ (compareRows(null,null)=0 — need to verify ObjectArrayColumn's compareRows handles nulls... ObjectArrayColumn → ObjectArrayColumn implements Column; its toAccessor() → ObjectArrayColumnAccessorBase? compareRows null semantics for object columns — the Groups test in WindowFirstProcessorTest uses ObjectArrayColumn with Strings (no nulls in "grp" though). Hmm — for MY tests: computeBoundaries on the "k" column which has nulls → DefaultClusteredGroupPartitioner... uses accessor.compareRows? Let me check ClusteredGroupPartitioner.computeBoundaries — from summary: "computeBoundaries returns edges of contiguous runs" using compareRows on the column accessors. For ObjectArrayColumn with nulls — if compareRows(null, null) != 0, the null run splits into multiple groups — as I analyzed, each null row resolves to the same null-run frame → same output ✓. So correctness holds regardless.
+
+But wait — there IS one more consideration: `compareRows` might THROW on nulls (NPE/ISE) for some accessor types? For LongColumnAccessorBase verified null-safe (returns -1 for null lhs). ObjectArrayColumn's accessor — let me check ObjectArrayColumn quickly.
+Let me check `ObjectArrayColumn`'s accessor null handling since my null tests use it:
+[tool:bash] {"command": "grep -rn \"compareRows\\|isNull\\|getDouble\" /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ObjectArrayColumn.java | head; grep -rn \"class ObjectArrayAccessorBase\\|compareRows\" /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ObjectArrayAccessorBase.java 2>/dev/null | head"}
+(no output)
+[199] assistant: [tool:bash] {"command": "sed -n 20,120p /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ObjectArrayColumn.java"}
+package org.apache.druid.query.rowsandcols.column;
+
+import org.apache.druid.query.rowsandcols.column.accessor.ObjectColumnAccessorBase;
+import org.apache.druid.query.rowsandcols.util.FindResult;
+import org.apache.druid.segment.column.ColumnType;
+
+import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
+import java.util.Arrays;
+import java.util.Comparator;
+
+public class ObjectArrayColumn implements Column
+{
+  private final Object[] objects;
+  private final ColumnType resultType;
+  private final Comparator<Object> comparator;
+
+  public ObjectArrayColumn(Object[] objects, ColumnType resultType)
+  {
+    this(objects, resultType, Comparator.nullsFirst(resultType.getStrategy()));
+  }
+
+  public ObjectArrayColumn(Object[] objects, ColumnType resultType, Comparator<Object> comparator)
+  {
+    this.objects = objects;
+    this.resultType = resultType;
+    this.comparator = comparator;
+  }
+
+  /**
+   * Gets the underlying object array.  This method is exposed on the concrete class explicitly to allow for
+   * mutation.  This class does absolutely nothing to ensure that said mutation of the array is valid.  It is up
+   * to the caller that is choosing to do this mutation to make sure that it is safe.
+   *
+   * @return the object array backing this column
+   */
+  public Object[] getObjects()
+  {
+    return objects;
+  }
+
+  @Nonnull
+  @Override
+  public ColumnAccessor toAccessor()
+  {
+    return new MyColumnAccessor();
+  }
+
+  @Nullable
+  @SuppressWarnings("unchecked")
+  @Override
+  public <T> T as(Class<? extends T> clazz)
+  {
+    if (VectorCopier.class.equals(clazz)) {
+      return (T) (VectorCopier) (into, intoStart) -> System.arraycopy(objects, 0, into, intoStart, objects.length);
+    }
+    if (ColumnValueSwapper.class.equals(clazz)) {
+      return (T) (ColumnValueSwapper) (lhs, rhs) -> {
+        Object tmp = objects[lhs];
+        objects[lhs] = objects[rhs];
+        objects[rhs] = tmp;
+      };
+    }
+    return null;
+  }
+
+  private class MyColumnAccessor extends ObjectColumnAccessorBase implements BinarySearchableAccessor
+  {
+    @Override
+    protected Object getVal(int rowNum)
+    {
+      return objects[rowNum];
+    }
+
+    @Override
+    protected Comparator<Object> getComparator()
+    {
+      return comparator;
+    }
+
+    @Override
+    public ColumnType getType()
+    {
+      return resultType;
+    }
+
+    @Override
+    public int numRows()
+    {
+      return objects.length;
+    }
+
+    @Override
+    public FindResult findNull(int startIndex, int endIndex)
+    {
+      return findComplex(startIndex, endIndex, null);
+    }
+
+    @Override
+    public FindResult findDouble(int startIndex, int endIndex, double val)
+    {
+[200] assistant: [reasoning]
+ObjectArrayColumn uses `Comparator.nullsFirst(resultType.getStrategy())` — nulls-first comparator → compareRows(null, null) == 0 ✓, null < non-null ✓. And `ObjectColumnAccessorBase` — let me verify `isNull`/`getDouble` behavior:
+
+- getVal(rowNum) returns the object; `isNull` presumably `getVal == null` ✓.
+- getDouble → probably `(Number) getVal` → `.doubleValue()` — null → NPE? Never called on nulls in my code path (search region excludes nulls) ✓. But wait — `accessor.getDouble(groupStart)` — groupStart is never a null row in that branch (I check `accessor.isNull(groupStart)` first) ✓.
+
+Hmm — but hold on, in the resolver I call `accessor.isNull(groupStart)` — for ObjectColumnAccessorBase, isNull is `getVal(rowNum) == null` ✓.
+
+Now — one important check for the DESC-nulls test: `ColumnType.LONG` boxed Integer values — `Comparator.nullsFirst(LONG.getStrategy())` — LONG strategy compares Numbers ✓. But — does ObjectColumnAccessorBase.isNull exist? ColumnAccessor interface has isNull default? From summary: "ColumnAccessor: isNull/getDouble/getObject/numRows/getType" ✓ exists.
+
+OK. Now WindowLastProcessorTest — let me read it briefly to add symmetric tests.
+Now `WindowLastProcessorTest`:
+[tool:bash] {"command": "sed -n 90,400p /app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java"}
+// ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+    final MapOfColumnsRowsAndColumns rac = makeStringRac(new String[]{"a", "b", "c", "d", "e"});
+    final WindowLastProcessor processor =
+        new WindowLastProcessor("col", "out", WindowFrame.rows(-1, 1));
+
+    final RowsAndColumns results = processor.process(rac);
+
+    // Row 0: frame [0,1] -> "b"; Row 1: frame [0,2] -> "c"; Row 2: frame [1,3] -> "d";
+    // Row 3: frame [2,4] -> "e"; Row 4: frame [3,4] -> "e"
+    new RowsAndColumnsHelper()
+        .expectColumn("out", ColumnType.STRING, "b", "c", "d", "e", "e")
+        .validate(results);
+  }
+
+  @Test
+  public void testLastWithRowsFrameFullyPreceding()
+  {
+    // ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING — frame excludes current row
+    final MapOfColumnsRowsAndColumns rac = makeStringRac(new String[]{"a", "b", "c", "d", "e"});
+    final WindowLastProcessor processor =
+        new WindowLastProcessor("col", "out", WindowFrame.rows(-2, -1));
+
+    final RowsAndColumns results = processor.process(rac);
+
+    // Row 0: empty -> null; Row 1: [0,0] -> "a"; Row 2: [0,1] -> "b";
+    // Row 3: [1,2] -> "c"; Row 4: [2,3] -> "d"
+    new RowsAndColumnsHelper()
+        .expectColumn("out", new Object[]{null, "a", "b", "c", "d"}, ColumnType.STRING)
+        .validate(results);
+  }
+
+  @Test
+  public void testLastWithRowsFrameFullyFollowing()
+  {
+    // ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING — frame excludes current row
+    final MapOfColumnsRowsAndColumns rac = makeStringRac(new String[]{"a", "b", "c", "d", "e"});
+    final WindowLastProcessor processor =
+        new WindowLastProcessor("col", "out", WindowFrame.rows(1, 2));
+
+    final RowsAndColumns results = processor.process(rac);
+
+    // Row 0: [1,2] -> "c"; Row 1: [2,3] -> "d"; Row 2: [3,4] -> "e";
+    // Row 3: [4,4] -> "e"; Row 4: empty -> null
+    new RowsAndColumnsHelper()
+        .expectColumn("out", new Object[]{"c", "d", "e", "e", null}, ColumnType.STRING)
+        .validate(results);
+  }
+
+  @Test
+  public void testLastWithUnboundedRowsFrame()
+  {
+    // ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+    final MapOfColumnsRowsAndColumns rac = makeStringRac(new String[]{"a", "b", "c", "d", "e"});
+    final WindowLastProcessor processor =
+        new WindowLastProcessor("col", "out", WindowFrame.rows(null, null));
+
+    final RowsAndColumns results = processor.process(rac);
+
+    new RowsAndColumnsHelper()
+        .expectColumn("out", ColumnType.STRING, "e", "e", "e", "e", "e")
+        .validate(results);
+  }
+
+  @Test
+  public void testLastWithGroupsFrame()
+  {
+    // GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING
+    // Data grouped by "grp": groups are [a,a], [b,b], [c]
+    final Map<String, Column> map = new LinkedHashMap<>();
+    map.put("grp", new ObjectArrayColumn(new String[]{"a", "a", "b", "b", "c"}, ColumnType.STRING));
+    map.put("val", new ObjectArrayColumn(new String[]{"v1", "v2", "v3", "v4", "v5"}, ColumnType.STRING));
+    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
+
+    final WindowLastProcessor processor = new WindowLastProcessor(
+        "val",
+        "out",
+        WindowFrame.groups(0, 1, Collections.singletonList("grp"))
+    );
+
+    final RowsAndColumns results = processor.process(rac);
+
+    // Group 0 (rows 0,1): groups [0,1] -> last of group 1 = "v4"
+    // Group 1 (rows 2,3): groups [1,2] -> last of group 2 = "v5"
+    // Group 2 (row 4):    groups [2,2] -> last of group 2 = "v5"
+    new RowsAndColumnsHelper()
+        .expectColumn("out", ColumnType.STRING, "v4", "v4", "v5", "v5", "v5")
+        .validate(results);
+  }
+
+  @Test
+  public void testLastWithSingleRowAndBoundedFrame()
+  {
+    final MapOfColumnsRowsAndColumns rac = makeStringRac(new String[]{"only"});
+    final WindowLastProcessor processor =
+        new WindowLastProcessor("col", "out", WindowFrame.rows(-2, 2));
+
+    final RowsAndColumns results = processor.process(rac);
+
+    new RowsAndColumnsHelper()
+        .expectColumn("out", ColumnType.STRING, "only")
+        .validate(results);
+  }
+
+  @Test
+  public void testLastWithNullsInRowsFrame()
+  {
+    // SQL standard: LAST_VALUE returns the value at the last row of the frame,
+    // including NULL (RESPECT NULLS is the default).
+    // ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING
+    final MapOfColumnsRowsAndColumns rac = makeStringRac(new String[]{null, "b", null, "d", null});
+    final WindowLastProcessor processor =
+        new WindowLastProcessor("col", "out", WindowFrame.rows(-1, 1));
+
+    final RowsAndColumns results = processor.process(rac);
+
+    // Row 0: frame [0,1], last = "b"  (row 1)
+    // Row 1: frame [0,2], last = null (row 2)
+    // Row 2: frame [1,3], last = "d"  (row 3)
+    // Row 3: frame [2,4], last = null (row 4)
+    // Row 4: frame [3,4], last = null (row 4)
+    new RowsAndColumnsHelper()
+        .expectColumn("out", new Object[]{"b", null, "d", null, null}, ColumnType.STRING)
+        .validate(results);
+  }
+
+  @Test
+  public void testLastWithNullsAndEmptyRowsFrame()
+  {
+    // Tests both null-valued last rows and empty frames (which also yield null).
+    // ROWS BETWEEN 2 FOLLOWING AND 3 FOLLOWING
+    final MapOfColumnsRowsAndColumns rac = makeStringRac(new String[]{null, "b", null, "d", null});
+    final WindowLastProcessor processor =
+        new WindowLastProcessor("col", "out", WindowFrame.rows(2, 3));
+
+    final RowsAndColumns results = processor.process(rac);
+
+    // Row 0: frame [2,3], last = "d"  (row 3)
+    // Row 1: frame [3,4], last = null (row 4)
+    // Row 2: frame [4,4], last = null (row 4)
+    // Row 3: empty -> null
+    // Row 4: empty -> null
+    new RowsAndColumnsHelper()
+        .expectColumn("out", new Object[]{"d", null, null, null, null}, ColumnType.STRING)
+        .validate(results);
+  }
+
+  @Test
+  public void testLastWithNullsInGroupsFrame()
+  {
+    // GROUPS BETWEEN CURRENT ROW AND 1 FOLLOWING
+    // Groups: [a,a], [b,b], [c]. Last row of some groups has a null value.
+    final Map<String, Column> map = new LinkedHashMap<>();
+    map.put("grp", new ObjectArrayColumn(new String[]{"a", "a", "b", "b", "c"}, ColumnType.STRING));
+    map.put("val", new ObjectArrayColumn(new String[]{"v1", null, "v3", null, "v5"}, ColumnType.STRING));
+    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);
+
+    final WindowLastProcessor processor = new WindowLastProcessor(
+        "val",
+        "out",
+        WindowFrame.groups(0, 1, Collections.singletonList("grp"))
+    );
+
+    final RowsAndColumns results = processor.process(rac);
+
+    // Group 0 (rows 0,1): groups [0,1] -> last of group 1 = null (row 3)
+    // Group 1 (rows 2,3): groups [1,2] -> last of group 2 = "v5" (row 4)
+    // Group 2 (row 4):    groups [2,2] -> last of group 2 = "v5" (row 4)
+    new RowsAndColumnsHelper()
+        .expectColumn("out", new Object[]{null, null, "v5", "v5", "v5"}, ColumnType.STRING)
+        .validate(results);
+  }
+
+  private static MapOfColumnsRowsAndColumns makeStringRac(String[] values)
+  {
+    final Map<String, Column> map = new LinkedHashMap<>();
+    map.put("col", new ObjectArrayColumn(values, ColumnType.STRING));
+    return MapOfColumnsRowsAndColumns.fromMap(map);
+  }
+}
+[201] assistant: [tool:edit] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java", "newString": "  @Test\n  public void testLastWithRangeFrame()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING\n    // Keys sorted ascending: 1, 2, 2, 4, 7\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}));\n    map.put(\"val\", new ObjectArrayColumn(new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\"}, ColumnType.STRING));\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final WindowLastProcessor processor = new WindowLastProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=1 (row 0): frame = rows with value in [0, 2] -> rows 0, 1 -> last \"v2\"\n    // k=2 (rows 1, 2): frame = rows with value in [1, 3] -> rows 1, 2 -> last \"v3\"\n    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> last \"v4\"\n    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> last \"v5\"\n    // Rows 1 and 2 are peers (both k=2) and get identical output.\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v2\", \"v3\", \"v3\", \"v4\", \"v5\")\n        .validate(results);\n  }\n\n  @Test\n  public void testLastWithRangeFrameUnboundedPreceding()\n  {\n    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}));\n    map.put(\"val\", new ObjectArrayColumn(new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\"}, ColumnType.STRING));\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final WindowLastProcessor processor = new WindowLastProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(null, 0.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=1 (row 0): frame = rows with value <= 1 -> row 0 -> \"v1\"\n    // k=2 (rows 1, 2): frame = rows with value <= 2 -> rows 0, 1, 2 -> \"v3\"\n    // k=4 (row 3): frame = rows with value <= 4 -> rows 0..3 -> \"v4\"\n    // k=7 (row 4): frame = all rows -> \"v5\"\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v3\", \"v3\", \"v4\", \"v5\")\n        .validate(results);\n  }\n\n  @Test\n  public void testLastWithRangeFrameEmptyFrames()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 2 PRECEDING AND 1 PRECEDING — frame can exclude the current row\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}));\n    map.put(\"val\", new ObjectArrayColumn(new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\"}, ColumnType.STRING));\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final WindowLastProcessor processor = new WindowLastProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-2.0, -1.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=1 (row 0): frame = rows with value in [-1, 0] -> empty -> null\n    // k=2 (rows 1, 2): frame = rows with value in [0, 1] -> empty -> null\n    // k=4 (row 3): frame = rows with value in [2, 3] -> rows 1, 2 -> \"v3\"\n    // k=7 (row 4): frame = rows with value in [5, 6] -> empty -> null\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", new Object[]{null, null, null, \"v3\", null}, ColumnType.STRING)\n        .validate(results);\n  }\n\n  @Test\n  public void testLastWithRangeFrameNulls()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING; nulls sort first\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG));\n    map.put(\"val\", new ObjectArrayColumn(new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\"}, ColumnType.STRING));\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final WindowLastProcessor processor = new WindowLastProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // Null rows (rows 0, 1): finite bounds resolve to the null run, [0, 2) -> last \"v2\"\n    // k=2 (row 2): frame = rows with value in [1, 3] -> row 2 -> \"v3\"\n    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> \"v4\"\n    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> \"v5\"\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v2\", \"v2\", \"v3\", \"v4\", \"v5\")\n        .validate(results);\n  }\n\n  @Test\n  public void testLastWithRangeFrameDescending()\n  {\n    // ORDER BY k DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING\n    // Keys sorted descending: 7, 4, 2, 2, 1\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new IntArrayColumn(new int[]{7, 4, 2, 2, 1}));\n    map.put(\"val\", new ObjectArrayColumn(new String[]{\"v1\", \"v2\", \"v3\", \"v4\", \"v5\"}, ColumnType.STRING));\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final WindowLastProcessor processor = new WindowLastProcessor(\n        \"val\",\n        \"out\",\n        WindowFrame.range(-1.0, 1.0, ColumnWithDirection.descending(\"k\"))\n    );\n\n    final RowsAndColumns results = processor.process(rac);\n\n    // k=7 (row 0): frame = rows with value in [6, 8] -> row 0 -> \"v1\"\n    // k=4 (row 1): frame = rows with value in [3, 5] -> row 1 -> \"v2\"\n    // k=2 (rows 2, 3): frame = rows with value in [1, 3] -> rows 2, 3 -> \"v4\"\n    // k=1 (row 4): frame = rows with value in [0, 2] -> rows 2, 3, 4 -> \"v5\"\n    new RowsAndColumnsHelper()\n        .expectColumn(\"out\", ColumnType.STRING, \"v1\", \"v2\", \"v4\", \"v4\", \"v5\")\n        .validate(results);\n  }\n\n  private static MapOfColumnsRowsAndColumns makeStringRac(String[] values)\n  {\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"col\", new ObjectArrayColumn(values, ColumnType.STRING));\n    return MapOfColumnsRowsAndColumns.fromMap(map);\n  }\n}", "oldString": "  private static MapOfColumnsRowsAndColumns makeStringRac(String[] values)\n  {\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"col\", new ObjectArrayColumn(values, ColumnType.STRING));\n    return MapOfColumnsRowsAndColumns.fromMap(map);\n  }\n}"}
+Edit applied successfully.
+[patch] /app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java
+[202] assistant: [tool:bash] {"command": "sed -n 20,40p /app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java"}
+package org.apache.druid.query.operator.window.value;
+
+import com.google.common.collect.ImmutableList;
+import org.apache.druid.query.operator.window.ComposingProcessor;
+import org.apache.druid.query.operator.window.RowsAndColumnsHelper;
+import org.apache.druid.query.operator.window.WindowFrame;
+import org.apache.druid.query.rowsandcols.MapOfColumnsRowsAndColumns;
+import org.apache.druid.query.rowsandcols.RowsAndColumns;
+import org.apache.druid.query.rowsandcols.column.Column;
+import org.apache.druid.query.rowsandcols.column.DoubleArrayColumn;
+import org.apache.druid.query.rowsandcols.column.IntArrayColumn;
+import org.apache.druid.query.rowsandcols.column.ObjectArrayColumn;
+import org.apache.druid.segment.column.ColumnType;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+
+public class WindowLastProcessorTest
+[203] assistant: [tool:edit] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java", "newString": "import com.google.common.collect.ImmutableList;\nimport org.apache.druid.query.operator.ColumnWithDirection;\nimport org.apache.druid.query.operator.window.ComposingProcessor;\nimport org.apache.druid.query.operator.window.RowsAndColumnsHelper;\nimport org.apache.druid.query.operator.window.WindowFrame;", "oldString": "import com.google.common.collect.ImmutableList;\nimport org.apache.druid.query.operator.window.ComposingProcessor;\nimport org.apache.druid.query.operator.window.RowsAndColumnsHelper;\nimport org.apache.druid.query.operator.window.WindowFrame;"}
+Edit applied successfully.
+[patch] /app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowLastProcessorTest.java
+[204] assistant: [reasoning]
+Also check WindowFirstProcessorTest imports IntArrayColumn — yes it does (line 33 from earlier read: `import org.apache.druid.query.rowsandcols.column.IntArrayColumn;`) ✓.
+
+Now WindowFramedAggregateProcessorTest — add range aggregation tests:
+Now `WindowFramedAggregateProcessorTest` — add range aggregation tests:
+[tool:edit] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessorTest.java", "newString": "  @Test\n  public void testRangeFrameWithSum()\n  {\n    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING\n    // Keys sorted ascending: 1, 2, 2, 4, 7\n    final WindowFrame theFrame = WindowFrame.range(null, 1.0, ColumnWithDirection.ascending(\"k\"));\n    final AggregatorFactory[] theAggs = {\n        new LongSumAggregatorFactory(\"sum\", \"val\")\n    };\n    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);\n\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(ImmutableMap.of(\n        \"k\", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}),\n        \"val\", new IntArrayColumn(new int[]{1, 2, 3, 4, 5})\n    ));\n\n    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));\n\n    // k=1 (row 0): frame = rows with value in [-inf, 2] -> rows 0, 1 -> sum 1 + 2 = 3\n    // k=2 (rows 1, 2): frame = rows with value in [-inf, 3] -> rows 0, 1, 2 -> sum 1 + 2 + 3 = 6\n    // k=4 (row 3): frame = rows with value in [-inf, 5] -> rows 0..3 -> sum 1 + 2 + 3 + 4 = 10\n    // k=7 (row 4): frame = all rows -> sum 1 + 2 + 3 + 4 + 5 = 15\n    // Rows 1 and 2 are peers (both k=2) and get identical output.\n    new RowsAndColumnsHelper()\n        .expectColumn(\"k\", new int[]{1, 2, 2, 4, 7})\n        .expectColumn(\"val\", new int[]{1, 2, 3, 4, 5})\n        .expectColumn(\"sum\", new int[]{3, 6, 6, 10, 15})\n        .allColumnsRegistered()\n        .validate(processed);\n  }\n\n  @Test\n  public void testRangeFrameWithSumEmptyFrames()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 2 PRECEDING AND 1 PRECEDING — frame can exclude the current row\n    final WindowFrame theFrame = WindowFrame.range(-2.0, -1.0, ColumnWithDirection.ascending(\"k\"));\n    final AggregatorFactory[] theAggs = {\n        new LongSumAggregatorFactory(\"sum\", \"val\")\n    };\n    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);\n\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(ImmutableMap.of(\n        \"k\", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}),\n        \"val\", new IntArrayColumn(new int[]{1, 2, 3, 4, 5})\n    ));\n\n    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));\n\n    // k=1 (row 0): frame = rows with value in [-1, 0] -> empty -> zero-row default (sum = 0)\n    // k=2 (rows 1, 2): frame = rows with value in [0, 1] -> empty -> 0\n    // k=4 (row 3): frame = rows with value in [2, 3] -> rows 1, 2 -> sum 2 + 3 = 5\n    // k=7 (row 4): frame = rows with value in [5, 6] -> empty -> 0\n    new RowsAndColumnsHelper()\n        .expectColumn(\"k\", new int[]{1, 2, 2, 4, 7})\n        .expectColumn(\"val\", new int[]{1, 2, 3, 4, 5})\n        .expectColumn(\"sum\", new int[]{0, 0, 0, 5, 0})\n        .allColumnsRegistered()\n        .validate(processed);\n  }\n\n  @Test\n  public void testRangeFrameWithSumDescending()\n  {\n    // ORDER BY k DESC RANGE BETWEEN UNBOUNDED PRECEDING AND 1 FOLLOWING\n    // Keys sorted descending: 7, 4, 2, 2, 1\n    final WindowFrame theFrame = WindowFrame.range(null, 1.0, ColumnWithDirection.descending(\"k\"));\n    final AggregatorFactory[] theAggs = {\n        new LongSumAggregatorFactory(\"sum\", \"val\")\n    };\n    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);\n\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(ImmutableMap.of(\n        \"k\", new IntArrayColumn(new int[]{7, 4, 2, 2, 1}),\n        \"val\", new IntArrayColumn(new int[]{1, 2, 3, 4, 5})\n    ));\n\n    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));\n\n    // k=7 (row 0): frame = rows with value in [6, +inf) in descending order -> row 0 -> sum 1\n    // k=4 (row 1): frame = rows with value in [3, +inf) -> rows 0, 1 -> sum 1 + 2 = 3\n    // k=2 (rows 2, 3): frame = rows with value in [1, +inf) -> rows 0..3 -> sum 1 + 2 + 3 + 4 = 10\n    // k=1 (row 4): frame = rows with value in [0, +inf) -> all rows -> sum 15\n    new RowsAndColumnsHelper()\n        .expectColumn(\"k\", new int[]{7, 4, 2, 2, 1})\n        .expectColumn(\"val\", new int[]{1, 2, 3, 4, 5})\n        .expectColumn(\"sum\", new int[]{1, 3, 10, 10, 15})\n        .allColumnsRegistered()\n        .validate(processed);\n  }\n\n  @Test\n  public void testRangeFrameWholePartition()\n  {\n    // ORDER BY k ASC RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING\n    // A Range frame without offsets covers the whole partition, like WindowFrame.unbounded().\n    final WindowFrame theFrame = WindowFrame.range(null, null, ColumnWithDirection.ascending(\"k\"));\n    final AggregatorFactory[] theAggs = {\n        new LongSumAggregatorFactory(\"sum\", \"val\")\n    };\n    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);\n\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(ImmutableMap.of(\n        \"k\", new IntArrayColumn(new int[]{1, 2, 2, 4, 7}),\n        \"val\", new IntArrayColumn(new int[]{1, 2, 3, 4, 5})\n    ));\n\n    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));\n\n    new RowsAndColumnsHelper()\n        .expectColumn(\"k\", new int[]{1, 2, 2, 4, 7})\n        .expectColumn(\"val\", new int[]{1, 2, 3, 4, 5})\n        .expectColumn(\"sum\", new int[]{15, 15, 15, 15, 15})\n        .allColumnsRegistered()\n        .validate(processed);\n  }\n\n  @Test\n  public void testRangeFrameWithNulls()\n  {\n    // ORDER BY k ASC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING; nulls sort first\n    final WindowFrame theFrame = WindowFrame.range(-1.0, 1.0, ColumnWithDirection.ascending(\"k\"));\n    final AggregatorFactory[] theAggs = {\n        new LongSumAggregatorFactory(\"sum\", \"val\")\n    };\n    WindowFramedAggregateProcessor proc = new WindowFramedAggregateProcessor(theFrame, theAggs);\n\n    final Map<String, Column> map = new LinkedHashMap<>();\n    map.put(\"k\", new ObjectArrayColumn(new Integer[]{null, null, 2, 4, 7}, ColumnType.LONG));\n    map.put(\"val\", new IntArrayColumn(new int[]{1, 2, 3, 4, 5}));\n    final MapOfColumnsRowsAndColumns rac = MapOfColumnsRowsAndColumns.fromMap(map);\n\n    final RowsAndColumns processed = proc.process(new NoAsRowsAndColumns(rac));\n\n    // Null rows (rows 0, 1): finite bounds resolve to the null run, [0, 2) -> sum 1 + 2 = 3\n    // k=2 (row 2): frame = rows with value in [1, 3] -> row 2 -> sum 3\n    // k=4 (row 3): frame = rows with value in [3, 5] -> row 3 -> sum 4\n    // k=7 (row 4): frame = rows with value in [6, 8] -> row 4 -> sum 5\n    new RowsAndColumnsHelper()\n        .expectColumn(\"k\", ColumnType.LONG, null, null, 2, 4, 7)\n        .expectColumn(\"val\", new int[]{1, 2, 3, 4, 5})\n        .expectColumn(\"sum\", new int[]{3, 3, 3, 4, 5})\n        .allColumnsRegistered()\n        .validate(processed);\n  }\n\n  @Test\n  public void testEquals()\n  {\n    EqualsVerifier.forClass(WindowFramedAggregateProcessor.class)\n        .usingGetClass()\n        .verify();\n  }\n}", "oldString": "  @Test\n  public void testEquals()\n  {\n    EqualsVerifier.forClass(WindowFramedAggregateProcessor.class)\n        .usingGetClass()\n        .verify();\n  }\n}"}
+Edit applied successfully.
+[patch] /app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessorTest.java

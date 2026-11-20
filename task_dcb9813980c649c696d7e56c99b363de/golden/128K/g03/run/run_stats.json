@@ -1,0 +1,89 @@
+{
+  "authoring": {
+    "edit": {
+      "baseline_chars": 14367,
+      "golden_chars": 16191
+    },
+    "error": "rubric: the rubric draft is not valid JSON: Unterminated string starting at: line 1 column 3710 (char 3709)"
+  },
+  "call_ids": [
+    "fc-01M7SB12W5RAJQ4GGXSKJ6WVCK",
+    "fc-01M7SB144G5W6R9XJDQ336A95Y",
+    "fc-01M7SB15B0P2NM6WV0B37N82AH",
+    "fc-01M7SB164459S9M2E5M8EVJYX1"
+  ],
+  "compaction_count": 3,
+  "compactor_model": "openai/modal-glm53/zai-org/GLM-5.3",
+  "context_window": 128000,
+  "evaluated": 1,
+  "n": 4,
+  "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/e690bce6-bf97-46f8-ad14-000a3f13597d/output-artifacts.tar.gz",
+  "passes": 1,
+  "prior_status_id": "13b99364-58d7-449a-a294-2310531a0343",
+  "rollouts": [
+    {
+      "call_id": "fc-01M7SB12W5RAJQ4GGXSKJ6WVCK",
+      "ceiling_hit": [],
+      "compaction_count": 3,
+      "context_limit": 128000,
+      "duration_s": 2114,
+      "error_message": null,
+      "f2p_pass_rate": 1.0,
+      "f2p_passed": 21,
+      "f2p_total": 21,
+      "finish_reasons": {
+        "stop": 4
+      },
+      "hit_context_window": false,
+      "hit_output_cap": false,
+      "index": 0,
+      "is_429": false,
+      "max_reasoning": 25028,
+      "max_step_tokens": 25149,
+      "median_reasoning": 35,
+      "n_steps": 195,
+      "outcome": "completed",
+      "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/e690bce6-bf97-46f8-ad14-000a3f13597d/output-artifacts.tar.gz",
+      "output_cap": 64000,
+      "p2p_passed": 316,
+      "p2p_total": 316,
+      "passed": true,
+      "peak_context": 97948,
+      "score": 1.0,
+      "status": "completed",
+      "steps_at_cap": 0,
+      "tests_failed": 0,
+      "tests_failing": [],
+      "tests_other": 0,
+      "tests_passed": 337,
+      "total_tokens": 12155837,
+      "truncated_invalid": false
+    },
+    {
+      "call_id": "fc-01M7SB144G5W6R9XJDQ336A95Y",
+      "index": 1,
+      "passed": false,
+      "status": "cancelled"
+    },
+    {
+      "call_id": "fc-01M7SB15B0P2NM6WV0B37N82AH",
+      "index": 2,
+      "passed": false,
+      "status": "cancelled"
+    },
+    {
+      "call_id": "fc-01M7SB164459S9M2E5M8EVJYX1",
+      "index": 3,
+      "passed": false,
+      "status": "cancelled"
+    }
+  ],
+  "round": 3,
+  "solver_model": "openai/modal-glm53/zai-org/GLM-5.3",
+  "task_id": "task_dcb9813980c649c696d7e56c99b363de",
+  "trigger_tokens": 97965,
+  "winner_f2p_rate": 1.0,
+  "winner_index": 0,
+  "winner_passed": true,
+  "winner_test_pass_rate": 1.0
+}

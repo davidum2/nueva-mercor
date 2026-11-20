@@ -1,0 +1,231 @@
+[27] assistant: [reasoning]
+Let me see the rest of DbAndReportTcStateLogStore (from line 1021) and then StateLogStoreSqls, and the test infrastructure. Also DbStateMachineConfig and the compatible module's ProcessCtrlStateMachineEngine/StateType/ExecutionStatus.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java", "offset": 1021}
+<path>/workspace/repo/saga/seata-saga-spring/src/main/java/org/apache/seata/saga/engine/store/db/DbAndReportTcStateLogStore.java</path>
+<type>file</type>
+<content>
+1021:             StateInstanceImpl stateInstance = new StateInstanceImpl();
+1022:             stateInstance.setId(resultSet.getString("id"));
+1023:             stateInstance.setMachineInstanceId(resultSet.getString("machine_inst_id"));
+1024:             stateInstance.setName(resultSet.getString("name"));
+1025:             stateInstance.setType(StateType.getStateType(resultSet.getString("type")));
+1026:             stateInstance.setBusinessKey(resultSet.getString("business_key"));
+1027:             stateInstance.setStatus(ExecutionStatus.valueOf(resultSet.getString("status")));
+1028:             stateInstance.setGmtStarted(resultSet.getTimestamp("gmt_started"));
+1029:             stateInstance.setGmtEnd(resultSet.getTimestamp("gmt_end"));
+1030:             stateInstance.setServiceName(resultSet.getString("service_name"));
+1031:             stateInstance.setServiceMethod(resultSet.getString("service_method"));
+1032:             stateInstance.setServiceType(resultSet.getString("service_type"));
+1033:             stateInstance.setForUpdate(resultSet.getBoolean("is_for_update"));
+1034:             stateInstance.setStateIdCompensatedFor(resultSet.getString("state_id_compensated_for"));
+1035:             stateInstance.setStateIdRetriedFor(resultSet.getString("state_id_retried_for"));
+1036:             stateInstance.setSerializedInputParams(resultSet.getString("input_params"));
+1037:             stateInstance.setSerializedOutputParams(resultSet.getString("output_params"));
+1038:             stateInstance.setSerializedException(resultSet.getBytes("excep"));
+1039: 
+1040:             return stateInstance;
+1041:         }
+1042:     }
+1043: }
+
+(End of file - total 1043 lines)
+</content>
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/db/StateLogStoreSqls.java"}
+<path>/workspace/repo/saga/seata-saga-engine-store/src/main/java/org/apache/seata/saga/engine/store/db/StateLogStoreSqls.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.store.db;
+18: 
+19: /**
+20:  * State log store sqls
+21:  *
+22:  */
+23: public class StateLogStoreSqls {
+24: 
+25:     /**
+26:      * machine instance
+27:      **/
+28:     private static final String STATE_MACHINE_INSTANCE_FIELDS =
+29:             "id, machine_id, tenant_id, parent_id, business_key, gmt_started, gmt_end, status, compensation_status, "
+30:                     + "is_running, gmt_updated, start_params, end_params, excep";
+31: 
+32:     private static final String STATE_MACHINE_INSTANCE_FIELDS_WITHOUT_PARAMS =
+33:             "id, machine_id, tenant_id, parent_id, business_key, gmt_started, gmt_end, status, compensation_status, "
+34:                     + "is_running, gmt_updated";
+35: 
+36:     private static final String RECORD_STATE_MACHINE_STARTED_SQL = "INSERT INTO ${TABLE_PREFIX}state_machine_inst\n"
+37:             + "(id, machine_id, tenant_id, parent_id, gmt_started, business_key, start_params, is_running, status, "
+38:             + "gmt_updated)\n"
+39:             + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+40: 
+41:     private static final String RECORD_STATE_MACHINE_FINISHED_SQL =
+42:             "UPDATE ${TABLE_PREFIX}state_machine_inst SET gmt_end = ?, excep = ?, end_params = ?,status = ?, "
+43:                     + "compensation_status = ?, is_running = ?, gmt_updated = ? WHERE id = ? and gmt_updated = ?";
+44: 
+45:     private static final String UPDATE_STATE_MACHINE_RUNNING_STATUS_SQL =
+46:             "UPDATE ${TABLE_PREFIX}state_machine_inst SET\n"
+47:                     + "is_running = ?, gmt_updated = ? where id = ? and gmt_updated = ?";
+48: 
+49:     private static final String GET_STATE_MACHINE_INSTANCE_BY_ID_SQL =
+50:             "SELECT " + STATE_MACHINE_INSTANCE_FIELDS + " FROM ${TABLE_PREFIX}state_machine_inst WHERE id = ?";
+51: 
+52:     private static final String GET_STATE_MACHINE_INSTANCE_BY_BUSINESS_KEY_SQL = "SELECT "
+53:             + STATE_MACHINE_INSTANCE_FIELDS
+54:             + " FROM ${TABLE_PREFIX}state_machine_inst WHERE business_key = ? AND tenant_id = ?";
+55: 
+56:     private static final String QUERY_STATE_MACHINE_INSTANCES_BY_PARENT_ID_SQL = "SELECT "
+57:             + STATE_MACHINE_INSTANCE_FIELDS_WITHOUT_PARAMS
+58:             + " FROM ${TABLE_PREFIX}state_machine_inst WHERE parent_id = ? ORDER BY gmt_started DESC";
+59: 
+60:     /**
+61:      * state instance
+62:      **/
+63:     private static final String STATE_INSTANCE_FIELDS =
+64:             "id, machine_inst_id, name, type, business_key, gmt_started, service_name, service_method, service_type, "
+65:                     + "is_for_update, status, input_params, output_params, excep, gmt_end, state_id_compensated_for, "
+66:                     + "state_id_retried_for";
+67: 
+68:     private static final String RECORD_STATE_STARTED_SQL =
+69:             "INSERT INTO ${TABLE_PREFIX}state_inst (id, machine_inst_id, name, type,"
+70:                     + " gmt_started, service_name, service_method, service_type, is_for_update, input_params, status, "
+71:                     + "business_key, state_id_compensated_for, state_id_retried_for, gmt_updated)\n"
+72:                     + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+73: 
+74:     private static final String RECORD_STATE_FINISHED_SQL =
+75:             "UPDATE ${TABLE_PREFIX}state_inst SET gmt_end = ?, excep = ?, status = ?, output_params = ?, gmt_updated = ? "
+76:                     + "WHERE id = ? AND machine_inst_id = ?";
+77: 
+78:     private static final String UPDATE_STATE_EXECUTION_STATUS_SQL =
+79:             "UPDATE ${TABLE_PREFIX}state_inst SET status = ?, gmt_updated = ? WHERE machine_inst_id = ? AND id = ?";
+80: 
+81:     private static final String QUERY_STATE_INSTANCES_BY_MACHINE_INSTANCE_ID_SQL = "SELECT " + STATE_INSTANCE_FIELDS
+82:             + " FROM ${TABLE_PREFIX}state_inst WHERE machine_inst_id = ? ORDER BY gmt_started, ID ASC";
+83: 
+84:     private static final String GET_STATE_INSTANCE_BY_ID_AND_MACHINE_INSTANCE_ID_SQL =
+85:             "SELECT " + STATE_INSTANCE_FIELDS + " FROM ${TABLE_PREFIX}state_inst WHERE machine_inst_id = ? AND id = ?";
+86: 
+87:     private static final String TABLE_PREFIX_REGEX = "\\$\\{TABLE_PREFIX}";
+88: 
+89:     private String tablePrefix;
+90: 
+91:     /**
+92:      * machine instance
+93:      **/
+94:     private String recordStateMachineStartedSql;
+95: 
+96:     private String recordStateMachineFinishedSql;
+97: 
+98:     private String updateStateMachineRunningStatusSql;
+99: 
+100:     private String getStateMachineInstanceByIdSql;
+101: 
+102:     private String getStateMachineInstanceByBusinessKeySql;
+103: 
+104:     private String queryStateMachineInstancesByParentIdSql;
+105: 
+106:     /**
+107:      * state instance
+108:      **/
+109:     private String recordStateStartedSql;
+110: 
+111:     private String recordStateFinishedSql;
+112: 
+113:     private String updateStateExecutionStatusSql;
+114: 
+115:     private String queryStateInstancesByMachineInstanceIdSql;
+116: 
+117:     private String getStateInstanceByIdAndMachineInstanceIdSql;
+118: 
+119:     public StateLogStoreSqls(String tablePrefix) {
+120:         this.tablePrefix = tablePrefix;
+121:         init();
+122:     }
+123: 
+124:     private void init() {
+125:         recordStateMachineStartedSql = RECORD_STATE_MACHINE_STARTED_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+126:         recordStateMachineFinishedSql = RECORD_STATE_MACHINE_FINISHED_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+127:         updateStateMachineRunningStatusSql =
+128:                 UPDATE_STATE_MACHINE_RUNNING_STATUS_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+129:         getStateMachineInstanceByIdSql =
+130:                 GET_STATE_MACHINE_INSTANCE_BY_ID_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+131:         getStateMachineInstanceByBusinessKeySql =
+132:                 GET_STATE_MACHINE_INSTANCE_BY_BUSINESS_KEY_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+133:         queryStateMachineInstancesByParentIdSql =
+134:                 QUERY_STATE_MACHINE_INSTANCES_BY_PARENT_ID_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+135: 
+136:         recordStateStartedSql = RECORD_STATE_STARTED_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+137:         recordStateFinishedSql = RECORD_STATE_FINISHED_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+138:         updateStateExecutionStatusSql = UPDATE_STATE_EXECUTION_STATUS_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+139:         queryStateInstancesByMachineInstanceIdSql =
+140:                 QUERY_STATE_INSTANCES_BY_MACHINE_INSTANCE_ID_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+141:         getStateInstanceByIdAndMachineInstanceIdSql =
+142:                 GET_STATE_INSTANCE_BY_ID_AND_MACHINE_INSTANCE_ID_SQL.replaceAll(TABLE_PREFIX_REGEX, tablePrefix);
+143:     }
+144: 
+145:     public String getRecordStateMachineStartedSql(String dbType) {
+146:         return recordStateMachineStartedSql;
+147:     }
+148: 
+149:     public String getRecordStateMachineFinishedSql(String dbType) {
+150:         return recordStateMachineFinishedSql;
+151:     }
+152: 
+153:     public String getUpdateStateMachineRunningStatusSql(String dbType) {
+154:         return updateStateMachineRunningStatusSql;
+155:     }
+156: 
+157:     public String getGetStateMachineInstanceByIdSql(String dbType) {
+158:         return getStateMachineInstanceByIdSql;
+159:     }
+160: 
+161:     public String getGetStateMachineInstanceByBusinessKeySql(String dbType) {
+162:         return getStateMachineInstanceByBusinessKeySql;
+163:     }
+164: 
+165:     public String getQueryStateMachineInstancesByParentIdSql(String dbType) {
+166:         return queryStateMachineInstancesByParentIdSql;
+167:     }
+168: 
+169:     public String getRecordStateStartedSql(String dbType) {
+170:         return recordStateStartedSql;
+171:     }
+172: 
+173:     public String getRecordStateFinishedSql(String dbType) {
+174:         return recordStateFinishedSql;
+175:     }
+176: 
+177:     public String getUpdateStateExecutionStatusSql(String dbType) {
+178:         return updateStateExecutionStatusSql;
+179:     }
+180: 
+181:     public String getQueryStateInstancesByMachineInstanceIdSql(String dbType) {
+182:         return queryStateInstancesByMachineInstanceIdSql;
+183:     }
+184: 
+185:     public String getGetStateInstanceByIdAndMachineInstanceIdSql(String dbType) {
+186:         return getStateInstanceByIdAndMachineInstanceIdSql;
+187:     }
+188: 
+189:     public String getTablePrefix() {
+190:         return tablePrefix;
+191:     }
+192: }
+
+(End of file - total 192 lines)
+</content>

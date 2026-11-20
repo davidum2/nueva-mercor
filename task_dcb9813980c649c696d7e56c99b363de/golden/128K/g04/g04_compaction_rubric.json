@@ -1,0 +1,716 @@
+{
+  "criteria": [
+    {
+      "criteria_id": "criteria_0",
+      "description": "States that the task adds a native value-based `RANGE` frame type named `WindowFrame.Range`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_1",
+      "description": "States that `WindowFrame.Range` must be registered as Jackson subtype `\"range\"`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_2",
+      "description": "States that `FramedOnHeapAggregatable#aggregateAll` must accept `Range`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_3",
+      "description": "States that `WindowFramedAggregateProcessor` must accept `Range`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_4",
+      "description": "States that `WindowFirstProcessor` must accept `Range`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_5",
+      "description": "States that `WindowLastProcessor` must accept `Range`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_6",
+      "description": "States that the SQL validator must accept offset `RANGE` frames.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_7",
+      "description": "States that Calcite planning must turn offset `RANGE` frames into native frames.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_8",
+      "description": "States that offset `RANGE` support must apply only when the window has exactly one `ORDER BY` key.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_9",
+      "description": "States that for a non-null ordering key value `v` and a finite offset `o`, a bound must be `v + o` under `ASC`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_10",
+      "description": "States that for a non-null ordering key value `v` and a finite offset `o`, a bound must be `v - o` under `DESC`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_11",
+      "description": "States that a `Range` frame must be the closed interval between its lower bound and its upper bound.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_12",
+      "description": "States that unbounded sides of a `Range` frame must reach the partition edges.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_13",
+      "description": "States that unbounded sides of a `Range` frame must include rows whose key is `NULL`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_14",
+      "description": "States that a row whose key is `NULL` must resolve finite bounds to the edges of its contiguous `NULL` run.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_15",
+      "description": "States that peer rows with equal keys must receive identical frame bounds.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_16",
+      "description": "States that peer rows with equal keys must receive identical output.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_17",
+      "description": "States that an empty frame must yield the aggregator's zero-row default.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_18",
+      "description": "States that `FIRST_VALUE` must return `null` on an empty frame.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_19",
+      "description": "States that `LAST_VALUE` must return `null` on an empty frame.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_20",
+      "description": "States that a `Range` covering the whole partition for every row must evaluate the same as `WindowFrame.unbounded()`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_21",
+      "description": "States that range resolution must work for every `RowsAndColumns` implementation.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_22",
+      "description": "States that timestamp columns reach the native engine as `LONG`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_23",
+      "description": "States that an ordering type unable to do value arithmetic with a finite offset must throw an unchecked `DruidException`.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_24",
+      "description": "States that a day-time `INTERVAL` offset must map to its millisecond magnitude as a floating-point value without integer truncation.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_25",
+      "description": "States that the single `ORDER BY` key of an offset `RANGE` frame must be numeric or a timestamp.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_26",
+      "description": "States that an offset `RANGE` frame with finite bounds on a non-numeric and non-interval key must be rejected.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_27",
+      "description": "States that `Range` must support Jackson serialization.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_28",
+      "description": "States that `Range` must support Jackson deserialization.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_29",
+      "description": "States that `WindowFrame.Range` must have a `@Nullable Double lowerOffset`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_30",
+      "description": "States that `WindowFrame.Range` must have a `@Nullable Double upperOffset`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_31",
+      "description": "States that `WindowFrame.Range` must have a non-null `ColumnWithDirection orderBy`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_32",
+      "description": "Names `WindowFrame.range` as the required static factory for building a `Range`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_33",
+      "description": "States that `Range` must override `equals` by value.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_34",
+      "description": "States that `Range` must override `hashCode` by value.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_35",
+      "description": "States that only `DefaultFramedOnHeapAggregatable` implements `FramedOnHeapAggregatable` in the main code.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_36",
+      "description": "States that `WindowFrame.Range` implements `WindowFrame` directly instead of extending `OffsetFrame`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_37",
+      "description": "States that the agent judged that the `NULL` rows form one peer group because `compareRows(null, null)` returns 0.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_38",
+      "description": "States that the `qaWin` files expect only `QueryInterruptedException` before `!error`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_39",
+      "description": "States that the `Range` branch in `isEffectivelyUnbounded` goes before the `OffsetFrame` unwrap because the agent judged the unwrap would fail on a `Range`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_40",
+      "description": "States that `Calcites.isLongType` counts `TIMESTAMP` as a long type.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_41",
+      "description": "States that `testUnSupportedRangeBounds` runs `ROW_NUMBER() OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING)`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_42",
+      "description": "States that under `ASC` the frame end is the first row whose value is greater than the upper bound.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_43",
+      "description": "States that the agent judged that `RANGE` frames with only `UNBOUNDED` or `CURRENT ROW` bounds on `STRING` keys work today through the `groups(...)` frame.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_44",
+      "description": "States that a new `RangeFrameResolver` class resolves `Range` frames.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_45",
+      "description": "States that the peer groups come from `computeBoundaries` on the `ORDER BY` column.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_46",
+      "description": "States that keys are compared as doubles through `accessor.getDouble(row)`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_47",
+      "description": "States that under `DESC` the frame end is the start of the null run when no non-null row is below the upper bound.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_48",
+      "description": "States that under `ASC` the frame starts at the first row whose value is at least the lower bound.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_49",
+      "description": "States that under `DESC` the frame starts at the first row whose value is at most the lower bound.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_50",
+      "description": "States that the binary search covers only the non-null rows because the agent found earlier that `getDouble` on a null row gives 0.0.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_51",
+      "description": "States that `moveTo` stays unchanged instead of recomputing the full `Range` frame interval and aggregator state because the agent judged that `Range` frame bounds never decrease from one peer group to the next.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_52",
+      "description": "States that unsupported `RANGE` forms keep `Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.` as the validator rejection message so that the multi-key `RANGE` cases in the `qaWin` quidem files keep failing.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_53",
+      "description": "States that multi-key `RANGE` queries must continue raising validator rejection exceptions.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_54",
+      "description": "States that an offset `RANGE` frame with no `ORDER BY` is rejected because `WindowFrame.range` needs an ordering column.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_55",
+      "description": "States that `isValidRangeBound` accepts a `SqlNumericLiteral` offset or a day-time `SqlIntervalLiteral` offset.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_56",
+      "description": "States that the `ORDER BY` key type check runs at planning time in `Windowing.getWindowFrame` because the row signature `sig` is available there.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_57",
+      "description": "States that year-month `INTERVAL` bounds are rejected.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_58",
+      "description": "States that the `RANGE` branch reads frame offsets through `getBoundAsDouble` instead of `getBoundAsInteger` because `Range` offsets are `Double` values.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_59",
+      "description": "Falsely claims that lint verification has finished.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_60",
+      "description": "States that the agent judged that the `testUnSupportedRangeBounds` query will now pass because `ROW_NUMBER` never calls `getWindowFrame()`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_61",
+      "description": "States that `Windowing.WindowGroup.getWindowFrame()` keeps the `groups(...)` path when no bound is a `PRECEDING` or `FOLLOWING` offset.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_62",
+      "description": "States that the users of `RangeFrameResolver` iterate the peer groups without merging adjacent groups that have identical frames.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_63",
+      "description": "States that `RangeFrameResolver` raises each frame end to at least its frame start because the agent found that an inverted interval can make the incremental branches of `moveTo` add a wrong row.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_64",
+      "description": "States that `getBoundAsDouble` reads the constant through `getConstantAsDouble` because the agent judged that the `intValue()` in `getConstant` would overflow for interval milliseconds.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_65",
+      "description": "States that the `RangeFrameResolver` missing column message `Column [%s] specified in WindowFrame [%s] does not exist` replaces the earlier planned `Column[%s] does not exist`.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_66",
+      "description": "States that `getBoundAsDouble` returns the negated value for a `PRECEDING` bound.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_67",
+      "description": "States that `buildRangeFrame()` throws `QueryException` with `Order By with RANGE clause with offset-based bounds requires exactly one ordering key, found [%d]`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_68",
+      "description": "States that `buildRangeFrame()` throws `QueryException` with `Order By with RANGE clause with offset-based bounds requires a numeric or timestamp ordering key, found column [%s] of type [%s]` for a non-numeric key.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_69",
+      "description": "States that `QueryException` extends `RuntimeException`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_70",
+      "description": "States that the agent judged that `m1` in `druid.foo` runs from 1.0 to 6.0 in `__time` order.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_71",
+      "description": "Records that the `WindowFrame.Range` class is written in `WindowFrame.java`.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_72",
+      "description": "Records that `RangeFrameResolver.java` is located under `org.apache.druid.query.operator.window`.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_73",
+      "description": "Records that `DefaultFramedOnHeapAggregatable` resolves `Range` frames.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_74",
+      "description": "Records that `WindowValueProcessorBase.computeFirstOrLastValueFramed` handles `Range` frames.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_75",
+      "description": "Records that `DruidSqlValidator.validateWindow` is relaxed for offset `RANGE` frames.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_76",
+      "description": "Records that `Windowing.WindowGroup.getWindowFrame()` builds `Range` frames.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_77",
+      "description": "Records that `mvn compile -pl processing,sql -am -Pskip-static-checks -Dweb.console.skip=true -T1C` ended with `BUILD SUCCESS`.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_78",
+      "description": "Records that no item is blocked.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_79",
+      "description": "Identifies adding a `Range` `EqualsVerifier` test to `WindowFrameTest` as a next step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_80",
+      "description": "Identifies writing `Range` tests in `WindowFirstProcessorTest` as a next step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_81",
+      "description": "Identifies writing `Range` tests in `WindowLastProcessorTest` as a next step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_82",
+      "description": "Identifies writing `Range` tests in `WindowFramedAggregateProcessorTest` as a next step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_83",
+      "description": "Identifies changing `testUnSupportedRangeBounds` to `ORDER BY dim1, dim2` as a later step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_84",
+      "description": "Identifies writing SQL `RANGE` tests in `CalciteQueryTest` as a later step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_85",
+      "description": "Identifies running tests as remaining verification work.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_86",
+      "description": "Falsely claims that the `qaWin` quidem files were modified.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_87",
+      "description": "Contains at most 16300 characters.",
+      "metadata": {
+        "category": "Compression efficiency",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_88",
+      "description": "Presents no completed work as a remaining step.",
+      "metadata": {
+        "category": "Structural clarity",
+        "weight": "minor"
+      }
+    }
+  ]
+}

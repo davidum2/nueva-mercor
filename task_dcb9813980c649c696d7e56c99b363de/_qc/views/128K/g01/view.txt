@@ -1,0 +1,1983 @@
+# compactor view covers the whole input (no earlier compaction)
+[0] user: "Druid's window function engine supports only positional row offsets (`WindowFrame.Rows`) and peer-group offsets (`WindowFrame.Groups`). Support native value-based `RANGE` window framing across the query engine, on-heap aggregation, value processors, and SQL planner/validator.
+
+Implement a new native window frame type `WindowFrame.Range` as a public nested class in `WindowFrame`, registered as Jackson subtype `\"range\"`. It accepts `@Nullable Double lowerOffset`, `@Nullable Double upperOffset`, and a non-null `ColumnWithDirection orderBy`, exposed via `getLowerOffset()`, `getUpperOffset()`, and `getOrderBy()`. A null offset represents a positionally unbounded limit (`UNBOUNDED`), while a non-null offset is a signed distance in the ordering key's value space. Provide a static factory method `WindowFrame.range(@Nullable Double lowerOffset, @Nullable Double upperOffset, ColumnWithDirection orderBy)`. `WindowFrame.Range` is a standalone `WindowFrame` implementation (not extending `OffsetFrame`), overrides `equals` and `hashCode` by value, and supports Jackson serialization and deserialization.
+
+Extend framed aggregation (`FramedOnHeapAggregatable#aggregateAll`) and value processors (`WindowFramedAggregateProcessor`, `WindowFirstProcessor`, `WindowLastProcessor`) to accept `WindowFrame.Range`. Frame resolution over sorted partitions must observe:
+- For a non-null ordering key value `v` and finite offset `o`, the bound value is `v + o` when ordered ascending (`ASC`) and `v - o` when ordered descending (`DESC`), forming a closed interval `[lowerBound, upperBound]`.
+- Unbounded bounds (`UNBOUNDED PRECEDING` / `UNBOUNDED FOLLOWING`) remain positional, extending to the partition boundaries and including rows with `NULL` ordering keys.
+- When the current row's ordering key is `NULL`, finite-offset bounds resolve to the boundaries of the contiguous run of `NULL` ordering values containing that row (its peer group).
+- Rows with equal ordering key values (peers) resolve to identical frame boundaries and receive identical output values.
+- Empty frames emit the aggregator's zero-row default value, or `null` for `FIRST_VALUE` and `LAST_VALUE`.
+- A `Range` frame covering the full partition for every row evaluates identically to `WindowFrame.unbounded()`.
+- Resolution must support numeric ordering columns (`LONG`, `FLOAT`, `DOUBLE`, where timestamp columns reach the native engine as `LONG`) across all `RowsAndColumns` implementations. Ordering column types that do not support value arithmetic with finite offsets must throw an unchecked `DruidException`.
+
+Update the SQL validator and Calcite window planning to accept offset-based `RANGE` window frames (`RANGE BETWEEN <offset> PRECEDING AND <offset> FOLLOWING`, including one-sided and `CURRENT ROW` variations) when the window has exactly one `ORDER BY` key. The ordering key may be numeric or a timestamp column; the bound literal may be a numeric magnitude or a day-time `INTERVAL`. Day-time `INTERVAL` offsets must map to their millisecond magnitude as a floating-point offset without integer truncation. Unsupported `RANGE` window forms (such as multiple `ORDER BY` keys or non-numeric/non-interval ordering keys with finite bounds) must fail validation or planning.
+"
+[1] assistant: [reasoning]
+Let me start by exploring the codebase to understand the structure of the window frame implementation in Druid.
+
+Let me look at the key files:
+1. `WindowFrame` - the window frame class
+2. `FramedOnHeapAggregatable` - framed aggregation
+3. `WindowFramedAggregateProcessor`, `WindowFirstProcessor`, `WindowLastProcessor` - value processors
+4. SQL validator and Calcite window planning
+
+Let me start exploring.
+[tool:bash] {"command": "find /app -name \"WindowFrame.java\" -o -name \"FramedOnHeapAggregatable.java\" -o -name \"WindowFramedAggregateProcessor.java\" -o -name \"WindowFirstProcessor.java\" -o -name \"WindowLastProcessor.java\" | head -20"}
+/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
+/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessor.java
+/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowFirstProcessor.java
+/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowLastProcessor.java
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/FramedOnHeapAggregatable.java
+[tool:bash] {"command": "ls /app"}
+AGENTS.md
+CONTRIBUTING.md
+LABELS
+LICENSE
+NOTICE
+README.md
+README.template
+benchmarks
+cloud
+codestyle
+dev
+distribution
+doap_Druid.rdf
+docs
+embedded-tests
+examples
+extensions-contrib
+extensions-core
+hooks
+indexing-service
+licenses
+licenses.yaml
+multi-stage-query
+owasp-dependency-check-suppressions.xml
+pom.xml
+processing
+publications
+quidem-ut
+rewrite.yml
+server
+services
+sql
+target
+upload.sh
+web-console
+website
+[2] assistant: [reasoning]
+Let me explore the window package structure.
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonProperty;
+24: import com.fasterxml.jackson.annotation.JsonSubTypes;
+25: import com.fasterxml.jackson.annotation.JsonTypeInfo;
+26: import com.google.common.collect.ImmutableList;
+27: import com.google.common.collect.Lists;
+28: import org.apache.druid.annotations.SubclassesMustOverrideEqualsAndHashCode;
+29: 
+30: import javax.annotation.Nullable;
+31: 
+32: import java.util.List;
+33: import java.util.Objects;
+34: 
+35: @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
+36: @JsonSubTypes(value = {
+37:     @JsonSubTypes.Type(name = "rows", value = WindowFrame.Rows.class),
+38:     @JsonSubTypes.Type(name = "groups", value = WindowFrame.Groups.class),
+39: })
+40: @SubclassesMustOverrideEqualsAndHashCode
+41: public interface WindowFrame
+42: {
+43:   static WindowFrame unbounded()
+44:   {
+45:     return rows(null, null);
+46:   
+[truncated]
+[tool:bash] {"command": "ls -R /app/processing/src/main/java/org/apache/druid/query/operator/window/"}
+/app/processing/src/main/java/org/apache/druid/query/operator/window/:
+ComposingProcessor.java
+Processor.java
+WindowFrame.java
+WindowFramedAggregateProcessor.java
+WindowOperatorFactory.java
+ranking
+value
+
+/app/processing/src/main/java/org/apache/druid/query/operator/window/ranking:
+WindowCumeDistProcessor.java
+WindowDenseRankProcessor.java
+WindowPercentileProcessor.java
+WindowRankProcessor.java
+WindowRankingProcessorBase.java
+WindowRowNumberProcessor.java
+
+/app/processing/src/main/java/org/apache/druid/query/operator/window/value:
+ShiftedColumnAccessorBase.java
+WindowFirstProcessor.java
+WindowLastProcessor.java
+WindowOffsetProcessor.java
+WindowValueProcessorBase.java
+[3] assistant: [tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonProperty;
+24: import org.apache.druid.query.aggregation.AggregatorFactory;
+25: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+26: import org.apache.druid.query.rowsandcols.semantic.DefaultFramedOnHeapAggregatable;
+27: import org.apache.druid.query.rowsandcols.semantic.FramedOnHeapAggregatable;
+28: 
+29: import javax.annotation.Nullable;
+30: import java.util.ArrayList;
+31: import java.util.Arrays;
+32: import java.util.List;
+33: import java.util.Objects;
+34: 
+35: public class WindowFramedAggregateProcessor implements Processor
+36: {
+37:   @Nullable
+38:   private static <T> T[] emptyToNull(T[] arr)
+39:   {
+40:     if (arr == null || arr.length == 0) {
+41:       return null;
+42:     } else {
+43:       return arr;
+44:     }
+45:   }
+46: 
+47:   private final WindowFrame frame;
+48:   private final Aggre
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/FramedOnHeapAggregatable.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/FramedOnHeapAggregatable.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import org.apache.druid.query.aggregation.AggregatorFactory;
+23: import org.apache.druid.query.operator.window.WindowFrame;
+24: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+25: 
+26: import javax.annotation.Nonnull;
+27: 
+28: /**
+29:  * A semantic interface used to aggregate a list of AggregatorFactories across a given set of data
+30:  * <p>
+31:  * The aggregation specifically happens on-heap and should be used in places where it is known that the data
+32:  * set can be worked with entirely on-heap.  There is support for frame definitions, frames aggregate certain
+33:  * subsets of rows in a rolling fashion like a windowed average.  Frames are defined in terms of boundaries
+34:  * where a boundary could be based on rows or it could be based on "PEER" groupings.
+35:  * <p>
+36:  * A peer grouping is defined as a set of rows that are the same based on the ORDER BY columns specified.  As such
+
+[truncated]
+[4] assistant: [tool:bash] {"command": "ls -R /app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/ /app/processing/src/main/java/org/apache/druid/query/rowsandcols/"}
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/:
+AppendableMapOfColumns.java
+ArrayListRowsAndColumns.java
+ConcatRowsAndColumns.java
+CursorFactoryRowsAndColumns.java
+EmptyRowsAndColumns.java
+LazilyDecoratedRowsAndColumns.java
+LimitedRowsAndColumns.java
+MapOfColumnsRowsAndColumns.java
+RearrangedRowsAndColumns.java
+RowsAndColumns.java
+column
+concrete
+semantic
+serde
+util
+
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column:
+BinarySearchableAccessor.java
+Column.java
+ColumnAccessor.java
+ColumnAccessorBasedColumn.java
+ColumnValueSwapper.java
+ConstantObjectColumn.java
+DefaultVectorCopier.java
+DoubleArrayColumn.java
+IntArrayColumn.java
+LimitedColumn.java
+LongArrayColumn.java
+NullColumn.java
+ObjectArrayColumn.java
+VectorCopier.java
+accessor
+
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/accessor:
+DoubleColumnAccessorBase.java
+FloatColumnAccessorBase.java
+LongColumnAccessorBase.java
+ObjectColumnAccessorBase.java
+
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete:
+AbstractFrameRowsAndColumns.java
+ColumnBasedFrameRowsAndColumns.java
+ColumnHolderRACColumn.java
+FrameRowsAndColumns.java
+QueryableIndexRowsAndColumns.java
+RowBasedFrameRowsAndColumns.java
+
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic:
+AppendableRowsAndColumns.java
+ClusteredGroupPartitioner.java
+ColumnSelectorFactoryMaker.java
+DefaultClusteredGroupPartitioner.java
+DefaultColumnSelectorFactoryMaker.java
+DefaultFrameMaker.java
+DefaultFramedOnHeapAggregatable.java
+DefaultGroupPartitioner.java
+DefaultNaiveSortMaker.java
+DefaultRowsAndColumnsDecorator.java
+DefaultSortedMatrixMaker.java
+FrameMaker.java
+FramedOnHeapAggregatable.java
+GroupPartitioner.java
+NaiveSortMaker.java
+RowsAndColumnsDecorator.java
+SortedMatrixMaker.java
+WireTransferable.java
+
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/serde:
+RowsAndColumnsDeserializer.java
+RowsAndColumnsSerializer.java
+WireTransferableContext.java
+
+/a
+[truncated]
+[5] assistant: [tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import com.google.common.annotations.VisibleForTesting;
+23: import com.google.common.base.Preconditions;
+24: import org.apache.druid.error.DruidException;
+25: import org.apache.druid.java.util.common.StringUtils;
+26: import org.apache.druid.java.util.common.UOE;
+27: import org.apache.druid.query.aggregation.Aggregator;
+28: import org.apache.druid.query.aggregation.AggregatorFactory;
+29: import org.apache.druid.query.dimension.DimensionSpec;
+30: import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
+31: import org.apache.druid.query.operator.window.WindowFrame;
+32: import org.apache.druid.query.operator.window.WindowFrame.Groups;
+33: import org.apache.druid.query.operator.window.WindowFrame.OffsetFrame;
+34: import org.apache.druid.query.operator.window.WindowFrame.Rows;
+35: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+36: import org.apache.druid.query.rowsandcol
+[truncated]
+[6] assistant: [reasoning]
+Now let me look at the value processors.
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowFirstProcessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowFirstProcessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window.value;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonInclude;
+24: import com.fasterxml.jackson.annotation.JsonProperty;
+25: import org.apache.druid.error.DruidException;
+26: import org.apache.druid.query.operator.window.Processor;
+27: import org.apache.druid.query.operator.window.WindowFrame;
+28: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+29: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+30: import org.apache.druid.query.rowsandcols.column.ConstantObjectColumn;
+31: import org.apache.druid.query.rowsandcols.column.ObjectArrayColumn;
+32: 
+33: import javax.annotation.Nullable;
+34: import java.util.Objects;
+35: 
+36: public class WindowFirstProcessor extends WindowValueProcessorBase
+37: {
+38:   @Nullable
+39:   private final WindowFrame frame;
+40: 
+41:   @JsonCreator
+42:   public WindowFirstProcessor(
+43:       @JsonProperty("i
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowLastProcessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowLastProcessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window.value;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonInclude;
+24: import com.fasterxml.jackson.annotation.JsonProperty;
+25: import org.apache.druid.error.DruidException;
+26: import org.apache.druid.query.operator.window.Processor;
+27: import org.apache.druid.query.operator.window.WindowFrame;
+28: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+29: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+30: import org.apache.druid.query.rowsandcols.column.ConstantObjectColumn;
+31: import org.apache.druid.query.rowsandcols.column.ObjectArrayColumn;
+32: 
+33: import javax.annotation.Nullable;
+34: import java.util.Objects;
+35: 
+36: public class WindowLastProcessor extends WindowValueProcessorBase
+37: {
+38:   @Nullable
+39:   private final WindowFrame frame;
+40: 
+41:   @JsonCreator
+42:   public WindowLastProcessor(
+43:       @JsonProperty("inpu
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowOffsetProcessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowOffsetProcessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window.value;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonProperty;
+24: import org.apache.druid.query.operator.window.Processor;
+25: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+26: import org.apache.druid.query.rowsandcols.column.ColumnAccessorBasedColumn;
+27: 
+28: public class WindowOffsetProcessor extends WindowValueProcessorBase
+29: {
+30:   private final int offset;
+31: 
+32:   @JsonCreator
+33:   public WindowOffsetProcessor(
+34:       @JsonProperty("inputColumn") String inputColumn,
+35:       @JsonProperty("outputColumn") String outputColumn,
+36:       @JsonProperty("offset") int offset
+37:   )
+38:   {
+39:     super(inputColumn, outputColumn);
+40:     this.offset = offset;
+41:   }
+42: 
+43:   @JsonProperty("offset")
+44:   public int getOffset()
+45:   {
+46:     return offset;
+47:   }
+48: 
+49:   @Override
+50:   public RowsAndColumns process(Rows
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/value/ShiftedColumnAccessorBase.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/value/ShiftedColumnAccessorBase.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window.value;
+21: 
+22: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+23: import org.apache.druid.segment.column.ColumnType;
+24: 
+25: public abstract class ShiftedColumnAccessorBase implements ColumnAccessor
+26: {
+27:   private final ColumnAccessor accessor;
+28: 
+29:   public ShiftedColumnAccessorBase(ColumnAccessor accessor)
+30:   {
+31:     this.accessor = accessor;
+32:   }
+33: 
+34:   @Override
+35:   public ColumnType getType()
+36:   {
+37:     return accessor.getType();
+38:   }
+39: 
+40:   @Override
+41:   public int numRows()
+42:   {
+43:     return accessor.numRows();
+44:   }
+45: 
+46:   @Override
+47:   public boolean isNull(int rowNum)
+48:   {
+49:     final int actualCell = getActualValue(rowNum);
+50:     if (outsideBounds(actualCell)) {
+51:       return true;
+52:     }
+53:     return accessor.isNull(actualCell);
+54:   }
+55: 
+56:   @Override
+57:   public Object getObject(int rowNum)
+58:   {
+59:     fin
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window.value;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonProperty;
+23: import org.apache.druid.error.DruidException;
+24: import org.apache.druid.java.util.common.ISE;
+25: import org.apache.druid.query.operator.window.Processor;
+26: import org.apache.druid.query.operator.window.WindowFrame;
+27: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+28: import org.apache.druid.query.rowsandcols.column.Column;
+29: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+30: import org.apache.druid.query.rowsandcols.semantic.AppendableRowsAndColumns;
+31: import org.apache.druid.query.rowsandcols.semantic.ClusteredGroupPartitioner;
+32: 
+33: import java.util.Collections;
+34: import java.util.List;
+35: import java.util.function.Function;
+36: 
+37: public abstract class WindowValueProcessorBase implements Processor
+38: {
+39:   private final String inputColumn;
+40:   private final String outputColumn;
+41: 
+42:
+[truncated]
+[7] assistant: [reasoning]
+Now let me look at ColumnWithDirection:
+[tool:grep] {"path": "/app/processing", "pattern": "class ColumnWithDirection"}
+[tool error]
+ripgrep execution failed
+[8] assistant: [tool:bash] {"command": "rg -l \"class ColumnWithDirection\" /app --glob \"*.java\""}
+/usr/bin/bash: line 1: rg: command not found
+[9] assistant: [tool:bash] {"command": "grep -rl \"class ColumnWithDirection\" /app --include=\"*.java\" 2>/dev/null"}
+/app/processing/src/main/java/org/apache/druid/query/operator/ColumnWithDirection.java
+[10] assistant: [tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/ColumnWithDirection.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/ColumnWithDirection.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonProperty;
+24: 
+25: import java.util.Objects;
+26: 
+27: public class ColumnWithDirection
+28: {
+29:   public static ColumnWithDirection ascending(String column)
+30:   {
+31:     return new ColumnWithDirection(column, Direction.ASC);
+32:   }
+33: 
+34:   public static ColumnWithDirection descending(String column)
+35:   {
+36:     return new ColumnWithDirection(column, Direction.DESC);
+37:   }
+38: 
+39:   public enum Direction
+40:   {
+41:     ASC(1),
+42:     DESC(-1);
+43: 
+44:     private final int directionInt;
+45: 
+46:     Direction(int directionInt)
+47:     {
+48:       this.directionInt = directionInt;
+49:     }
+50: 
+51:     public int getDirectionInt()
+52:     {
+53:       return directionInt;
+54:     }
+55:   }
+56: 
+57:   private final String columnName;
+58:   private final Direction direction;
+59: 
+60:   @JsonCreator
+61:   public Colum
+[truncated]
+[11] assistant: [reasoning]
+Now let me look at the SQL side - the validator and Calcite window planning. Let me find where window frames are validated/planned in the SQL module.
+[tool:bash] {"command": "grep -rln \"RANGE\\|RANGE\" /app/sql/src/main/java/org/apache/druid/sql/calcite/ --include=\"*.java\" | head -20"}
+/app/sql/src/main/java/org/apache/druid/sql/calcite/filtration/MoveTimeFiltersToIntervals.java
+/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java
+/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java
+/app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java
+[tool:bash] {"command": "grep -rln \"WindowFrame\" /app/sql/src/main/java --include=\"*.java\" | head -30"}
+/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java
+[12] assistant: [tool:read] {"filePath": "/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java"}
+<path>/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.sql.calcite.planner;
+21: 
+22: import com.fasterxml.jackson.core.JsonProcessingException;
+23: import org.apache.calcite.adapter.java.JavaTypeFactory;
+24: import org.apache.calcite.prepare.BaseDruidSqlValidator;
+25: import org.apache.calcite.prepare.CalciteCatalogReader;
+26: import org.apache.calcite.rel.type.RelDataType;
+27: import org.apache.calcite.rel.type.RelDataTypeField;
+28: import org.apache.calcite.rel.type.RelRecordType;
+29: import org.apache.calcite.runtime.CalciteContextException;
+30: import org.apache.calcite.runtime.CalciteException;
+31: import org.apache.calcite.sql.SqlAggFunction;
+32: import org.apache.calcite.sql.SqlCall;
+33: import org.apache.calcite.sql.SqlIdentifier;
+34: import org.apache.calcite.sql.SqlInsert;
+35: import org.apache.calcite.sql.SqlKind;
+36: import org.apache.calcite.sql.SqlNode;
+37: import org.apache.calcite.sql.SqlNodeList;
+38: import org.apache.calcite.sql.SqlOperatorTable;
+39: import org.apache.calcite.sql.SqlSelect;
+40
+[truncated]
+[13] assistant: [reasoning]
+Now let me look at Windowing.java which handles the Calcite window planning:
+[tool:read] {"filePath": "/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java"}
+<path>/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.sql.calcite.rel;
+21: 
+22: import com.google.common.annotations.VisibleForTesting;
+23: import com.google.common.base.Preconditions;
+24: import com.google.common.collect.ImmutableMap;
+25: import com.google.common.collect.Iterables;
+26: import org.apache.calcite.rel.RelCollation;
+27: import org.apache.calcite.rel.RelCollationTraitDef;
+28: import org.apache.calcite.rel.RelFieldCollation;
+29: import org.apache.calcite.rel.core.AggregateCall;
+30: import org.apache.calcite.rel.core.Project;
+31: import org.apache.calcite.rel.core.Window;
+32: import org.apache.calcite.rex.RexBuilder;
+33: import org.apache.calcite.rex.RexInputRef;
+34: import org.apache.calcite.rex.RexLiteral;
+35: import org.apache.calcite.rex.RexNode;
+36: import org.apache.calcite.rex.RexWindowBound;
+37: import org.apache.calcite.util.mapping.Mappings;
+38: import org.apache.druid.java.util.common.ISE;
+39: import org.apache.druid.java.util.common.StringUtils;
+40: import org.apache.druid.query.QueryException;
+41: 
+[truncated]
+[14] assistant: [reasoning]
+Now, let me look at the tests for the window processors and see how they're being tested. Also, I need to understand the `RewriteFirstValueLastValueRule` in SQL. Let me look at that too.
+[tool:read] {"filePath": "/app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java"}
+<path>/app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.sql.calcite.rule;
+21: 
+22: import com.google.common.collect.ImmutableList;
+23: import org.apache.calcite.plan.RelOptRule;
+24: import org.apache.calcite.plan.RelOptRuleCall;
+25: import org.apache.calcite.rel.RelNode;
+26: import org.apache.calcite.rel.rules.SubstitutionRule;
+27: import org.apache.calcite.rex.RexBuilder;
+28: import org.apache.calcite.rex.RexNode;
+29: import org.apache.calcite.rex.RexOver;
+30: import org.apache.calcite.rex.RexShuttle;
+31: import org.apache.calcite.rex.RexWindow;
+32: import org.apache.calcite.rex.RexWindowBound;
+33: import org.apache.calcite.sql.SqlAggFunction;
+34: import org.apache.calcite.sql.SqlKind;
+35: import org.apache.calcite.sql.SqlOperator;
+36: import org.apache.calcite.sql.fun.SqlStdOperatorTable;
+37: 
+38: import java.math.BigDecimal;
+39: import java.util.List;
+40: 
+41: /**
+42:  * Rewrites exotic cases of FIRST_VALUE/LAST_VALUE to simpler plans.
+43:  *
+44:  * LAST_VALUE(x) OVER (ORDER BY Y)
+45:  * implicitly 
+[truncated]
+[15] assistant: [reasoning]
+Now let me understand the structure of the project - specifically the `ClusteredGroupPartitioner`:
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultClusteredGroupPartitioner.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultClusteredGroupPartitioner.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import it.unimi.dsi.fastutil.ints.IntArrayList;
+23: import it.unimi.dsi.fastutil.ints.IntList;
+24: import org.apache.druid.query.rowsandcols.LimitedRowsAndColumns;
+25: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+26: import org.apache.druid.query.rowsandcols.column.Column;
+27: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+28: 
+29: import java.util.ArrayList;
+30: import java.util.List;
+31: 
+32: public class DefaultClusteredGroupPartitioner implements ClusteredGroupPartitioner
+33: {
+34:   private final RowsAndColumns rac;
+35: 
+36:   public DefaultClusteredGroupPartitioner(
+37:       RowsAndColumns rac
+38:   )
+39:   {
+40:     this.rac = rac;
+41:   }
+42: 
+43:   @Override
+44:   public int[] computeBoundaries(List<String> columns)
+45:   {
+46:     if (rac.numRows() == 0) {
+47:       return new int[]{};
+48:     }
+49: 
+50:     // Initialize to a grouping of everything
+5
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/ClusteredGroupPartitioner.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/ClusteredGroupPartitioner.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+23: 
+24: import java.util.ArrayList;
+25: import java.util.List;
+26: 
+27: /**
+28:  * A semantic interface used to partition a data set based on a given set of columns.
+29:  * <p>
+30:  * This specifically assumes that it is working with pre-clustered data and, as such, the groups returned
+31:  * should be contiguous and unique (that is, all rows for a given combination of values exist in only one grouping)
+32:  */
+33: public interface ClusteredGroupPartitioner
+34: {
+35:   static ClusteredGroupPartitioner fromRAC(RowsAndColumns rac)
+36:   {
+37:     ClusteredGroupPartitioner retVal = rac.as(ClusteredGroupPartitioner.class);
+38:     if (retVal == null) {
+39:       retVal = new DefaultClusteredGroupPartitioner(rac);
+40:     }
+41:     return retVal;
+42:   }
+43: 
+44:   /**
+45:    * Computes and returns a list of contiguous boundaries for independent 
+[truncated]
+[16] assistant: [reasoning]
+Now let me look at existing tests for the window processors to understand what test structure exists:
+[tool:bash] {"command": "ls /app/processing/src/test/java/org/apache/druid/query/operator/window/ 2>/dev/null; ls /app/processing/src/test/java/org/apache/druid/query/rowsandcols/semantic/ 2>/dev/null"}
+ComposingProcessorTest.java
+RowsAndColumnsHelper.java
+WindowFrameTest.java
+WindowFramedAggregateProcessorTest.java
+ranking
+value
+AppendableRowsAndColumnsTest.java
+ClusteredGroupPartitionerTest.java
+CombinedSemanticInterfacesTest.java
+DefaultFramedOnHeapAggregatableTest.java
+EvaluateRowsAndColumnsTest.java
+FrameMakerTest.java
+FramedOnHeapAggregatableTest.java
+NaiveSortMakerTest.java
+RowsAndColumnsDecoratorTest.java
+SemanticTestBase.java
+TestRowsAndColumnsDecorator.java
+[17] assistant: [tool:read] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java"}
+<path>/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window;
+21: 
+22: import nl.jqno.equalsverifier.EqualsVerifier;
+23: import org.apache.druid.query.operator.window.WindowFrame.OffsetFrame;
+24: import org.junit.jupiter.api.Test;
+25: 
+26: import static org.junit.jupiter.api.Assertions.assertEquals;
+27: 
+28: public class WindowFrameTest
+29: {
+30:   @Test
+31:   public void testEqualsRows()
+32:   {
+33:     EqualsVerifier.forClass(WindowFrame.Rows.class)
+34:         .usingGetClass()
+35:         .verify();
+36:   }
+37: 
+38:   @Test
+39:   public void testEqualsGroups()
+40:   {
+41:     EqualsVerifier.forClass(WindowFrame.Groups.class)
+42:         .usingGetClass()
+43:         .verify();
+44:   }
+45: 
+46:   @Test
+47:   public void testOffsetFrameUnbounded()
+48:   {
+49:     OffsetFrame of = new WindowFrame.Rows(null, null);
+50:     assertEquals(-100, of.getLowerOffsetClamped(100));
+51:     assertEquals(100, of.getUpperOffsetClamped(100));
+52:   }
+53: 
+54:   @Test
+55:   public void testOffsetFrameNor
+[truncated]
+[18] assistant: [tool:read] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessorTest.java"}
+<path>/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessorTest.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window;
+21: 
+22: import com.google.common.collect.ImmutableList;
+23: import com.google.common.collect.ImmutableMap;
+24: import nl.jqno.equalsverifier.EqualsVerifier;
+25: import org.apache.druid.query.aggregation.AggregatorFactory;
+26: import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
+27: import org.apache.druid.query.aggregation.LongMaxAggregatorFactory;
+28: import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
+29: import org.apache.druid.query.rowsandcols.AsOnlyTestRowsAndColumns;
+30: import org.apache.druid.query.rowsandcols.MapOfColumnsRowsAndColumns;
+31: import org.apache.druid.query.rowsandcols.NoAsRowsAndColumns;
+32: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+33: import org.apache.druid.query.rowsandcols.column.IntArrayColumn;
+34: import org.apache.druid.query.rowsandcols.semantic.FramedOnHeapAggregatable;
+35: import org.junit.jupiter.api.Assertions;
+36: import o
+[truncated]
+[19] assistant: [reasoning]
+Let me look at more tests around the FramedOnHeapAggregatable and value processors:
+[tool:bash] {"command": "ls /app/processing/src/test/java/org/apache/druid/query/operator/window/value/ /app/processing/src/test/java/org/apache/druid/query/rowsandcols/ 2>/dev/null"}
+/app/processing/src/test/java/org/apache/druid/query/operator/window/value/:
+WindowFirstProcessorTest.java
+WindowLagProcessorTest.java
+WindowLastProcessorTest.java
+WindowLeadProcessorTest.java
+
+/app/processing/src/test/java/org/apache/druid/query/rowsandcols/:
+ArrayListRowsAndColumnsTest.java
+AsOnlyTestRowsAndColumns.java
+ConcatRowsAndColumnsTest.java
+CursorFactoryRowsAndColumnsTest.java
+MapOfColumnsRowsAndColumnsTest.java
+NoAsRowsAndColumns.java
+RearrangedRowsAndColumnsTest.java
+RowsAndColumnsTestBase.java
+TestRowsAndColumns.java
+column
+concrete
+semantic
+serde
+[20] assistant: [tool:read] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java"}
+<path>/app/processing/src/test/java/org/apache/druid/query/operator/window/value/WindowFirstProcessorTest.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window.value;
+21: 
+22: import com.google.common.collect.ImmutableList;
+23: import org.apache.druid.query.operator.window.ComposingProcessor;
+24: import org.apache.druid.query.operator.window.RowsAndColumnsHelper;
+25: import org.apache.druid.query.operator.window.WindowFrame;
+26: import org.apache.druid.query.rowsandcols.MapOfColumnsRowsAndColumns;
+27: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+28: import org.apache.druid.query.rowsandcols.column.Column;
+29: import org.apache.druid.query.rowsandcols.column.DoubleArrayColumn;
+30: import org.apache.druid.query.rowsandcols.column.IntArrayColumn;
+31: import org.apache.druid.query.rowsandcols.column.ObjectArrayColumn;
+32: import org.apache.druid.segment.column.ColumnType;
+33: import org.junit.jupiter.api.Assertions;
+34: import org.junit.jupiter.api.Test;
+35: 
+36: import java.util.Collections;
+37: import java.util.LinkedHashMap;
+38: import java.util.Map;
+39: 
+40:
+[truncated]
+[21] assistant: [reasoning]
+Let me look at the `RowsAndColumnsHelper`:
+[tool:read] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/RowsAndColumnsHelper.java"}
+<path>/app/processing/src/test/java/org/apache/druid/query/operator/window/RowsAndColumnsHelper.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window;
+21: 
+22: import com.google.common.collect.ImmutableMap;
+23: import com.google.common.collect.ImmutableSet;
+24: import it.unimi.dsi.fastutil.ints.IntArrayList;
+25: import org.apache.druid.java.util.common.ISE;
+26: import org.apache.druid.java.util.common.StringUtils;
+27: import org.apache.druid.query.rowsandcols.MapOfColumnsRowsAndColumns;
+28: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+29: import org.apache.druid.query.rowsandcols.column.Column;
+30: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+31: import org.apache.druid.query.rowsandcols.column.IntArrayColumn;
+32: import org.apache.druid.segment.column.ColumnType;
+33: import org.junit.jupiter.api.Assertions;
+34: 
+35: import java.util.ArrayList;
+36: import java.util.Collection;
+37: import java.util.LinkedHashMap;
+38: import java.util.Map;
+39: import java.util.Set;
+40: import java.util.concurrent.atomic.AtomicReference;
+41: 
+42: public clas
+[truncated]
+[22] assistant: [reasoning]
+Now let me look at how the SQL side validates RANGE. Let me check the existing SQL tests around RANGE frames and CalciteQueryTest:
+
+Let me look at the tests related to window functions in the SQL module:
+[tool:bash] {"command": "grep -rln \"RANGE BETWEEN\" /app/sql/src --include=\"*.java\" --include=\"*.iq\" | head -20"}
+/app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java
+/app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java
+[23] assistant: [tool:bash] {"command": "grep -n \"RANGE BETWEEN\" /app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java | head -30"}
+15625:        .sql("SELECT dim1,ROW_NUMBER() OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo")
+[24] assistant: [tool:read] {"filePath": "/app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java", "limit": 120, "offset": 15560}
+<path>/app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java</path>
+<type>file</type>
+<content>
+15560:         "SELECT dim2,LATEST(dim3),LATEST_BY(dim1, __time),EARLIEST(dim3),EARLIEST_BY(dim1, __time),ANY_VALUE(dim3) FROM druid.foo where dim2='abc' group by 1",
+15561:         ImmutableList.of(
+15562:             GroupByQuery.builder()
+15563:                 .setDataSource(CalciteTests.DATASOURCE1)
+15564:                 .setInterval(querySegmentSpec(Filtration.eternity()))
+15565:                 .setGranularity(Granularities.ALL)
+15566:                 .setVirtualColumns(
+15567:                     expressionVirtualColumn("v0", "'abc'", ColumnType.STRING))
+15568:                 .setDimFilter(equality("dim2", "abc", ColumnType.STRING))
+15569:                 .setDimensions(
+15570:                     dimensions(new DefaultDimensionSpec("v0", "d0", ColumnType.STRING)))
+15571:                 .setAggregatorSpecs(
+15572:                     aggregators(
+15573:                         new StringLastAggregatorFactory("a0", "dim3", "__time", 1024),
+15574:                         new StringLastAggregatorFactory("a1", "dim1", "__time", 1024),
+15575:                         new StringFirstAggregatorFactory("a2", "dim3", "__time", 1024),
+15576:                         new StringFirstAggregatorFactory("a3", "dim1", "__time", 1024),
+15577:                         new StringAnyAggregatorFactory("a4", "dim3", 1024, true)))
+15578:                 .build()
+15579: 
+15580:         ),
+15581:         ImmutableList.of(
+15582:             new Object[] {"abc", null, "def", null, "def", null}
+15583:         ));
+15584:   }
+15585: 
+15586:   @Test
+15587:   public void testDistinctSumNotSupportedWithApproximation()
+15588:   {
+15589:     DruidException e = assertThrows(
+15590:         DruidException.class,
+15591:         () -> testBuilder()
+15592:             .queryContext(ImmutableMap.of(PlannerConfig.CTX_KEY_USE_APPROXIMATE_COUNT_DISTINCT, true))
+15593:             .sql("S
+[truncated]
+[25] assistant: [reasoning]
+Now I have a good understanding of the SQL side. Let me look at the WindowGroup's `getWindowFrame` and `getBoundAsInteger` methods - this is where SQL planning converts RexWindowBound to native WindowFrame. Now let me understand the whole flow:
+
+1. SQL query comes with a window frame (e.g., `RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING`)
+2. `DruidSqlValidator.validateWindow` validates the frame - currently rejects offset-based RANGE
+3. `Windowing.WindowGroup.getWindowFrame()` converts the Calcite RexWindowBound to a native WindowFrame
+
+Let me now check the RexWindowBound class in Calcite to understand how bounds are represented:
+[tool:bash] {"command": "find / -name \"rex\" -path \"*calcite*\" -type d 2>/dev/null | head; find ~/.m2 -name \"calcite-core*.jar\" 2>/dev/null | head -3"}
+/root/.m2/repository/org/apache/calcite/calcite-core/1.41.0/calcite-core-1.41.0.jar
+[26] assistant: [tool:bash] {"command": "cd /tmp/opencode && unzip -o -q /root/.m2/repository/org/apache/calcite/calcite-core/1.41.0/calcite-core-1.41.0.jar org/apache/calcite/rex/RexWindowBound.class org/apache/calcite/sql/SqlWindow.class && javap org/apache/calcite/rex/RexWindowBound.class org/apache/calcite/sql/SqlWindow.class 2>/dev/null | head -80"}
+Compiled from "RexWindowBound.java"
+public abstract class org.apache.calcite.rex.RexWindowBound {
+  public org.apache.calcite.rex.RexWindowBound();
+  public static org.apache.calcite.rex.RexWindowBound create(org.apache.calcite.sql.SqlNode, org.apache.calcite.rex.RexNode);
+  public boolean isUnbounded();
+  public final boolean isUnboundedPreceding();
+  public final boolean isUnboundedFollowing();
+  public boolean isPreceding();
+  public boolean isFollowing();
+  public boolean isCurrentRow();
+  public org.apache.calcite.rex.RexNode getOffset();
+  public int getOrderKey();
+  public <R> org.apache.calcite.rex.RexWindowBound accept(org.apache.calcite.rex.RexVisitor<R>);
+  public <R, P> org.apache.calcite.rex.RexWindowBound accept(org.apache.calcite.rex.RexBiVisitor<R, P>, P);
+  public int nodeCount();
+}
+Compiled from "SqlWindow.java"
+public class org.apache.calcite.sql.SqlWindow extends org.apache.calcite.sql.SqlCall {
+  public static final org.apache.calcite.sql.SqlPostfixOperator FOLLOWING_OPERATOR;
+  public static final org.apache.calcite.sql.SqlPostfixOperator PRECEDING_OPERATOR;
+  org.apache.calcite.sql.SqlIdentifier declName;
+  org.apache.calcite.sql.SqlIdentifier refName;
+  org.apache.calcite.sql.SqlNodeList partitionList;
+  org.apache.calcite.sql.SqlNodeList orderList;
+  org.apache.calcite.sql.SqlLiteral isRows;
+  org.apache.calcite.sql.SqlNode lowerBound;
+  org.apache.calcite.sql.SqlNode upperBound;
+  org.apache.calcite.sql.SqlLiteral exclude;
+  org.apache.calcite.sql.SqlLiteral allowPartial;
+  static final boolean $assertionsDisabled;
+  public org.apache.calcite.sql.SqlWindow(org.apache.calcite.sql.parser.SqlParserPos, org.apache.calcite.sql.SqlIdentifier, org.apache.calcite.sql.SqlIdentifier, org.apache.calcite.sql.SqlNodeList, org.apache.calcite.sql.SqlNodeList, org.apache.calcite.sql.SqlLiteral, org.apache.calcite.sql.SqlNode, org.apache.calcite.sql.SqlNode, org.apache.calcite.sql.SqlLiteral);
+  public org.apache.calcite.sql.SqlWindow(org.apache.calcite.sql
+[truncated]
+[27] assistant: [reasoning]
+Now let me understand the Windowing.WindowGroup's use of `getConstant`. Note that window frame offsets in the Calcite plan appear as `RexInputRef` into the window's `constants` list. 
+
+For a RANGE frame with a numeric literal offset e.g. `RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING`, the bound would be a RexInputRef that points to a constant with a numeric value (BigDecimal). For day-time intervals like `RANGE BETWEEN INTERVAL '1' DAY PRECEDING`, the constant would be a long value of millis (e.g., 86400000).
+
+Let me check how `getBoundAsInteger` works: it casts `bound.getOffset()` to `RexInputRef` and gets the constant from `window.constants`. The constant's value is a `Number` and `intValue()` is taken.
+
+For RANGE frames, the offset value can be a Double (floating point). For intervals, the value would be the number of milliseconds as a Long. We want to avoid integer truncation of day-time intervals: "Day-time `INTERVAL` offsets must map to their millisecond magnitude as a floating-point offset without integer truncation."
+
+So for `getBoundAsDouble`, we'd get the constant's value as `Number` and call `doubleValue()`.
+
+Now let me check how Calcite represents the frame offset constants. For a window like `OVER (ORDER BY x RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING)`, the `Window.rel` will have constants list containing RexLiteral for 3 and 2. The `RexWindowBound.getOffset()` returns a RexNode (RexInputRef pointing into constants). Let me check how the value can be retrieved: `window.constants.get(refIndex - sig.size()).getValue()`.
+
+For a numeric literal like `3`, `RexLiteral.getValue()` returns a BigDecimal (for exact numeric) or Integer/Long. For interval day-time, the value is a `BigDecimal` of milliseconds? Let me check. In Calcite, `SqlIntervalLiteral.IntervalValue` has value as milliseconds... Actually in RexLiteral, an interval day-time type has value as `BigDecimal` (millis). Let me verify: `RexLiteral.intValue()` for intervals returns the millis value. Hmm.
+
+Let me check `SqlLiteral.getValue` for interval literals. In Calcite `SqlIntervalLiteral.IntervalValue` stores `intervalInMillis` as a long (BigDecimal?). Let me look at how Druid handles intervals in expressions... Let me search for existing handling of interval literals in the Druid codebase.
+[tool:bash] {"command": "cd /tmp/opencode && unzip -o -q /root/.m2/repository/org/apache/calcite/calcite-core/1.41.0/calcite-core-1.41.0.jar org/apache/calcite/rex/RexLiteral.class org/apache/calcite/sql/SqlIntervalLiteral.class && javap org/apache/calcite/rex/RexLiteral.class | head -40"}
+Compiled from "RexLiteral.java"
+public class org.apache.calcite.rex.RexLiteral extends org.apache.calcite.rex.RexNode {
+  static final boolean $assertionsDisabled;
+  org.apache.calcite.rex.RexLiteral(java.lang.Comparable, org.apache.calcite.rel.type.RelDataType, org.apache.calcite.sql.type.SqlTypeName);
+  public final java.lang.String computeDigest(org.apache.calcite.rex.RexDigestIncludeType);
+  org.apache.calcite.rex.RexDigestIncludeType digestIncludesType();
+  public static boolean valueMatchesType(java.lang.Comparable, org.apache.calcite.sql.type.SqlTypeName, boolean);
+  public static org.apache.calcite.sql.type.SqlTypeName strictTypeName(org.apache.calcite.rel.type.RelDataType);
+  public static boolean validConstant(java.lang.Object, org.apache.calcite.util.Litmus);
+  public void printAsJava(java.io.PrintWriter);
+  public static org.apache.calcite.rex.RexLiteral fromJdbcString(org.apache.calcite.rel.type.RelDataType, org.apache.calcite.sql.type.SqlTypeName, java.lang.String);
+  public org.apache.calcite.sql.type.SqlTypeName getTypeName();
+  public org.apache.calcite.rel.type.RelDataType getType();
+  public org.apache.calcite.sql.SqlKind getKind();
+  public boolean isNull();
+  public java.lang.Comparable getValue();
+  public java.lang.Object getValue2();
+  public java.lang.Object getValue3();
+  public java.lang.Comparable getValue4();
+  public <T> T getValueAs(java.lang.Class<T>);
+  public static boolean booleanValue(org.apache.calcite.rex.RexNode);
+  public boolean isAlwaysTrue();
+  public boolean isAlwaysFalse();
+  public boolean equals(java.lang.Object);
+  public int hashCode();
+  public static java.lang.Comparable value(org.apache.calcite.rex.RexNode);
+  public static java.lang.Number numberValue(org.apache.calcite.rex.RexNode);
+  public static int intValue(org.apache.calcite.rex.RexNode);
+  public static long longValue(org.apache.calcite.rex.RexNode);
+  public static java.lang.String stringValue(org.apache.calcite.rex.RexNode);
+  public static boolean isNull
+[truncated]
+[tool:bash] {"command": "grep -rn \"SqlIntervalLiteral\\|INTERVAL\" /app/sql/src/main/java/org/apache/druid/sql/calcite/expression/builtin/ --include=\"*.java\" -l | head"}
+/app/sql/src/main/java/org/apache/druid/sql/calcite/expression/builtin/CastOperatorConversion.java
+/app/sql/src/main/java/org/apache/druid/sql/calcite/expression/builtin/ReductionOperatorConversionHelper.java
+/app/sql/src/main/java/org/apache/druid/sql/calcite/expression/builtin/TimeArithmeticOperatorConversion.java
+[28] assistant: [reasoning]
+Let me now understand the overall design. Let me create a todo list first, and check how the test suite for window SQL is organized (like `testOverOnUnbounded`).
+
+Let me search for window function tests related to RANGE frames in CalciteQueryTest:
+[tool:todowrite] {"todos": [{"content": "Add WindowFrame.Range nested class with Jackson serde, equals/hashCode, factory", "priority": "high", "status": "in_progress"}, {"content": "Extend FramedOnHeapAggregatable/DefaultFramedOnHeapAggregatable to handle Range frames", "priority": "high", "status": "pending"}, {"content": "Extend WindowFirstProcessor/WindowLastProcessor (WindowValueProcessorBase) for Range frames", "priority": "high", "status": "pending"}, {"content": "Update SQL validator (DruidSqlValidator) to accept offset-based RANGE frames", "priority": "high", "status": "pending"}, {"content": "Update Calcite window planning (Windowing.WindowGroup) to produce WindowFrame.range", "priority": "high", "status": "pending"}, {"content": "Unit tests for native Range frame resolution", "priority": "medium", "status": "pending"}, {"content": "SQL planner tests / quidem tests for RANGE frames", "priority": "medium", "status": "pending"}, {"content": "Run compile, tests, lint", "priority": "medium", "status": "pending"}]}
+[
+  {
+    "content": "Add WindowFrame.Range nested class with Jackson serde, equals/hashCode, factory",
+    "status": "in_progress",
+    "priority": "high"
+  },
+  {
+    "content": "Extend FramedOnHeapAggregatable/DefaultFramedOnHeapAggregatable to handle Range frames",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Extend WindowFirstProcessor/WindowLastProcessor (WindowValueProcessorBase) for Range frames",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Update SQL validator (DruidSqlValidator) to accept offset-based RANGE frames",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Update Calcite window planning (Windowing.WindowGroup) to produce WindowFrame.range",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Unit tests for native Range frame resolution",
+    "status": "pending",
+    "priority": "medium"
+  },
+  {
+    "content": "SQL planner tests / quidem tests for RANGE frames",
+    "status": "pending",
+    "priority": "medium"
+  },
+  {
+    "content": "Run compile, tests, lint",
+    "status": "pending",
+    "priority": "medium"
+  }
+]
+[29] assistant: [reasoning]
+Let me first check the git log to see if there's a related PR or recent work on window frames that could guide the design:
+[tool:bash] {"command": "cd /app && git log --oneline -10"}
+ba8da86653 build(deps): bump com.ibm.icu:icu4j from 77.1 to 78.3 (#20154)
+4cd3036560 build(deps): bump com.netflix.spectator:spectator-api (#20153)
+640609453e feat: For partial loads, hook into existing strategic assigner code to better distribute partial load requests (#20155)
+1ed7baae5c fix: more chill abandoned partial loads and safer deferred eviction of weak held entries (#20073)
+f609d0a573 build(deps): bump org.apache:apache from 25 to 39 (#20148)
+3e5e0b92bf build(deps): bump io.projectreactor:reactor-core from 3.7.19 to 3.8.7 (#20147)
+5f40d15748 build(deps): bump guava.version from 33.6.0-jre to 33.7.1-jre (#20146)
+401b2ffece build(deps): bump io.github.resilience4j:resilience4j-bulkhead from 1.3.1 to 2.4.0 (#20145)
+d55c13c245 build(deps-dev): bump com.google.cloud:google-cloud-storage from 2.29.1 to 2.71.0 (#20144)
+320352b00a build(deps-dev): bump com.github.os72:protobuf-dynamic (#20143)
+[tool:bash] {"command": "cd /app && git status | head -20"}
+On branch master
+nothing to commit, working tree clean
+[30] assistant: [reasoning]
+Let me now look at the SQL-side window tests to see how tests are written for window functions in the CalciteQueryTest. Let me look at the window function tests (e.g. `testOverConflictingOrderAndPartition`, or `testOverOnUnbounded`):
+[tool:bash] {"command": "grep -rn \"WindowFrame\\.\" /app/sql/src --include=\"*.java\" | grep -v \"^Binary\" | head -40"}
+/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java:449:        return WindowFrame.unbounded();
+/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java:452:        return WindowFrame.rows(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound));
+/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java:457:        return WindowFrame.groups(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound), getOrderingColumNames());
+/app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java:15988:                            WindowFrame.forOrderBy("d0"),
+[tool:bash] {"command": "grep -rn \"RANGE\" /app/quidem-ut/src/test/quidem -r -l | head -10"}
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.01.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.02.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.03.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.04.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.05.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.06.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.07.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.08.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.09.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.10.all.iq
+[31] assistant: [tool:bash] {"command": "cat \"/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.01.all.iq\""}
+!set useApproximateCountDistinct false
+!use druidtest://?componentSupplier=AllDruidEnginesComponentSupplier&datasets=sql/src/test/quidem/qatests/qaWin
+!set outputformat mysql
+#-------------------------------------------------------------------------
+# TESTCASE: test_order_by TEST_ID: SEL_DATASOURCE
+#-------------------------------------------------------------------------
+SELECT count(*) cnt
+FROM test_win
+WHERE client_ip IN ('107.13.54.103',
+                    '99.9.55.22');
++-----+
+| cnt |
++-----+
+| 768 |
++-----+
+(1 row)
+
+!ok
+
+#-------------------------------------------------------------------------
+# TESTCASE: test_order_by TEST_ID: A1_first_last_W1_G1_Q1
+#-------------------------------------------------------------------------
+SELECT server_ip,
+       client_ip,
+       timezone,
+       cast(time_floor(__time, 'PT12H') AS char) t,
+       first_value(timezone) OVER (PARTITION BY client_ip
+                                   ORDER BY server_ip ASC, timezone, time_floor(__time, 'PT12H') RANGE 0 FOLLOWING) first_val,
+       last_value(timezone) OVER (PARTITION BY client_ip
+                                  ORDER BY server_ip ASC, timezone, time_floor(__time, 'PT12H') RANGE 0 FOLLOWING) last_val
+FROM
+  (SELECT server_ip,
+          client_ip,
+          timezone,
+          time_floor(__time, 'PT12H') __time,
+          count(*)
+   FROM test_win
+   GROUP BY server_ip,
+            client_ip,
+            timezone,
+            time_floor(__time, 'PT12H'))
+WHERE client_ip IN ('107.13.54.103',
+                    '99.9.55.22');
+QueryInterruptedException
+!error
+
+#-------------------------------------------------------------------------
+# TESTCASE: test_order_by TEST_ID: A1_first_last_W1_G1_Q2
+#-------------------------------------------------------------------------
+SELECT server_ip,
+       client_ip,
+       timezone,
+       cast(time_floor(__time, 'PT12H') AS char) t,
+       first_value(timezone) OVER w first_val,
+       last_value(timezone) OVER w last_val
+FROM
+  (SELECT ser
+[truncated]
+[tool:bash] {"command": "ls /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/ | head -60"}
+basics_basic_syntax.all.iq
+basics_data_types_and_exprs.all.iq
+basics_group_by.all.iq
+basics_multi_windows.all.iq
+basics_order_by_basic.all.iq
+basics_order_by_nulls_first_last.all.iq
+basics_window_and_aggr.all.iq
+basics_window_func_in_func.all.iq
+basics_window_funcs.01.all.iq
+basics_window_funcs.02.all.iq
+basics_window_funcs.03.all.iq
+orderby_range_0_following_first_last.01.all.iq
+orderby_range_0_following_first_last.02.all.iq
+orderby_range_0_following_first_last.03.all.iq
+orderby_range_0_following_first_last.04.all.iq
+orderby_range_0_following_first_last.05.all.iq
+orderby_range_0_following_first_last.06.all.iq
+orderby_range_0_following_first_last.07.all.iq
+orderby_range_0_following_first_last.08.all.iq
+orderby_range_0_following_first_last.09.all.iq
+orderby_range_0_following_first_last.10.all.iq
+orderby_range_0_following_first_last.11.all.iq
+orderby_range_0_following_first_last.12.all.iq
+orderby_range_0_following_first_last.13.all.iq
+orderby_range_0_following_first_last.14.all.iq
+orderby_range_0_following_first_last.15.all.iq
+orderby_range_0_following_sum_count.01.all.iq
+orderby_range_0_following_sum_count.02.all.iq
+orderby_range_0_following_sum_count.03.all.iq
+orderby_range_0_following_sum_count.04.all.iq
+orderby_range_0_following_sum_count.05.all.iq
+orderby_range_0_following_sum_count.06.all.iq
+orderby_range_0_following_sum_count.07.all.iq
+orderby_range_0_following_sum_count.08.all.iq
+orderby_range_0_following_sum_count.09.all.iq
+orderby_range_0_following_sum_count.10.all.iq
+orderby_range_0_following_sum_count.11.all.iq
+orderby_range_0_following_sum_count.12.all.iq
+orderby_range_0_following_sum_count.13.all.iq
+orderby_range_0_following_sum_count.14.all.iq
+orderby_range_0_following_sum_count.15.all.iq
+orderby_range_0_preceding_first_last.01.all.iq
+orderby_range_0_preceding_first_last.02.all.iq
+orderby_range_0_preceding_first_last.03.all.iq
+orderby_range_0_preceding_first_last.04.all.iq
+orderby_range_0_preceding_first_last.05.all.iq
+orderby_range_0_preceding_first_la
+[truncated]
+[32] assistant: [reasoning]
+The quidem tests for `RANGE 0 FOLLOWING` and `RANGE 0 PRECEDING` exist (single-value RANGE frames with 0 offset — meaning "CURRENT ROW" through peer group). They currently fail with "QueryInterruptedException" — meaning these queries fail. Wait, `!error` markers indicate the expected behavior is an error.
+
+Hmm, but the spec says: "Update the SQL validator and Calcite window planning to accept offset-based RANGE window frames (RANGE BETWEEN <offset> PRECEDING AND <offset> FOLLOWING, including one-sided and CURRENT ROW variations) when the window has exactly one ORDER BY key."
+
+These quidem tests have MULTIPLE order by keys, so they'd still error out. Let me check how quidem tests are run - do they expect "!error"? Let me check how the QTest suite works and if `QueryInterruptedException` is expected. Actually those tests use `!error` which means the query is expected to produce an error. These tests are currently in a state where they error (with the current validator behavior). 
+
+Wait — but the task says "when the window has exactly one ORDER BY key" the RANGE frames should be accepted. The quidem tests use multiple ORDER BY keys so they should still fail... but maybe with a different error now?
+
+Hmm, let me check what QTest does with `!error`. Let me look at how the quidem test suite works:
+[tool:bash] {"command": "grep -rn \"QueryInterruptedException\\|!error\" /app/quidem-ut/src/test/java -l | head; ls /app/quidem-ut/src/test/java/org/apache/druid/quidem/ 2>/dev/null"}
+LauncherSmokeTest.java
+QTest.java
+[33] assistant: [tool:read] {"filePath": "/app/quidem-ut/src/test/java/org/apache/druid/quidem/QTest.java"}
+<path>/app/quidem-ut/src/test/java/org/apache/druid/quidem/QTest.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.quidem;
+21: 
+22: import org.junit.jupiter.api.Test;
+23: 
+24: import java.io.File;
+25: import java.io.IOException;
+26: 
+27: import static org.junit.jupiter.api.Assertions.assertEquals;
+28: import static org.junit.jupiter.api.Assertions.fail;
+29: 
+30: public class QTest extends DruidQuidemTestBase
+31: {
+32:   public QTest()
+33:   {
+34:     super(new DruidQuidemCommandHandler());
+35:   }
+36: 
+37:   @Override
+38:   protected File getTestRoot()
+39:   {
+40:     return ProjectPathUtils.getPathFromProjectRoot("quidem-ut/src/test/quidem/" + getClass().getName());
+41:   }
+42: 
+43:   @Test
+44:   public void ensureNoRecordFilesPresent() throws IOException
+45:   {
+46:     // ensure that the captured ones are saved into this test's input path
+47:     assertEquals(QuidemCaptureResource.RECORD_PATH, getTestRoot());
+48:     for (String name : getFileNames()) {
+49:       if (name.startsWith("record-")) {
+50:         fail("Record file found: " + name);
+51:       }
+52:     }
+53:   }
+54: }
+
+(End 
+[truncated]
+[34] assistant: [reasoning]
+Let me look at how the quidem tests are set up. Actually these are recorded against a real test dataset with actual results. The `!error` means the query is expected to throw an error. Given the changes here, the tests with `RANGE 0 FOLLOWING` etc. should still fail because they have multiple ORDER BY keys... but wait — actually let me check the quidem test for a single-key RANGE query. Let me search for files with `RANGE BETWEEN`:
+[tool:bash] {"command": "grep -rln \"RANGE BETWEEN\" /app/quidem-ut/src/test/quidem/ | head -20"}
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.02.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.03.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.04.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.05.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.06.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.07.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.08.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.09.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.10.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.11.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.12.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.13.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.14.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.15.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_sum_count.02.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_sum_count.03.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_sum_count.04.all.iq
+/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWi
+[truncated]
+[tool:bash] {"command": "ls /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/ | head -40"}
+README.generated
+kttm_Heatmap.iq
+kttm_Line-chart.iq
+kttm_Overall.iq
+kttm_Sparkline.iq
+kttm_Spotmatrix.iq
+kttm_Stackarea.iq
+kttm_Table.iq
+kttm_Vertical-bars.iq
+kttm_horizontal-bars.iq
+kttm_sunburst
+qaAggFuncs
+qaArray
+qaJsonCols
+qaSql
+qaSsb
+qaTpch
+qaUnnest
+qaWin
+testframework_all_engines_dataset.iq
+testframework_all_engines_disabled.iq
+testframework_dart.iq
+testframework_example.iq
+[35] assistant: [tool:bash] {"command": "grep -rln \"RANGE BETWEEN\" /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/ | xargs -I{} sh -c 'echo \"=== {} ===\"; grep -c \"BETWEEN\" {}' | head -50"}
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.02.all.iq ===
+17
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.03.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.04.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.05.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.06.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.07.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.08.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.09.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.10.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.11.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.12.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.13.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.14.all.iq ===
+75
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_first_last.15.all.iq ===
+7
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_sum_count.02.all.iq ===
+17
+=== /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_sum_count.03.all.iq ===
+75
+===
+[truncated]
+[36] assistant: [reasoning]
+The quidem `qaWin` tests are extensive recorded tests against a dataset `test_win`. Since these have multiple ORDER BY keys, they will continue to be errors (which is what the recorded `.iq` files show with `!error`).
+
+Wait, actually I need to check the important ones - `orderby_range_0_following_sum_count.15` has 7 `BETWEEN`. Let me check one of them which has RANGE BETWEEN... and single order by key:
+
+Actually, let me check the quidem tests with "RANGE BETWEEN" and single order by key to see what's expected:
+[tool:bash] {"command": "grep -A3 \"RANGE BETWEEN\" /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/orderby_range_0_following_sum_count.15.all.iq | head -20"}
+time_floor(__time, 'PT12H') WINDOW w AS (PARTITION BY client_ip RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED FOLLOWING);
+QueryInterruptedException
+!error
+
+--
+       sum(length(timezone)) OVER (RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED FOLLOWING) "sum_val",
+       count(timezone) OVER (RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED FOLLOWING) cnt_val
+FROM
+  (SELECT server_ip,
+          client_ip,
+--
+                    '99.9.55.22') WINDOW w AS (RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED FOLLOWING);
+QueryInterruptedException
+!error
+
+--
+       sum(length(timezone)) OVER (RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED FOLLOWING) "sum_val",
+       count(timezone) OVER (RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED FOLLOWING) cnt_val
+FROM test_win
+WHERE client_ip IN ('107.13.54.103',
+[tool:bash] {"command": "grep -rln \"RANGE\" /app/sql/src/test/quidem/ | head -20"}
+(no output)
+[37] assistant: [reasoning]
+The quidem tests with `RANGE` all expect errors (multi-key). These tests will continue to expect errors after my change, which is fine (multi ORDER BY keys -> unsupported).
+
+Wait, but "0 FOLLOWING" — with `RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED FOLLOWING` — the window has NO order by... these would remain errors.
+
+Hmm, actually let me think about which of these quidem tests should change behavior. Looking at the tests:
+- `RANGE 0 FOLLOWING` (no BETWEEN, single bound = 0 FOLLOWING): "RANGE 0 FOLLOWING" means lower bound = current row... wait no. In SQL, `OVER (ORDER BY x RANGE 0 FOLLOWING)` means `RANGE BETWEEN 0 FOLLOWING AND CURRENT ROW`? No wait: "RANGE 0 FOLLOWING" as a single bound defines... Let me think. In SQL, `OVER (ORDER BY x RANGE <offset> FOLLOWING)` means the frame starts at `<offset> FOLLOWING` and ends at `CURRENT ROW`. Actually no.
+
+Per SQL standard: `RANGE BETWEEN 0 FOLLOWING AND CURRENT ROW`? Hmm, in the `updateBoundsIfNeeded` method above:
+
+```java
+if (lowerBound != null && upperBound == null) {
+  if (lowerBound.getKind() == SqlKind.FOLLOWING || SqlWindow.isUnboundedFollowing(lowerBound)) {
+    upperBound = lowerBound;
+    lowerBound = SqlWindow.createCurrentRow(SqlParserPos.ZERO);
+  } else {
+    upperBound = SqlWindow.createCurrentRow(SqlParserPos.ZERO);
+  }
+  window.setLowerBound(lowerBound);
+  window.setUpperBound(upperBound);
+}
+```
+
+So `RANGE 0 FOLLOWING` becomes `RANGE BETWEEN CURRENT ROW AND 0 FOLLOWING`. That means frame = [current row's value, current row's value + 0] = the peer group of the current row (all rows with equal value). This is like `WindowFrame.groups(0, 0, orderBy)` essentially, when the offset is 0.
+
+OK. These quidem tests were recorded with errors since the current validator rejects any offset-based RANGE. After my change, single-ORDER-BY-key RANGE frames will be supported, so some of these quidem tests might produce results instead of errors! But wait — the quidem qaWin tests are pre-recorded `.iq` files; they're checked in. If my change makes previously-error queries succeed, those tests would fail (since expected is `!error`).
+
+Hmm wait, let me re-read: "QueryInterruptedException\n!error" — the `!error` marker means quidem expects the query to fail with an error matching. Actually in quidem, `!error` expects a specific error message on the next line. "QueryInterruptedException" is the expected error text.
+
+So if my changes make those queries succeed, the quidem tests would break. But those queries have multiple ORDER BY keys, e.g. `ORDER BY server_ip ASC, timezone, time_floor(__time, 'PT12H') RANGE 0 FOLLOWING`. Per the spec: "Unsupported RANGE window forms (such as multiple ORDER BY keys ...) must fail validation or planning." So they will still error. 
+
+But the error message might change! The `!error` assertion in quidem checks that the error message contains/matches the given text ("QueryInterruptedException" here). Hmm, actually how does quidem's `!error` work? It asserts the message starts with or equals the text after `!error`. If the validator error changes from "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW..." to something else, quidem might still accept it if it only checks for "QueryInterruptedException" — hmm, that's the generic error class in the mysql output format.
+
+Wait — the `!set outputformat mysql` — quidem converts errors. Let me look at how Druid's quidem handles errors. Let me look at the quidem command handler:
+[tool:bash] {"command": "find /app/quidem-ut -name \"*.java\" | head -20"}
+/app/quidem-ut/src/main/java/org/apache/druid/quidem/ExposedAsBrokerQueryComponentSupplierWrapper.java
+/app/quidem-ut/src/main/java/org/apache/druid/quidem/KttmNestedComponentSupplier.java
+/app/quidem-ut/src/main/java/org/apache/druid/quidem/Launcher.java
+/app/quidem-ut/src/main/java/org/apache/druid/quidem/QuidemCaptureModule.java
+/app/quidem-ut/src/main/java/org/apache/druid/quidem/QuidemCaptureResource.java
+/app/quidem-ut/src/main/java/org/apache/druid/quidem/QuidemRecorder.java
+/app/quidem-ut/src/test/java/org/apache/druid/quidem/LauncherSmokeTest.java
+/app/quidem-ut/src/test/java/org/apache/druid/quidem/QTest.java
+[38] assistant: [tool:bash] {"command": "grep -rn \"QuidemCommandHandler\\|error\" /app/quidem-ut/src/main/java/org/apache/druid/quidem/QuidemRecorder.java | head; find /app -path \"*quidem*\" -name \"DruidQuidemTestBase.java\" 2>/dev/null | head -3"}
+/app/sql/src/test/java/org/apache/druid/quidem/DruidQuidemTestBase.java
+[39] assistant: [tool:bash] {"command": "grep -rn \"QueryInterruptedException\" /app/sql/src/test/java/org/apache/druid/quidem/*.java | head -10; ls /app/sql/src/test/java/org/apache/druid/quidem/"}
+DruidAvaticaDriverTest.java
+DruidAvaticaTestDriver.java
+DruidConnectionExtras.java
+DruidQTestInfo.java
+DruidQuidemCommandHandler.java
+DruidQuidemConnectionFactory.java
+DruidQuidemTestBase.java
+DynamicComposite.java
+DynamicCompositeTest.java
+ProjectPathUtils.java
+SqlQuidemTest.java
+TestSqlModule.java
+[40] assistant: [tool:bash] {"command": "grep -rn \"error\\|Exception\" /app/sql/src/test/java/org/apache/druid/quidem/DruidQuidemCommandHandler.java | head -20"}
+47:import java.io.IOException;
+110:        catch (Exception e) {
+112:          // believing that you are wanting to validate the error.  By repackaging it, we get a nice failure in the
+122:    protected final <T> List<T> executeExplainCollectHookValues(Context context, HookKey<T> hook) throws IOException
+161:      catch (Exception e) {
+162:        throw new RuntimeException(e);
+171:    protected abstract void executeExplain(Context context) throws Exception;
+186:    protected void executeExplain(Context context) throws Exception
+215:    protected final void executeExplain(Context context) throws IOException
+249:    protected final void executeExplain(Context context) throws IOException
+342:        throw new IllegalArgumentException("usage: !disabled <supplier> [<reason>]");
+362:        catch (Exception e) {
+364:          // believing that you are wanting to validate the error.  By repackaging it, we get a nice failure in the
+[41] assistant: [tool:read] {"filePath": "/app/sql/src/test/java/org/apache/druid/quidem/DruidQuidemCommandHandler.java", "limit": 130, "offset": 80}
+<path>/app/sql/src/test/java/org/apache/druid/quidem/DruidQuidemCommandHandler.java</path>
+<type>file</type>
+<content>
+80:     if (line.startsWith("disabled")) {
+81:       return new DisabledCommand(lines, content, line);
+82:     }
+83:     return null;
+84:   }
+85: 
+86:   public abstract static class AbstractPlanCommand extends AbstractCommand
+87:   {
+88:     private final List<String> content;
+89:     private final List<String> lines;
+90: 
+91:     public AbstractPlanCommand(List<String> lines, List<String> content)
+92:     {
+93:       this.lines = ImmutableList.copyOf(lines);
+94:       this.content = content;
+95:     }
+96: 
+97:     @Override
+98:     public final String describe(Context context)
+99:     {
+100:       return commandName() + " [sql: " + context.previousSqlCommand().sql + "]";
+101:     }
+102: 
+103:     @Override
+104:     public final void execute(Context context, boolean execute)
+105:     {
+106:       if (execute) {
+107:         try {
+108:           executeExplain(context);
+109:         }
+110:         catch (Exception e) {
+111:           // This is packaged as an Error because Quidem grabs anything else and pushes it into the output file
+112:           // believing that you are wanting to validate the error.  By repackaging it, we get a nice failure in the
+113:           // runner instead
+114:           throw new Error(e);
+115:         }
+116:       } else {
+117:         context.echo(content);
+118:       }
+119:       context.echo(lines);
+120:     }
+121: 
+122:     protected final <T> List<T> executeExplainCollectHookValues(Context context, HookKey<T> hook) throws IOException
+123:     {
+124:       DruidHookDispatcher dhp = unwrapDruidHookDispatcher(context);
+125:       List<T> logged = new ArrayList<>();
+126:       try (Closeable unhook = dhp.withHook(hook, (key, value) -> logged.add(value))) {
+127:         executeExplainQuery(context);
+128:       }
+129:       return logged;
+130:     }
+131: 
+132:     protected final void executeQuery(Context context)
+133:  
+[truncated]
+[42] assistant: [reasoning]
+The quidem tests are heavy integration tests. Given the scope of this task, the main thing is the core implementation. Let me now check how quidem's `!error` works — it expects an error message starting with "QueryInterruptedException" — since the validation errors are wrapped... In any case, these qaWin tests use multiple ORDER BY keys, and per the spec, multi-key RANGE remains unsupported, so they should still produce errors. But the message may change from "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW..." to something like "RANGE frames require exactly one ORDER BY key". Let me check how quidem `!error` matches the message. In quidem, `!error <message>` asserts that the exception message starts with `<message>`? Let me check quidem's source.
+[tool:bash] {"command": "find /root/.m2 -name \"quidem*.jar\" | head -3; find /root/.m2 -path \"*quidem*\" -name \"*.jar\" 2>/dev/null | head"}
+/root/.m2/repository/net/hydromatic/quidem/0.12/quidem-0.12.jar
+/root/.m2/repository/net/hydromatic/quidem/0.12/quidem-0.12.jar
+[43] assistant: [tool:bash] {"command": "cd /tmp/opencode && unzip -o -q /root/.m2/repository/net/hydromatic/quidem/0.12/quidem-0.12.jar net/hydromatic/quidem/Quidem.class && javap -p net/hydromatic/quidem/Quidem.class | grep -i \"error\\|checkError\" | head"}
+(no output)
+[44] assistant: [tool:bash] {"command": "cd /tmp/opencode && unzip -o -q /root/.m2/repository/net/hydromatic/quidem/0.12/quidem-0.12.jar && javap -p net/hydromatic/quidem/Quidem.class | head -50"}
+Compiled from "Quidem.java"
+public class net.hydromatic.quidem.Quidem {
+  private static final com.google.common.collect.Ordering<java.lang.String[]> ORDERING;
+  public static final boolean DEBUG;
+  private static final int DEFAULT_MAX_STACK_LENGTH;
+  public static final java.util.function.Function<java.lang.String, java.lang.Object> EMPTY_ENV;
+  public static final net.hydromatic.quidem.Quidem$ConnectionFactory EMPTY_CONNECTION_FACTORY;
+  public static final net.hydromatic.quidem.CommandHandler EMPTY_COMMAND_HANDLER;
+  public static final net.hydromatic.quidem.Quidem$PropertyHandler EMPTY_PROPERTY_HANDLER;
+  private static final int ORACLE_FEEDBACK;
+  private final java.io.BufferedReader reader;
+  private final java.io.PrintWriter writer;
+  private final java.util.Map<java.lang.String, java.util.List<java.lang.Object>> map;
+  private final net.hydromatic.quidem.Quidem$Config config;
+  private java.sql.ResultSet resultSet;
+  private java.lang.Throwable resultSetException;
+  private final java.util.List<java.lang.String> lines;
+  private java.lang.String pushedLine;
+  private final java.lang.StringBuilder buf;
+  private java.sql.Connection connection;
+  private java.sql.Connection refConnection;
+  private boolean execute;
+  private boolean skip;
+  private final java.util.function.Function<java.lang.String, java.lang.Object> env;
+  private net.hydromatic.quidem.Quidem$SqlCommand previousSqlCommand;
+  public net.hydromatic.quidem.Quidem(java.io.Reader, java.io.Writer);
+  public net.hydromatic.quidem.Quidem(net.hydromatic.quidem.Quidem$Config);
+  public static net.hydromatic.quidem.Quidem$ConfigBuilder configBuilder();
+  private net.hydromatic.quidem.Quidem$ConfigBuilder copyConfigBuilder();
+  public static void main(java.lang.String[]);
+  private void close() throws java.sql.SQLException;
+  public void execute();
+  private void use(java.lang.String) throws java.lang.Exception;
+  protected void echo(java.lang.Iterable<java.lang.String>);
+  private void update(java.lang.
+[truncated]
+[45] assistant: [reasoning]
+Rather than dig deep into quidem's error handling, the key point is: the quidem qaWin tests use multi-key ORDER BY RANGE frames, so they should continue to error. Since these tests run against an actual test dataset and heavy setup, and the task doesn't require updating them, I'll focus on the core implementation.
+
+The quidem tests with `!error` will expect an error — since multi-key RANGE remains unsupported per spec, they should keep erroring. But the exact error message may change. In quidem, when a query fails, quidem compares the exception class name or message. Looking at "QueryInterruptedException\n!error" — quidem's `!error` checks that the query threw an exception whose message contains/equals "QueryInterruptedException"... Actually looking at how Quidem handles this: in `Quidem.checkResult`, if `resultSetException != null`, it matches against the expected lines. The recorded error line "QueryInterruptedException" is the `Throwable` class simple name... In the mysql output format, errors are printed as the exception message.
+
+Hmm — this is important. If the new validation produces a different error type (e.g. `CalciteContextException` vs `DruidException`), quidem tests might break. But my change to the validator should only *relax* the restriction for single-key windows, so the multi-key queries still fail with... let me think about what error they'd produce.
+
+Currently: `Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.` — thrown from validateWindow as CalciteContextException.
+
+After my change: multi-key RANGE frames... hmm. The validator needs to decide: for RANGE frames with exactly one ORDER BY key and numeric/timestamp key, accept. Otherwise reject. The rejection can stay the same message ("Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.") — that keeps the quidem tests passing since the error is the same.
+
+Hmm wait, but what error text does quidem match? "QueryInterruptedException" — let me check how quidem formats errors in mysql output format. In Quidem's format, when an error occurs, it prints the exception message... but here the recorded text is "QueryInterruptedException" which is the exception class name (org.apache.druid.query.QueryInterruptedException?). Let me check how Druid's quidem connection factory handles errors.
+[tool:bash] {"command": "grep -rn \"QueryInterruptedException\" /app/sql/src/test/java/org/apache/druid/quidem/*.java | head; grep -rn \"outputformat\\|ErrorKind\\|exception\" /app/sql/src/test/java/org/apache/druid/quidem/DruidQuidemConnectionFactory.java | head -20"}
+(no output)
+[46] assistant: [tool:bash] {"command": "unzip -p /root/.m2/repository/net/hydromatic/quidem/0.12/quidem-0.12.jar net/hydromatic/quidem/Quidem.java 2>/dev/null | grep -n \"error\\|Error\" | head -30; ls /tmp/opencode/net/hydromatic/quidem/ | head -40"}
+AbstractCommand.class
+BuiltInOutputFormat$1.class
+BuiltInOutputFormat$2.class
+BuiltInOutputFormat$3.class
+BuiltInOutputFormat$4.class
+BuiltInOutputFormat.class
+ChainingCommandHandler.class
+ChainingConnectionFactory.class
+Command$Context.class
+Command$ResultChecker.class
+Command.class
+CommandHandler.class
+ConnectionFactories.class
+Launcher$ParseException.class
+Launcher.class
+LimitWriter.class
+OutputFormat.class
+Quidem$1.class
+Quidem$2.class
+Quidem$3.class
+Quidem$CheckResultCommand.class
+Quidem$CommentCommand.class
+Quidem$CompositeCommand.class
+Quidem$Config.class
+Quidem$ConfigBuilder$1.class
+Quidem$ConfigBuilder.class
+Quidem$ConnectionFactory.class
+Quidem$ContextImpl.class
+Quidem$ErrorCommand.class
+Quidem$ExplainCommand.class
+Quidem$IfCommand.class
+Quidem$OkCommand.class
+Quidem$Parser.class
+Quidem$PopCommand.class
+Quidem$Property.class
+Quidem$PropertyHandler.class
+Quidem$PushCommand.class
+Quidem$SetCommand.class
+Quidem$ShowCommand.class
+Quidem$SimpleCommand.class
+[47] assistant: [tool:bash] {"command": "cd /tmp/opencode && javap -c net/hydromatic/quidem/Quidem\\$ErrorCommand.class | head -80"}
+Compiled from "Quidem.java"
+class net.hydromatic.quidem.Quidem$ErrorCommand extends net.hydromatic.quidem.Quidem$OkCommand {
+  net.hydromatic.quidem.Quidem$ErrorCommand(java.util.List<java.lang.String>, com.google.common.collect.ImmutableList<java.lang.String>);
+    Code:
+         0: aload_0
+         1: aload_1
+         2: aload_2
+         3: invokespecial #1                  // Method net/hydromatic/quidem/Quidem$OkCommand."<init>":(Ljava/util/List;Lcom/google/common/collect/ImmutableList;)V
+         6: return
+
+  public void checkResultSet(net.hydromatic.quidem.Command$Context, java.lang.Throwable);
+    Code:
+         0: aload_2
+         1: ifnonnull     16
+         4: aload_1
+         5: invokeinterface #7,  1            // InterfaceMethod net/hydromatic/quidem/Command$Context.writer:()Ljava/io/PrintWriter;
+        10: ldc           #13                 // String Expected error, but SQL command did not give one
+        12: invokevirtual #15                 // Method java/io/PrintWriter.println:(Ljava/lang/String;)V
+        15: return
+        16: aload_0
+        17: getfield      #21                 // Field output:Lcom/google/common/collect/ImmutableList;
+        20: invokevirtual #27                 // Method com/google/common/collect/ImmutableList.isEmpty:()Z
+        23: ifne          123
+        26: new           #33                 // class java/io/StringWriter
+        29: dup
+        30: invokespecial #35                 // Method java/io/StringWriter."<init>":()V
+        33: astore_3
+        34: aload_1
+        35: aload_2
+        36: aload_3
+        37: invokeinterface #38,  3           // InterfaceMethod net/hydromatic/quidem/Command$Context.stack:(Ljava/lang/Throwable;Ljava/io/Writer;)V
+        42: aload_0
+        43: aload_3
+        44: invokevirtual #42                 // Method java/io/StringWriter.toString:()Ljava/lang/String;
+        47: invokespecial #46                 // Method squash:(Ljava/lang/String;)Ljava/lang/String;
+        50: astore       
+[truncated]

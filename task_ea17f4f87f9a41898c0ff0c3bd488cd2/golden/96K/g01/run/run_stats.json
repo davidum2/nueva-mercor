@@ -1,0 +1,73 @@
+{
+  "authoring": {
+    "edit": {
+      "baseline_chars": 979,
+      "golden_chars": 6473
+    }
+  },
+  "call_ids": [
+    "fc-01M7TPAWV9X2AFGFY3NNCV36ET",
+    "fc-01M7TPAXKECY9Y77Y7AXYGQ76D",
+    "fc-01M7TPAYHNG1DJ5CD0F050NPMD",
+    "fc-01M7TPAZ96Y0RJ4WJ0PCD3593D"
+  ],
+  "compaction_count": 4,
+  "compactor_model": "openai/modal-glm53/zai-org/GLM-5.3",
+  "context_window": 96000,
+  "evaluated": 1,
+  "n": 4,
+  "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/5ecdc4d0-dd42-41a3-b2c9-92cb394aae58/output-artifacts.tar.gz",
+  "passes": 1,
+  "prior_status_id": "5eed0000-0000-4000-8000-000000000001",
+  "rollouts": [
+    {
+      "call_id": "fc-01M7TPAWV9X2AFGFY3NNCV36ET",
+      "index": 0,
+      "passed": false,
+      "status": "cancelled"
+    },
+    {
+      "call_id": "fc-01M7TPAXKECY9Y77Y7AXYGQ76D",
+      "compaction_count": 4,
+      "duration_s": 3124,
+      "error_message": null,
+      "f2p_pass_rate": 1.0,
+      "f2p_passed": 21,
+      "f2p_total": 21,
+      "index": 1,
+      "is_429": false,
+      "outcome": "completed",
+      "output_artifacts_s3_uri": "s3://rl-studio-snapshots-dev/trajectories/task/5ecdc4d0-dd42-41a3-b2c9-92cb394aae58/output-artifacts.tar.gz",
+      "p2p_passed": 1,
+      "p2p_total": 1,
+      "passed": true,
+      "score": 1.0,
+      "status": "completed",
+      "tests_failed": 0,
+      "tests_failing": [],
+      "tests_other": 0,
+      "tests_passed": 22,
+      "total_tokens": 0
+    },
+    {
+      "call_id": "fc-01M7TPAYHNG1DJ5CD0F050NPMD",
+      "index": 2,
+      "passed": false,
+      "status": "cancelled"
+    },
+    {
+      "call_id": "fc-01M7TPAZ96Y0RJ4WJ0PCD3593D",
+      "index": 3,
+      "passed": false,
+      "status": "cancelled"
+    }
+  ],
+  "round": 1,
+  "solver_model": "openai/modal-glm53/zai-org/GLM-5.3",
+  "task_id": "task_ea17f4f87f9a41898c0ff0c3bd488cd2",
+  "trigger_tokens": null,
+  "winner_f2p_rate": 1.0,
+  "winner_index": 1,
+  "winner_passed": true,
+  "winner_test_pass_rate": 1.0
+}

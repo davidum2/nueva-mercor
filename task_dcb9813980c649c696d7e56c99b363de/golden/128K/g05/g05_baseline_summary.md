@@ -1,0 +1,62 @@
+## Objective
+- Add native value-based `RANGE` window framing (`WindowFrame.Range`, Jackson subtype `"range"`) to Druid in `/app`, with SQL validator/planner support and full native + SQL test coverage.
+
+## Important Details
+- `WindowFrame.Range`: public nested class implementing `WindowFrame` directly (not `OffsetFrame`, which has `Integer` offsets); fields `@Nullable Double lowerOffset`, `@Nullable Double upperOffset`, non-null `ColumnWithDirection orderBy`; getters `getLowerOffset()`, `getUpperOffset()`, `getOrderBy()`; static factory `WindowFrame.range(@Nullable Double, @Nullable Double, ColumnWithDirection)`; value-based equals/hashCode; Jackson subtype `"range"`. Constructor does not null-check `orderBy` (EqualsVerifier consideration).
+- Null offset = positionally unbounded side. Bounds: `v + o` under `ASC`, `v - o` under `DESC`; frame is the closed interval `[lowerBound, upperBound]`.
+- `RangeFrameResolver` (in `RangeFrameResolver.java`) computes peer groups via `ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(ImmutableList.of(orderColumn))` and per-group frames; expects input pre-sorted; nulls cluster first (ASC) / last (DESC). Missing column → `DruidException.defensive("Column [%s] specified in WindowFrame [%s] does not exist", ...)`; finite offset on non-numeric ordering → `DruidException.defensive("WindowFrame [%s] requires a numeric ordering column, found column [%s] of type [%s]", ...)`.
+- Null-key groups: frame `[nullRunStart, nullRunEnd)` for finite bounds (0/numRows when unbounded). Binary searches only over non-null rows (`getDouble` on null row gives 0.0). DESC with no non-null row below the upper bound → frame end = null run start. Frame end raised to at least frame start (never inverted interval; inverted intervals would corrupt `moveTo` incremental branches; `moveTo` itself left unchanged).
+- `DefaultFramedOnHeapAggregatable.buildRangeIteratorFor` yields one `AggInterval(outputRows=group interval, inputRows=frame interval)` per peer group; `isEffectivelyUnbounded` treats both-offsets-null `Range` as unbounded (branch placed before `OffsetFrame` unwrap); `WindowValueProcessorBase.computeFirstOrLastValueFramed` handles `Range` (FIRST=`getObject(frameStart)`, LAST=`getObject(frameEnd-1)`, null unless `frameStart < frameEnd`).
+- Corrected fact (from conversation): **empty frames yield `null`, not 0** — verified empirically that the existing ROWS path also yields `null` for empty frames (SQL semantics: SUM of zero rows is NULL). The "zero-row default" requirement is satisfied by consistency with existing machinery; SUM tests expect `null` on empty frames.
+- SQL layer: `DruidSqlValidator.validateWindow` accepts offset `RANGE` only with exactly one `ORDER BY` key whose bounds pass `isValidRangeBound` (`SqlNumericLiteral` or day-time `SqlIntervalLiteral`); otherwise old message `Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.` Year-month intervals rejected. `Windowing.getWindowFrame()` builds `WindowFrame.range(...)` via `buildRangeFrame()` only when a bound is `PRECEDING`/`FOLLOWING`; otherwise keeps `groups(...)` path. `buildRangeFrame()` throws `QueryException` (`SQL_QUERY_UNSUPPORTED_ERROR_CODE`) for multi-key (`...requires exactly one ordering key, found [%d]`) or non-numeric key (`...requires a numeric or timestamp ordering key, found column [%s] of type [%s]`). Offsets read via `getBoundAsDouble`/`getConstantAsDouble` (uses `doubleValue()`; `intValue()` would overflow interval milliseconds).
+- `QueryException` is `org.apache.druid.query.QueryException`, extends `RuntimeException`, constant `SQL_QUERY_UNSUPPORTED_ERROR_CODE = "SQL query is unsupported"`. It bubbles unwrapped through `testBuilder().run()` (like `CannotBuildQueryException`, also `RuntimeException`, asserted in tests at CalciteQueryTest ~line 13069).
+- Native test conventions: `RowsAndColumnsHelper.expectColumn(String, ColumnType, Object...)` and `expectColumn(String, Object[], ColumnType)` — the `Object[]` overload auto-derives null positions; `expectColumn(String, int[])/long[]/double[]` also exist. `WindowFrameTest` uses `EqualsVerifier.forClass(...).usingGetClass().verify()`. `ObjectArrayColumn` uses `Comparator.nullsFirst(resultType.getStrategy())` so `compareRows(null,null)==0` (nulls form one peer group).
+- SQL test conventions: window tests need `assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS)` and `msqIncompatible()`; output order is deterministic (window operator sorts by `ORDER BY` key, no outer `ORDER BY` needed); `testWindowingWithOrderBy` (~line 15965) shows `expectedQuery(WindowOperatorQueryBuilder...)` pattern; simpler tests can use `expectedResults` only.
+- `druid.foo` data: 6 rows, `__time` 2000-01-01..03 and 2001-01-01..03 (millis 946684800000, 946771200000, 946857600000, 978307200000, 978393600000, 978480000000); `m1`/`m2` run 1.0..6.0; `cnt`=1 per row; `dim1` = "", "10.1", "2", "1", "def", "abc". Exact `m1`/`m2` Java types (FLOAT vs DOUBLE) not yet verified — check `CalciteTests.java` before boxing expected results.
+- Tooling: grep tool fails with "ripgrep execution failed" — use `grep` via bash. `mvn surefire:test` does NOT recompile test classes — use `mvn test` after test edits. Test command pattern: `mvn test -pl processing -Dtest="..." -Dsurefire.failIfNoSpecifiedTests=false -Pskip-static-checks -Dweb.console.skip=true -T1C`.
+- `qaWin` quidem files are left as recorded (no `qaWin` RANGE case has exactly one `ORDER BY` key; unsupported forms keep the old validator message; `!error` matches any planning/validation error).
+- A temporary `RangeDebugTest` was created in processing tests, used to dump resolver frames (all correct), then deleted.
+
+## Work State
+### Completed
+- All main-code changes compile (`mvn compile -pl processing,sql -am -Pskip-static-checks -Dweb.console.skip=true -T1C` → BUILD SUCCESS): `WindowFrame.Range`, `"range"` subtype registration, `range(...)` factory, `RangeFrameResolver.java`, `DefaultFramedOnHeapAggregatable` Range support (`buildRangeIteratorFor`, `isEffectivelyUnbounded`, `buildIteratorFor` dispatch), `WindowValueProcessorBase` Range support, `DruidSqlValidator.validateWindow` relaxation, `Windowing.buildRangeFrame()` + `getBoundAsDouble`/`getConstantAsDouble`.
+- `WindowFrameTest`: added `testEqualsRange` (EqualsVerifier on `WindowFrame.Range`).
+- `WindowFirstProcessorTest`: added 9 Range tests (`testFirstWithRangeFrame`, `...UnboundedPreceding`, `...CurrentRowUpper`, `...EmptyFrames`, `...Nulls`, `...NullsAndUnboundedPreceding`, `...Descending`, `...DescendingNulls`, `...WholePartition`) plus `makeKeyValueRac(int[])` helper; added `import org.apache.druid.query.operator.ColumnWithDirection;`.
+- `WindowLastProcessorTest`: added 5 Range tests (`testLastWithRangeFrame`, `...UnboundedPreceding`, `...EmptyFrames`, `...Nulls`, `...Descending`); added `ColumnWithDirection` import.
+- `WindowFramedAggregateProcessorTest`: added 5 Range tests (`testRangeFrameWithSum`, `...WithSumEmptyFrames`, `...WithSumDescending`, `...WholePartition`, `...WithNulls`); added imports `ColumnWithDirection`, `Column`, `ObjectArrayColumn`, `ColumnType`, `LinkedHashMap`, `Map`.
+- Fixed 9 test-expectation bugs (miscomputed frame bounds — e.g. `k=2` with RANGE ±1 gives frame `[1,3]` which includes row 0's value 1, so FIRST is "v1" not "v2"). Corrected expectations: first ±1 → `v1,v1,v1,v4,v5`; first (-1,0) → `v1,v1,v1,v4,v5`; first (-2,-1) → `{null,v1,v1,v2,null}`; last ±1 → `v3,v3,v3,v4,v5`; last (-2,-1) → `{null,v1,v1,v3,null}`; last DESC ±1 → `v1,v2,v5,v5,v5`; sum (null,+1) → `{6,6,6,10,15}`; sum (-2,-1) → `{null,1L,1L,5L,null}` with `ColumnType.LONG`; sum DESC (null,+1) → `{1,3,15,15,15}`. Implementation itself verified correct (resolver frame dump: groups `[0,1)`,`[1,3)`,`[3,4)`,`[4,5)` with frames `[0,0)`,`[0,1)`,`[1,3)`,`[4,4)`).
+- All 48 native tests pass: WindowFrameTest (6), WindowFirstProcessorTest (19), WindowLastProcessorTest (15), WindowFramedAggregateProcessorTest (8) — `BUILD SUCCESS`.
+- `CalciteQueryTest`: `testUnSupportedRangeBounds` changed to `ORDER BY dim1, dim2` (same message, column [1], [31]); added `testUnSupportedRangeBoundsOnStringKey` (`SELECT dim1,SUM(m2) OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo` → `assertThrows(QueryException.class, ...)` asserting `QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE`); added `import org.apache.druid.query.QueryException;`.
+
+### Active
+- Writing positive SQL tests in `CalciteQueryTest` for offset RANGE frames. Planned tests and expected results:
+  - ASC ±1: `SELECT m1, SUM(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM foo` → `(1.0,3.0),(2.0,6.0),(3.0,9.0),(4.0,12.0),(5.0,15.0),(6.0,11.0)`.
+  - DESC ±1: same with `ORDER BY m1 DESC` → `(6.0,11),(5.0,15),(4.0,12),(3.0,9),(2.0,6),(1.0,3)`.
+  - `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` → cumulative sum `1,3,6,10,15,21`.
+  - Interval bounds: `ORDER BY __time RANGE BETWEEN INTERVAL '1' DAY PRECEDING AND INTERVAL '1' DAY FOLLOWING` with `SUM(cnt)` → `(946684800000L,2L),(946771200000L,3L),(946857600000L,2L),(978307200000L,2L),(978393600000L,3L),(978480000000L,2L)`.
+  - Possibly a FIRST_VALUE/LAST_VALUE RANGE test — was about to check what `RewriteFirstValueLastValueRule` does (found at `/app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java`).
+
+### Blocked
+- No item is blocked.
+
+## Next Move
+1. Read `RewriteFirstValueLastValueRule` to confirm it doesn't interfere with offset RANGE frames (decide whether to include FIRST_VALUE/LAST_VALUE RANGE SQL tests).
+2. Verify `m1`/`m2` Java types (FLOAT vs DOUBLE) in `CalciteTests.java` for correct expected-result boxing.
+3. Add the positive SQL RANGE tests to `CalciteQueryTest` (ASC ±1, DESC ±1, UNBOUNDED PRECEDING AND CURRENT ROW, `INTERVAL '1' DAY` bounds) with `assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS)` + `msqIncompatible()` + `expectedResults`.
+4. Compile and run the SQL tests: `mvn test -pl sql -Dtest="CalciteQueryTest" -Dsurefire.failIfNoSpecifiedTests=false -Pskip-static-checks -Dweb.console.skip=true -T1C` (may need a narrower `-Dtest="testRangeFrame*,testUnSupportedRange*"` first).
+5. Run lint/static checks on `processing` and `sql` modules.
+6. Final full verification run of all touched test classes.
+
+## Relevant Files
+- `/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java` — holds `Range`, `"range"` subtype, `range(...)` factory.
+- `/app/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java` — resolves Range peer groups and frames.
+- `/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java` — `buildRangeIteratorFor`, `isEffectivelyUnbounded`, `buildIteratorFor`, `AggIntervalCursor.moveTo`, `ResultPopulator`.
+- `/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java` — `computeFirstOrLastValueFramed`.
+- `/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java` — `validateWindow`, `isValidRangeBound`.
+- `/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java` — `buildRangeFrame()`, `getBoundAsDouble`, `getConstantAsDouble`, `WindowGroup.getWindowFrame()`.
+- `/app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java` — to check before writing FIRST_VALUE/LAST_VALUE RANGE SQL tests.
+- `/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java`, `.../value/WindowFirstProcessorTest.java`, `.../value/WindowLastProcessorTest.java`, `.../WindowFramedAggregateProcessorTest.java` — native Range tests, all passing.
+- `/app/processing/src/test/java/org/apache/druid/query/operator/window/RowsAndColumnsHelper.java` — test helper conventions (`expectColumn` overloads auto-derive nulls from `Object[]`).
+- `/app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java` — `testUnSupportedRangeBounds` (updated), `testUnSupportedRangeBoundsOnStringKey` (new), window-test conventions around line 15965 (`testWindowingWithOrderBy`).
+- `/app/sql/src/test/java/org/apache/druid/sql/calcite/util/CalciteTests.java` — `foo` schema/data (verify `m1`/`m2` types).
+- `/app/processing/src/main/java/org/apache/druid/query/QueryException.java` — `SQL_QUERY_UNSUPPORTED_ERROR_CODE`, extends `RuntimeException`.

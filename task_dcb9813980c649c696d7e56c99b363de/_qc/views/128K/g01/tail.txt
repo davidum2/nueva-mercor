@@ -1,0 +1,798 @@
+[48] assistant: [reasoning]
+So quidem `!error <text>` checks that the squashed stack trace **contains** the squashed expected text ("QueryInterruptedException"). Since Druid wraps all SQL validation errors as `QueryInterruptedException` through the JDBC layer, this will continue to match as long as the query still errors, regardless of the message. 
+
+Now, my design must ensure:
+1. Multi-key RANGE frames still error (validator or planning).
+2. Single-key numeric/timestamp RANGE frames work.
+
+Let me now check the `QuidemCommandHandler` around how errors are produced, particularly `stack`. Anyway.
+
+Now, let me focus on the design.
+
+## Design
+
+### 1. `WindowFrame.Range`
+
+```java
+@JsonSubTypes(value = {
+    @JsonSubTypes.Type(name = "rows", value = WindowFrame.Rows.class),
+    @JsonSubTypes.Type(name = "groups", value = WindowFrame.Groups.class),
+    @JsonSubTypes.Type(name = "range", value = WindowFrame.Range.class),
+})
+```
+
+```java
+class Range implements WindowFrame
+{
+  @Nullable private final Double lowerOffset;
+  @Nullable private final Double upperOffset;
+  private final ColumnWithDirection orderBy;
+
+  @JsonCreator
+  public Range(
+      @JsonProperty("lowerOffset") @Nullable Double lowerOffset,
+      @JsonProperty("upperOffset") @Nullable Double upperOffset,
+      @JsonProperty("orderBy") ColumnWithDirection orderBy)
+  {
+    ...
+  }
+
+  getLowerOffset(), getUpperOffset(), getOrderBy()
+
+  equals/hashCode by value
+  toString
+}
+```
+
+And a static factory:
+
+```java
+static Range range(@Nullable Double lowerOffset, @Nullable Double upperOffset, ColumnWithDirection orderBy)
+```
+
+Note: `WindowFrame.Range` is a standalone `WindowFrame` implementation (not extending `OffsetFrame`).
+
+### 2. Frame resolution semantics
+
+For each row `i` in a sorted partition, we resolve `[lowerBound, upperBound]`:
+- lower offset `lo` (null = unbounded => 0), upper offset `uo` (null = unbounded => numRows).
+- If current row's ordering key value `v` is non-null and offsets finite:
+  - bound value lower = `v + lo` if ASC else `v - lo`... 
+
+Wait, careful: the spec says:
+"For a non-null ordering key value `v` and finite offset `o`, the bound value is `v + o` when ordered ascending (`ASC`) and `v - o` when ordered descending (`DESC`), forming a closed interval `[lowerBound, upperBound]`."
+
+Hmm. Let me think about what this means. In standard SQL RANGE frames:
+- `RANGE BETWEEN o PRECEDING AND p FOLLOWING` with ORDER BY k ASC:
+  - lower bound value = v - o, upper bound value = v + p.
+- With ORDER BY k DESC:
+  - lower bound value = v + p, upper bound value = v - o... 
+
+Hmm wait. In DESC ordering, "preceding" means larger values. The frame for ORDER BY k DESC RANGE BETWEEN o PRECEDING AND p FOLLOWING is [v + o, v - p] in value space... no wait:
+
+With DESC ordering, rows are ordered from largest to smallest. "Preceding" rows are rows that come before the current row, i.e., with *larger* values. So `o PRECEDING` in DESC = `v + o` (value larger than v). "Following" = smaller values: `p FOLLOWING` in DESC = `v - p`.
+
+So frame = values in [v + o_PRECEDING ... v - p_FOLLOWING]? Hmm, wait for DESC:
+- lower bound (start of frame in row order): rows before current row have larger values. `o PRECEDING` means the frame starts at rows with value >= v + o? no...
+
+Let me think again. ORDER BY k DESC: rows sorted descending by value. Current row at value v. Rows preceding (earlier in sort order) have values >= v (well, >= v in value terms since DESC). RANGE o PRECEDING: frame starts (in row order) at the first row whose value is within o of v, i.e. value >= v + o (for numeric where "within o" means |value - v| <= o). Rows following have values <= v. RANGE p FOLLOWING: frame ends at last row with value >= v - p, i.e. value in [v - p, v + o].
+
+So in both ASC and DESC cases, the frame in *value* space is [v - maxOffsetPreceding, v + maxOffsetFollowing] where offsets are magnitudes... Wait:
+
+For ASC: `o PRECEDING` => lower bound value = v - o. `p FOLLOWING` => upper bound value = v + p. Frame = [v - o, v + p].
+For DESC: `o PRECEDING` => frame starts at value >= v + o... so frame = [v + o... v - p]?? That can't be right since the lower bound in value space would be v - p and upper v + o. Frame = [v - p, v + o].
+
+Hmm wait, that's the same value interval! For DESC: frame covers values x with |x - v| <= max(o, p)... no. Hmm, let me redo.
+
+Actually for DESC with `o PRECEDING AND p FOLLOWING`: the frame includes rows whose value x satisfies: x >= v + o isn't right either. Let's think of it as: rows in the frame are those between (in sort order) the "o PRECEDING" bound and the "p FOLLOWING" bound.
+
+- The `o PRECEDING` bound in value terms: `v + o` (for DESC, since preceding rows have larger values, offset o "backwards" in value space means +o).
+- The `p FOLLOWING` bound in value terms: `v - p` (following rows have smaller values).
+
+The frame = all rows with value x such that x is between v - p and v + o inclusive... but specifically x >= (v - p) and x <= (v + o)?? Wait no — the frame is rows between the two bounds in *sort order*. In sort order (DESC), rows with value v + o come before rows with value v, which come before rows with value v - p. So the frame = rows with value in [v - p, v + o] (in value space). Yes! 
+
+So for DESC `o PRECEDING AND p FOLLOWING`, value interval = [v - p, v + o].
+For ASC `o PRECEDING AND p FOLLOWING`, value interval = [v - o, v + p].
+
+Now the spec says: "the bound value is `v + o` when ordered ascending (`ASC`) and `v - o` when ordered descending (`DESC`)".
+
+So the offset sign convention here: the spec defines lowerOffset and upperOffset as *signed distances*. E.g., `RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING` would be lowerOffset = -3, upperOffset = +2 (like Rows/Groups frames use signed offsets where PRECEDING is negative and FOLLOWING positive).
+
+Hmm wait, but then for ASC: bound value = v + o. With lowerOffset = -3: lowerBound = v - 3. upperOffset = +2: upperBound = v + 2. That matches ASC interval [v - 3, v + 2]. 
+
+For DESC: bound value = v - o. With lowerOffset = -3: lowerBound = v - (-3) = v + 3. upperOffset = +2: upperBound = v - 2 = v - 2. So interval = [v + 3, v - 2]?? That's backwards... Hmm.
+
+Wait, I think I need to reconsider. Maybe the offsets in `WindowFrame.Range` are magnitudes rather than signed? "A null offset represents a positionally unbounded limit (UNBOUNDED), while a non-null offset is a signed distance in the ordering key's value space."
+
+Hmm, "signed distance in the ordering key's value space". So lowerOffset = -3 means 3 PRECEDING, upperOffset = 2 means 2 FOLLOWING. And "the bound value is v + o when ordered ASC and v - o when ordered DESC"...
+
+For DESC with lowerOffset = -3 (3 PRECEDING): lowerBound = v - (-3) = v + 3. And upperOffset = +2 (2 FOLLOWING): upperBound = v - 2.
+
+So interval [v + 3, v - 2]... but wait — in DESC order, the "lower" bound (frame start) is the *higher* value. So the interval in value space is [v - 2, v + 3] as a closed interval — the frame start value (v+3) is larger than the frame end value (v-2). The interval `[lowerBound, upperBound]` notation assumes lowerBound <= upperBound which holds for ASC.
+
+Hmm, so maybe the interpretation is: in DESC, lowerOffset = -3 gives lowerBound = v + 3 — the frame *starts* (in row order) at rows with value <= v + 3... and the frame *ends* at rows with value >= v - 2... wait no.
+
+Ugh, let me think about which rows are IN the frame for DESC, lowerOffset = -3 (3 PRECEDING), upperOffset = 2 (2 FOLLOWING):
+- Frame start (in row order): first row (scanning from partition start) whose value is "within 3 preceding" — rows before current row have larger values; 3 PRECEDING means the frame starts at rows with value <= v + 3 (i.e., value >= v + 3 would be *more* than 3 preceding... hmm).
+
+Let me think of it differently using the ASC case and symmetry. For ASC, 3 PRECEDING: frame start value = v - 3, frame = rows with value in [v - 3, ...]. Rows with value < v - 3 are more than 3 "before" and excluded.
+
+For DESC, 3 PRECEDING: rows before current have larger values. "3 preceding" = the frame starts at the row that is 3 units before in value space = value v + 3 (moving backwards in value space from v, since backwards in sort order = +direction). So frame start (row order) = first row with value <= v + 3. I.e., frame includes rows with value <= v + 3 (and >= ...). And 2 FOLLOWING: frame ends at last row with value >= v - 2. So frame = rows with value in [v - 2, v + 3].
+
+So for DESC with signed offsets (lowerOffset=-3, upperOffset=+2): 
+- lowerBound (frame start, exclusive boundary computed as first row >= bound): bound = v - lowerOffset = v + 3. Frame start = first row with value <= v + 3 → in terms of a search: first index i such that value[i] <= v + 3.
+
+Hmm, so with DESC, the frame start uses `<=` on the computed bound, and the frame end = last row with value >= v - 2 → last index i such that value[i] >= v - 2.
+
+OK here's a cleaner way to think: For a sorted partition (sorted by orderBy direction), the frame boundaries in value space:
+
+ASC:
+- lowerBoundValue = v + lowerOffset (lowerOffset <= 0 typically for PRECEDING, but could be positive for "X FOLLOWING AND Y FOLLOWING" forms... e.g. RANGE BETWEEN 2 FOLLOWING AND 4 FOLLOWING has lowerOffset = +2, upperOffset = +4).
+- upperBoundValue = v + upperOffset.
+- Frame = rows with value in [lowerBoundValue, upperBoundValue] (closed interval).
+- Frame start row = first row with value >= lowerBoundValue.
+- Frame end row = last row with value <= upperBoundValue.
+
+DESC:
+- lowerBoundValue = v - lowerOffset.
+- upperBoundValue = v - upperOffset.
+- Since descending, lowerBoundValue >= upperBoundValue when lowerOffset <= upperOffset... wait lowerOffset=-3: lowerBoundValue = v + 3; upperOffset = +2: upperBoundValue = v - 2. So lowerBoundValue > upperBoundValue.
+- Frame = rows with value in [upperBoundValue, lowerBoundValue] i.e. [v - 2, v + 3].
+- Frame start row (in row order, descending values) = first row with value <= lowerBoundValue = v + 3.
+- Frame end row = last row with value >= upperBoundValue = v - 2.
+
+Hmm OK. So in both cases, if we define:
+- lo = signed lower offset (negative = PRECEDING, positive = FOLLOWING; null = unbounded)
+- uo = signed upper offset
+
+Then:
+- For ASC: frame = rows x with (v + lo) <= x <= (v + uo).
+- For DESC: frame = rows x with (v - uo) <= x <= (v - lo). (equivalently x <= v - lo AND x >= v - uo).
+
+Wait for DESC: frame includes x <= v + 3 = v - lo AND x >= v - 2 = v - uo. Yes.
+
+Alternatively, unify: bound values computed as: lowerBound = v + lo (ASC) or v - lo (DESC); upperBound = v + uo (ASC) or v - uo (DESC). Then frame = rows x with min(lowerBound, upperBound) <= x <= max(...) hmm no.
+
+Actually wait. For DESC, is it always the case that lowerBound >= upperBound? lowerBound = v - lo, upperBound = v - uo. If lo <= uo (frame well-formed: "BETWEEN a PRECEDING AND b FOLLOWING" or "a FOLLOWING AND b FOLLOWING" with a <= b, or "a PRECEDING AND b PRECEDING" with a >= b)... Standard SQL requires lo <= uo in the sense that the start bound must not be after the end bound. E.g. "RANGE BETWEEN 3 PRECEDING AND 1 PRECEDING" is valid: lo = -3, uo = -1. Frame = rows in [v - 3... wait for ASC: [v - 3, v - 1]. For DESC: lo = -3 → lowerBound = v + 3, uo = -1 → upperBound = v + 1, frame = [v + 1, v + 3]. Makes sense.
+
+"RANGE BETWEEN 2 FOLLOWING AND 1 FOLLOWING" is invalid in SQL (start after end). If lo = 2, uo = 1: ASC: [v + 2, v + 1] empty. So a frame with lowerBound > upperBound (in ASC terms) is empty. For empty frames, emit the aggregator's zero-row default or null for FIRST/LAST_VALUE.
+
+Hmm, but can we rely on lo <= uo always? The native API takes arbitrary (lowerOffset, upperOffset) — both signed doubles. To be safe, if lowerBound > upperBound (ASC), the frame is empty.
+
+Now, how does the SQL layer map "RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING" to signed offsets? Following the pattern of `getBoundAsInteger`: `bound.isPreceding() ? -value : value`. So lowerOffset = -3, upperOffset = +2. Good — consistent with the spec: "a non-null offset is a signed distance".
+
+Hmm wait, actually, let me reconsider. Maybe the sign convention in the native `WindowFrame.Range` should be *magnitudes toward following* — let me look at the spec examples again:
+
+"A null offset represents a positionally unbounded limit (UNBOUNDED), while a non-null offset is a signed distance in the ordering key's value space."
+
+And the frame resolution rules:
+"For a non-null ordering key value v and finite offset o, the bound value is v + o when ordered ascending (ASC) and v - o when ordered descending (DESC), forming a closed interval [lowerBound, upperBound]."
+
+So: boundValue(v, o) = asc ? v + o : v - o. lowerBound = boundValue(v, lowerOffset), upperBound = boundValue(v, upperOffset).
+
+For ASC with lowerOffset=-3, upperOffset=2: lowerBound = v-3, upperBound = v+2, interval [v-3, v+2]. ✓.
+For DESC with lowerOffset=-3, upperOffset=2: lowerBound = v+3, upperBound = v-2. Interval [v+3, v-2] — which as a closed interval is empty... but the frame should be rows x in [v-2, v+3].
+
+Hmm. That contradicts. Unless the sign convention for DESC frames flips: for DESC, SQL "3 PRECEDING" should map to lowerOffset = +3?? I.e., the signed distance is in *sort-order space*, not value space!
+
+"signed distance in the ordering key's value space" — hmm. But if for DESC we map "3 PRECEDING" to lowerOffset = +3 (positive, because in value space "preceding" rows have larger values)... Then lowerBound = v - (+3) = v - 3?? No wait: DESC bound value = v - o = v - 3. And "2 FOLLOWING" → upperOffset = -2, upperBound = v - (-2) = v + 2. Interval [v - 3, v + 2]?? That's wrong too — for DESC 3 PRECEDING and 2 FOLLOWING should give [v - 2, v + 3].
+
+Hmm hmm. Let me re-think.
+
+Maybe the intended semantics: for DESC, "3 PRECEDING" maps to lowerOffset such that lowerBound = v + 3. Using bound = v - o: o = -3 gives v + 3. And "2 FOLLOWING" → upperBound = v - 2: o = +2. So signed offsets: PRECEDING = negative, FOLLOWING = positive, same as ASC. lowerBound = v + 3, upperBound = v - 2 for DESC.
+
+Then "forming a closed interval [lowerBound, upperBound]" — for DESC this interval notation [v+3, v-2] is... the frame is rows whose value x satisfies upperBound <= x <= lowerBound. I.e., x ∈ [v - 2, v + 3]. So the "closed interval [lowerBound, upperBound]" is sloppy notation meaning [min, max] of the two bounds.
+
+Actually hold on. Let me reconsider: maybe for DESC the lower/upper offsets get flipped in *magnitude* handling... Let me look at how the frame start/end resolve in row order:
+
+Frame start (first row in frame, in partition row order) and frame end (last row in frame). For a well-formed frame (non-empty when containing current row), for DESC:
+- Frame start row = first row with value <= lowerBound (since rows sorted descending, first row <= lowerBound).
+
+Wait no! Frame start = first row (in row order) that belongs to the frame. Rows sorted DESC by value. Frame = values in [v-2, v+3] (for our example). The first row in the frame (in row order) is the first row with value <= v + 3 (i.e. <= lowerBound). The last row in frame = last row with value >= v - 2 (>= upperBound).
+
+For ASC:
+- Frame start = first row with value >= lowerBound (v - 3).
+- Frame end = last row with value <= upperBound (v + 2).
+
+So in both cases:
+- ASC: start = first row with value >= lowerBound; end = last row with value <= upperBound.
+- DESC: start = first row with value <= lowerBound; end = last row with value >= upperBound.
+
+Interesting — symmetric. OK so now, this is all consistent with: boundValue(v, o) = asc ? v + o : v - o, where o is signed (PRECEDING negative, FOLLOWING positive), and:
+
+- lowerBound = boundValue(v, lowerOffset), upperBound = boundValue(v, upperOffset).
+- ASC: frame rows x: lowerBound <= x <= upperBound.
+- DESC: frame rows x: upperBound <= x <= lowerBound.
+
+And for the frame to be non-empty in ASC: lowerBound <= upperBound (lo <= uo). In DESC: upperBound <= lowerBound → v - uo <= v - lo → -uo <= -lo → uo >= lo. Same condition: lo <= uo. 
+
+Now NULL handling:
+- "When the current row's ordering key is NULL, finite-offset bounds resolve to the boundaries of the contiguous run of NULL ordering values containing that row (its peer group)."
+
+So if current row's key is null and both offsets finite: frame = the contiguous NULL run containing the row. (Because in SQL semantics, NULL != NULL comparisons... in standard SQL, RANGE with NULL keys — hmm, actually in standard SQL, NULLs sort first (ASC) and the RANGE comparison v - o would be NULL → no rows match... but the spec here says: bounds resolve to the NULL peer group boundaries.)
+
+- "Unbounded bounds (UNBOUNDED PRECEDING / UNBOUNDED FOLLOWING) remain positional, extending to the partition boundaries and including rows with NULL ordering keys."
+
+So if lowerOffset = null (UNBOUNDED PRECEDING): frame start = 0 (partition start). If upperOffset = null: frame end = numRows-1.
+
+What if current row's key is NULL and lower bound is unbounded but upper bound finite? Then lower = 0 (partition start), and upper = end of the NULL run (the peer group boundary). Because the upper finite bound resolves to the NULL run boundary.
+
+Hmm — "finite-offset bounds resolve to the boundaries of the contiguous run of NULL ordering values containing that row (its peer group)". So a finite bound when key is NULL → the corresponding boundary of the NULL run:
+- Finite lower offset with NULL key: frame start = start of NULL run.
+- Finite upper offset with NULL key: frame end = end of NULL run.
+
+That makes `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`... wait CURRENT ROW is offset 0 — finite. Hmm! CURRENT ROW: in the spec, "including one-sided and CURRENT ROW variations". CURRENT ROW maps to offset 0.0? Or is CURRENT ROW handled specially?
+
+Per standard SQL: RANGE BETWEEN x PRECEDING AND CURRENT ROW means upperBound = v (current row's value), inclusive → includes all peers (rows with value == v). Offset 0 = "0 FOLLOWING"/"0 PRECEDING" which in value terms = v. So yes, CURRENT ROW == offset 0.0 works: bound value = v + 0 = v, closed interval → includes all rows with value == v (the peer group). 
+
+And for ROWS-style CURRENT ROW it's also 0 (as in `getBoundAsInteger` → 0). So in the SQL layer, `getBoundAsDouble`: unbounded → null, currentRow → 0.0, preceding → -value, following → +value.
+
+Now what about ordering columns with NULLs in the middle? The partition is sorted by the orderBy column, so NULLs form a contiguous run (NULLs sort first in ASC per Druid's sort... need to check how sorting works — the data comes pre-sorted via NaiveSortOperatorFactory; in Druid, NULLs sort first for ASC? For the native window engine, the sort is done by the sort operator; nulls first for ascending I believe).
+
+Since the frame resolution must handle NULL keys: "the contiguous run of NULL ordering values containing that row". If the data is sorted with NULLs first (ASC), the NULL run is at the start of the partition. For DESC, NULLs last. Either way a contiguous run.
+
+Also: "Rows with equal ordering key values (peers) resolve to identical frame boundaries and receive identical output values." — Naturally satisfied since bounds are computed from the value v.
+
+Empty frames: "Empty frames emit the aggregator's zero-row default value, or null for FIRST_VALUE and LAST_VALUE."
+
+Zero-row default value for aggregators: hmm. What's the "aggregator's zero-row default value"? For LongSumAggregatorFactory, aggregating zero rows gives 0. This is what `aggregateAll` does when the interval is empty — the AggIntervalCursor aggregates nothing... let's look at how the existing code handles empty frames.
+
+In `DefaultFramedOnHeapAggregatable.aggregateAll`, `aggCursor.moveTo(aggInterval.inputRows)`; if inputRows is empty (a == b), then `newAggregators()` is called (since currentRows.a != newRows.a or ...) — hmm wait: moveTo with newRows = Interval(a, a) where a could equal currentRows.a... e.g. first interval empty [0,0): `currentRows.a == newRows.a (0 == 0) && currentRows.b (0) < newRows.b (0)` false; `currentRows.a (0) > newRows.a (0)` false → else branch: newAggregators(), loop over empty interval → aggregators fresh with zero rows aggregated. Then `getValue` → `aggregators[i].get()` — for a fresh aggregator with no rows aggregated, e.g. LongSumAggregatorFactory returns 0L; count returns 0. So empty frames naturally produce the zero-row default! Great — so for aggregation, an empty interval works naturally.
+
+Hmm wait, but actually there's a subtlety: `moveTo` might reuse aggregators incorrectly: if newRows == currentRows (empty [0,0) twice in a row): currentRows.a==newRows.a && currentRows.b < newRows.b → 0 < 0 false; currentRows.a > newRows.a → false; else → newAggregators + empty loop. Fine.
+
+But wait — there's a bug scenario: moveTo(Interval(0,0)) when currentRows = Interval(0, 5) — say frame shrinks to empty after covering rows [0,5): currentRows.a == newRows.a (0 == 0) && currentRows.b (5) < newRows.b (0)? false. currentRows.a (0) > newRows.a (0)? false. else: newAggregators, empty loop. Good.
+
+What about moveTo(Interval(3,3)) when currentRows = Interval(0, 3)? currentRows.a (0) == newRows.a (3)? No. currentRows.a (0) > newRows.a (3)? No. else branch → newAggregators, empty. Good.
+
+Hmm, but one more: moveTo(Interval(2,2)) when currentRows = Interval(0, 2): a: 0 == 2? no; 0 > 2? no; else → fresh. Good.
+
+Edge: moveTo(Interval(a, b)) where currentRows = Interval(c, d) and newRows extends both sides → else branch → fresh. Good.
+
+But there IS an existing edge case bug: moveTo(newRows) where newRows.a < currentRows.a AND newRows.b > currentRows.b — covered by else. And where newRows.a == currentRows.a && newRows.b == currentRows.b — a == a && b < b false; a > a false; else → fresh aggregation of same rows. Fine (just not incremental).
+
+OK so empty frames are handled naturally by the aggregation cursor.
+
+Now — the important design decision: where to put the Range frame resolution logic. The `FramedOnHeapAggregatable#aggregateAll` must accept `WindowFrame.Range`. `DefaultFramedOnHeapAggregatable.buildIteratorFor` currently handles Rows and Groups by building `AggInterval` iterables. For Range, I need to build a similar iterator that resolves value-based bounds.
+
+Also `WindowValueProcessorBase.computeFirstOrLastValueFramed` needs Range support for FIRST_VALUE/LAST_VALUE.
+
+And "across all `RowsAndColumns` implementations" — the resolution must work via `ColumnAccessor` on the ordering column (accessible from any RowsAndColumns via findColumn). The `DefaultFramedOnHeapAggregatable` is the fallback for any AppendableRowsAndColumns. Are there other FramedOnHeapAggregatable implementations? Let me check.
+Now let me look at other implementations of `FramedOnHeapAggregatable` and the sorting logic:
+[tool:bash] {"command": "grep -rln \"implements FramedOnHeapAggregatable\\|extends DefaultFramedOnHeapAggregatable\" /app --include=\"*.java\" | grep -v test"}
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java
+[tool:bash] {"command": "grep -rln \"as(FramedOnHeapAggregatable\\|FramedOnHeapAggregatable.class\" /app/processing/src/main --include=\"*.java\""}
+/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessor.java
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/FramedOnHeapAggregatable.java
+[49] assistant: [reasoning]
+Good - only one implementation. But the `FramedOnHeapAggregatable` is a semantic interface that RowsAndColumns implementations can expose... let me check which RowsAndColumns implementations implement it via `as()`. Let me search for `as(` overrides in concrete RACs:
+[tool:bash] {"command": "grep -rln \"class.*RowsAndColumns\\|extends.*RowsAndColumns\" /app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/ | head; grep -rn \"FramedOnHeapAggregatable\\|ClusteredGroupPartitioner\" /app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/*.java | head"}
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/AbstractFrameRowsAndColumns.java
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/ColumnBasedFrameRowsAndColumns.java
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/FrameRowsAndColumns.java
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/QueryableIndexRowsAndColumns.java
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/RowBasedFrameRowsAndColumns.java
+[50] assistant: [tool:bash] {"command": "grep -rn \"public.*as(\\|@Override\" /app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/QueryableIndexRowsAndColumns.java | head -20"}
+61:  @Override
+67:  @Override
+79:  @Override
+95:  @Override
+96:  public <T> T as(@Nonnull Class<T> clazz)
+102:  @Override
+[tool:bash] {"command": "grep -rn \"class QueryableIndexRowsAndColumns\\|as(Class\" /app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/QueryableIndexRowsAndColumns.java | head"}
+43:public class QueryableIndexRowsAndColumns implements RowsAndColumns, AutoCloseable, CloseableShapeshifter
+[51] assistant: [tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/QueryableIndexRowsAndColumns.java", "limit": 70, "offset": 55}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/QueryableIndexRowsAndColumns.java</path>
+<type>file</type>
+<content>
+55:       QueryableIndex index
+56:   )
+57:   {
+58:     this.index = index;
+59:   }
+60: 
+61:   @Override
+62:   public Collection<String> getColumnNames()
+63:   {
+64:     return index.getColumnNames();
+65:   }
+66: 
+67:   @Override
+68:   public int numRows()
+69:   {
+70:     int retVal = numRows.get();
+71:     if (retVal < 0) {
+72:       retVal = index.getNumRows();
+73:       numRows.set(retVal);
+74:     }
+75:     return retVal;
+76:   }
+77: 
+78:   @Nullable
+79:   @Override
+80:   public Column findColumn(String name)
+81:   {
+82:     if (closed.get()) {
+83:       throw DruidException.defensive("Cannot be accessed after being closed!?");
+84:     }
+85:     final BaseColumnHolder columnHolder = index.getColumnHolder(name);
+86:     if (columnHolder == null) {
+87:       return null;
+88:     }
+89: 
+90:     return closer.register(new ColumnHolderRACColumn(columnHolder));
+91:   }
+92: 
+93:   @SuppressWarnings("unchecked")
+94:   @Nullable
+95:   @Override
+96:   public <T> T as(@Nonnull Class<T> clazz)
+97:   {
+98:     //noinspection ReturnOfNull
+99:     return (T) AS_MAP.getOrDefault(clazz, arg -> null).apply(this);
+100:   }
+101: 
+102:   @Override
+103:   public void close() throws IOException
+104:   {
+105:     if (closed.compareAndSet(false, true)) {
+106:       closer.close();
+107:     }
+108:   }
+109: 
+110:   @SuppressWarnings("unused")
+111:   @SemanticCreator
+112:   public CursorFactory toCursorFactory()
+113:   {
+114:     return new QueryableIndexCursorFactory(index);
+115:   }
+116: 
+117:   @SuppressWarnings("unused")
+118:   @SemanticCreator
+119:   public QueryableIndex toQueryableIndex()
+120:   {
+121:     return index;
+122:   }
+123: }
+
+(End of file - total 123 lines)
+</content>
+[52] assistant: [reasoning]
+OK — concrete RACs don't implement FramedOnHeapAggregatable, only the default. So handling the Range frame in `DefaultFramedOnHeapAggregatable` and in `WindowValueProcessorBase.computeFirstOrLastValueFramed` covers all RowsAndColumns implementations as long as we work through `findColumn(...)` + `ColumnAccessor`.
+
+Now let me check `ColumnAccessor` interface and `BinarySearchableAccessor` — since the partition is sorted on the orderBy column, I can use binary search for bounds resolution if available, falling back to linear scan:
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ColumnAccessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ColumnAccessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.column;
+21: 
+22: import org.apache.druid.segment.column.ColumnType;
+23: 
+24: import javax.annotation.Nullable;
+25: 
+26: /**
+27:  * Allows for accessing a column, provides methods to enable row-by-row access of a specific column.
+28:  */
+29: public interface ColumnAccessor
+30: {
+31:   /**
+32:    * Get the type of the Column
+33:    *
+34:    * @return the type of the Column
+35:    */
+36:   ColumnType getType();
+37: 
+38:   /**
+39:    * Get the number of rows
+40:    *
+41:    * @return the number of rows
+42:    */
+43:   int numRows();
+44: 
+45:   /**
+46:    * Get whether the value of a row is null
+47:    *
+48:    * @param rowNum the row id, 0-indexed
+49:    * @return true if the value is null
+50:    */
+51:   boolean isNull(int rowNum);
+52: 
+53:   /**
+54:    * Get the {@link Object} representation of the row.
+55:    *
+56:    * @param rowNum the row id, 0-indexed
+57:    * @return the {@link Object} representation of the row.  Returns {@code null} If {@link #isNull} is true.
+58:    */
+59:   @Nullable
+60:   Object getObject(int rowNum);
+61: 
+62:   /**
+63:    * Get the primitive {@code double} representation of the row.
+64:    *
+65:    * @param rowNum the row id, 0-indexed
+66:    * @return the primitive {@code double} representation of the row.  Returns {@code 0D} If {@link #isNull} is true.
+67:    */
+68:   double getDouble(int rowNum);
+69: 
+70:   /**
+71:    * Get the primitive {@code float} representation of the row.
+72:    *
+73:    * @param rowNum the row id, 0-indexed
+74:    * @return the primitive {@code float} representation of the row.  Returns {@code 0F} If {@link #isNull} is true.
+75:    */
+76:   float getFloat(int rowNum);
+77: 
+78:   /**
+79:    * Get the primitive {@code long} representation of the row.
+80:    *
+81:    * @param rowNum the row id, 0-indexed
+82:    * @return the primitive {@code long} representation of the row.  Returns {@code 0L} If {@link #isNull} is true.
+83:    */
+84:   long getLong(int rowNum);
+85: 
+86:   /**
+87:    * Get the primitive {@code int} representation of the row.
+88:    *
+89:    * @param rowNum the row id, 0-indexed
+90:    * @return the primitive {@code int} representation of the row.  Returns {@code 0} If {@link #isNull} is true.
+91:    */
+92:   int getInt(int rowNum);
+93: 
+94:   /**
+95:    * Compares two rows using a comparison that follows the same semantics as {@link java.util.Comparator#compare}
+96:    * <p>
+97:    * This is not comparing the row Ids, but the values referred to by the row ids.
+98:    *
+99:    * @param lhsRowNum the row id of the left-hand-side of the comparison
+100:    * @param rhsRowNum the row id of the right-hand-side of the comparison
+101:    * @return the result of the comparison of the two rows
+102:    */
+103:   int compareRows(int lhsRowNum, int rhsRowNum);
+104: }
+
+(End of file - total 104 lines)
+</content>
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/BinarySearchableAccessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/BinarySearchableAccessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.column;
+21: 
+22: import org.apache.druid.java.util.common.ISE;
+23: import org.apache.druid.query.rowsandcols.util.FindResult;
+24: 
+25: /**
+26:  * The implementations of this interface will not validate that things are sorted for the binary search, it assumes that
+27:  * they must be. As such, behavior are undefined if the column is not actually sorted.
+28:  */
+29: public interface BinarySearchableAccessor extends ColumnAccessor
+30: {
+31:   static BinarySearchableAccessor fromColumn(Column col)
+32:   {
+33:     final BinarySearchableAccessor retVal = col.as(BinarySearchableAccessor.class);
+34: 
+35:     if (retVal == null) {
+36:       final ColumnAccessor accessor = col.toAccessor();
+37:       if (accessor instanceof BinarySearchableAccessor) {
+38:         // Why didn't they just return it from the as()!?!?!  Who knows, ah well.
+39:         return (BinarySearchableAccessor) accessor;
+40:       }
+41: 
+42:       throw new ISE("col[%s] is a no-go", col.getClass());
+43:     }
+44:     return retVal;
+45:   }
+46: 
+47:   FindResult findNull(int startIndex, int endIndex);
+48: 
+49:   FindResult findDouble(int startIndex, int endIndex, double val);
+50: 
+51:   FindResult findFloat(int startIndex, int endIndex, float val);
+52: 
+53:   FindResult findLong(int startIndex, int endIndex, long val);
+54: 
+55:   FindResult findString(int startIndex, int endIndex, String val);
+56: 
+57:   FindResult findComplex(int startIndex, int endIndex, Object val);
+58: }
+
+(End of file - total 58 lines)
+</content>
+[53] assistant: [reasoning]
+Now I have a clear picture. Let me now design the implementation.
+
+## Implementation plan
+
+### 1. `WindowFrame.Range` (processing module)
+
+```java
+@JsonSubTypes(value = {
+    @JsonSubTypes.Type(name = "rows", value = WindowFrame.Rows.class),
+    @JsonSubTypes.Type(name = "groups", value = WindowFrame.Groups.class),
+    @JsonSubTypes.Type(name = "range", value = WindowFrame.Range.class),
+})
+```
+
+```java
+class Range implements WindowFrame
+{
+  @Nullable private final Double lowerOffset;
+  @Nullable private final Double upperOffset;
+  private final ColumnWithDirection orderBy;
+
+  @JsonCreator
+  public Range(
+      @JsonProperty("lowerOffset") @Nullable Double lowerOffset,
+      @JsonProperty("upperOffset") @Nullable Double upperOffset,
+      @JsonProperty("orderBy") ColumnWithDirection orderBy)
+  
+  // getters: getLowerOffset(), getUpperOffset(), getOrderBy()
+  // equals, hashCode, toString
+}
+
+static Range range(@Nullable Double lowerOffset, @Nullable Double upperOffset, ColumnWithDirection orderBy)
+```
+
+### 2. Frame resolution helper
+
+I'll create a shared helper class that, given an `AppendableRowsAndColumns`/`RowsAndColumns`, a `WindowFrame.Range`, resolves each row's frame `[start, end)` — used by both `DefaultFramedOnHeapAggregatable` (to build AggIntervals) and `WindowValueProcessorBase.computeFirstOrLastValueFramed`.
+
+Where should this live? Both `DefaultFramedOnHeapAggregatable` (in `query.rowsandcols.semantic`) and `WindowValueProcessorBase` (in `query.operator.window.value`) need it. `query.operator.window` already depends on `rowsandcols` (WindowFirstProcessor uses ClusteredGroupPartitioner.fromRAC). Let me put the resolution logic in a new class in the window package, e.g. `org.apache.druid.query.operator.window.WindowRangeFrameResolver` or maybe as a static helper inside... Hmm.
+
+Actually, maybe better: put it in `org.apache.druid.query.rowsandcols.semantic` next to `ClusteredGroupPartitioner`? Or in the `window` package since it's window-specific: `WindowFrame` is in `query.operator.window`. I'll create `org.apache.druid.query.operator.window.RangeFrameResolver` hmm. Hmm, but the spec says "Frame resolution over sorted partitions" is needed by:
+- `FramedOnHeapAggregatable#aggregateAll` (DefaultFramedOnHeapAggregatable)
+- `WindowFramedAggregateProcessor` (delegates to FramedOnHeapAggregatable)
+- `WindowFirstProcessor` / `WindowLastProcessor` (via WindowValueProcessorBase.computeFirstOrLastValueFramed)
+
+The spec says "Extend framed aggregation (FramedOnHeapAggregatable#aggregateAll) and value processors ... to accept WindowFrame.Range" — so both the aggregation path and value path.
+
+Design: A resolver class that computes per-row `[frameStart, frameEnd]` (inclusive/exclusive) intervals. I'll write a class `RangeFrameIntervals` or a static method `computeRangeIntervals(RowsAndColumns rac, WindowFrame.Range frame)` returning an int[][] of per-peer-group intervals... Actually since peers resolve identically, I can compute per-peer-group intervals: for each distinct value run [start, end), compute the frame interval. That's efficient and handles the "peers receive identical output values" requirement naturally.
+
+Let me design the resolver:
+
+```java
+public class RangeFrameResolver // maybe name: WindowRangeFrameResolver
+{
+  // For a sorted partition and Range frame, compute for each row i the interval [lo, hi) of input rows in its frame.
+  public static int[][] computeIntervals(RowsAndColumns rac, WindowFrame.Range frame)
+}
+```
+
+Hmm, actually let me think about the exact API. `DefaultFramedOnHeapAggregatable.buildIteratorFor` returns `Iterable<AggInterval>` where AggInterval has outputRows interval and inputRows interval. For rows/groups frames, output rows = current group; for range frames, output rows = peer group (rows with equal value), input rows = resolved frame interval.
+
+So the resolver could produce, for each peer group g (contiguous run of equal ordering values), the frame interval [frameStart, frameEnd):
+
+- If value of peer group is NULL:
+  - If lowerOffset == null (unbounded): frameStart = 0.
+  - Else (finite): frameStart = start of NULL run.
+  - If upperOffset == null: frameEnd = numRows.
+  - Else: frameEnd = end of NULL run.
+- Else v = value:
+  - If lowerOffset == null: frameStart = 0. Wait — hmm. Unbounded bounds "remain positional, extending to the partition boundaries and including rows with NULL ordering keys" → frameStart = 0, frameEnd = numRows.
+  - Else: lowerBound = asc ? v + lo : v - lo.
+    - ASC: frameStart = first row index with value >= lowerBound. But NULL values — where are they? In a sorted partition ASC, NULLs sort first (Druid convention: nulls first on ascending). So NULL rows are at the start (for ASC). "Unbounded bounds ... including rows with NULL ordering keys" — for unbounded. For finite bounds, do NULL values fall within [lowerBound, upperBound]? In SQL semantics, NULL is not comparable, so a finite bound excludes NULLs... Actually in standard SQL, NULL ordering keys with RANGE frames: the comparison "x BETWEEN v-o AND v+o" with x NULL is NULL → row excluded. So finite-bound frames exclude NULL rows. And the current-row-is-NULL case is handled via the peer-group rule.
+    
+    So for ASC with finite lower bound: frameStart = first row with non-null value >= lowerBound. Since NULLs are first in ASC sort, this is: frameStart = max(firstNonNullRow, first row with value >= lowerBound). Using binary search: the values from firstNonNull..numRows are sorted ascending; find lower bound index via binary search on the sorted numeric values.
+    
+  - ASC: frameEnd = last row with value <= upperBound + 1 (exclusive) = upper bound index of upperBound.
+  - DESC: values sorted descending; NULLs sort... in Druid DESC sort, NULLs come last (nulls first ascending = nulls last descending... let me verify with the sort implementation). For DESC: frameStart = first row with value <= lowerBound; frameEnd = last row with value >= upperBound (exclusive +1).
+  
+Since values can be LONG, FLOAT, DOUBLE — numeric. I can extract them as doubles... hmm, careful with precision. LONG timestamps up to ~1.7e18 (millis ~1.7e12, micros ~1.7e15, nanos ~1.7e18). Doubles have 53 bits mantissa (~9e15 exact integers). Nanosecond timestamps (1.7e18) would lose precision as doubles. But offsets are Double anyway, so bound computation happens in double space regardless. Comparisons between the bound (double) and values (long) — for exact matching semantics: e.g. `RANGE BETWEEN 86400000 PRECEDING AND CURRENT ROW` on __time (millis as LONG): bound = v - 86400000.0. Comparing long values x >= bound: if I convert x to double, precision loss for large x. Alternatively compare via long when both offsets and values are integral... 
+
+To be safe, I'll do comparisons with a hybrid: extract values as double for float/double columns; for long columns, I can still compare exactly by checking... Actually, let me simplify: compare using doubles but handle precision by... Hmm.
+
+Actually, let me think about how precise this needs to be. The offsets are Doubles. For a LONG ordering column, values could be big. v + lo in double space: if v = 2^62 and lo = 1.0, v + 1.0 can't be represented → bound = v (rounded). Then comparison x >= bound where x converted to double also loses precision. This could cause off-by-one row boundary errors for enormous longs. In practice, timestamps in millis (1.7e12) and typical numeric values are well within double precision (2^53 ≈ 9e15). Microsecond timestamps (1.7e15) are still < 9e15 — OK. Nanosecond (1.7e18) > 9e15 — precision loss possible but the offsets would also be huge; edge behavior slightly fuzzy. I'll accept double-space comparisons for LONG columns too — simplest and consistent. Hmm, but wait — exactness matters for the equality case: e.g. `RANGE BETWEEN 5 PRECEDING AND CURRENT ROW` on longs: bound = v - 5. x >= v - 5.0. Converting x (long) to double: for x near v (within double precision range) exact. Values beyond 2^53 would be problematic but rare.
+
+Hmm, actually, let me do a smarter comparison for LONG columns: I can compare `long x` vs `double bound` exactly using doubleToLong / longToDouble comparisons... There's a known technique: if |bound| < 2^53, I can convert bound to long via ceil/floor and compare as longs. Actually the standard trick:
+
+To compare long x with double b:
+- if b is NaN → undefined (shouldn't happen).
+- if b >= 9.223372036854776E18 (2^63) → x < b always.
+- if b <= -2^63 → x >= b always (x >= Long.MIN).
+- else convert b to long: bl = (long) b — but if b has fractional part, (long) b truncates toward zero. Then x >= b ⟺ x >= ceil(b) ⟺ x >= (long)Math.ceil(b). And x <= b ⟺ x <= floor(b) = (long) b (for b >= 0)... Math.floor(b) for negative also truncates down. So:
+  - x >= b ⟺ x >= Math.ceil(b) [as long]
+  - x <= b ⟺ x <= Math.floor(b) [as long]
+
+This gives exact comparisons for long columns. But it adds complexity. Hmm. For the initial implementation, I could simply compare in double space via `accessor.getDouble(rowNum)`. Given the test data and typical use (timestamps in millis/micros, numeric columns), double comparison is fine and much simpler. But "Resolution must support numeric ordering columns (LONG, FLOAT, DOUBLE, where timestamp columns reach the native engine as LONG)" — the requirement is support, not exact precision at 2^63. Millis timestamps are exact in double. I'll use double comparisons via getDouble() on the accessor, which handles all three types uniformly (getDouble on Float returns (double) float value; on Long returns (double) long).
+
+Hmm wait, one concern: FLOAT columns — getDouble(rowNum) returns the float widened to double. Offsets are doubles. Bound = v + o computed in double; comparing with other float values widened to double. Since all comparisons happen consistently in double space, and the original values were floats (exactly representable as doubles), the resolution is consistent with comparing in float space... mostly. Edge: v (float) + o (double) → double bound; float values x: compare (double)x >= bound. If o was integral, fine. The semantics "value v + offset o" in the value space — for floats, the natural interpretation is double arithmetic. OK.
+
+Actually, you know what — let me use exact long comparison for LONG columns since it's not that hard, and double for FLOAT/DOUBLE. Hmm, but it complicates the binary search implementation. Let me think about what operations I need:
+
+For a sorted (per orderBy direction) numeric column with NULLs contiguous (NULLs first for ASC, last for DESC — need to confirm Druid sort semantics):
+
+- firstNonNull: index of first non-null value (0 for ASC if no nulls... wait, for ASC nulls first → nulls at start; firstNonNull = count of nulls. For DESC, nulls sort... let me check Druid's sort: `DefaultNaiveSortMaker` or the null ordering. Let me check how NULLs are sorted in the native window engine's sort.
+
+Let me look at the sort implementation used by NaiveSortOperatorFactory.
+Let me check the sort implementation to understand NULL ordering:
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultNaiveSortMaker.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultNaiveSortMaker.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import it.unimi.dsi.fastutil.Arrays;
+23: import org.apache.druid.query.operator.ColumnWithDirection;
+24: import org.apache.druid.query.rowsandcols.ConcatRowsAndColumns;
+25: import org.apache.druid.query.rowsandcols.EmptyRowsAndColumns;
+26: import org.apache.druid.query.rowsandcols.RearrangedRowsAndColumns;
+27: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+28: import org.apache.druid.query.rowsandcols.column.Column;
+29: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+30: 
+31: import javax.annotation.Nullable;
+32: import java.util.ArrayList;
+33: 
+34: public class DefaultNaiveSortMaker implements NaiveSortMaker
+35: {
+36:   private final RowsAndColumns rac;
+37: 
+38:   public DefaultNaiveSortMaker(
+39:       RowsAndColumns rac
+40:   )
+41:   {
+42:     this.rac = rac;
+43:   }
+44: 
+45:   @Override
+46:   public NaiveSorter make(ArrayList<ColumnWithDirection> ordering)
+47:   {
+48:     final NaiveSorter retVal = new DefaultNaiveSorter(ordering);
+49:     retVal.moreData(rac);
+50:     return retVal;
+51:   }
+52: 
+53:   private static class DefaultNaiveSorter implements NaiveSorter
+54:   {
+55:     final ArrayList<RowsAndColumns> racBuffer;
+56:     private final ArrayList<ColumnWithDirection> ordering;
+57: 
+58:     public DefaultNaiveSorter(ArrayList<ColumnWithDirection> ordering)
+59:     {
+60:       this.ordering = ordering;
+61:       racBuffer = new ArrayList<>();
+62:     }
+63: 
+64: 
+65:     @Nullable
+66:     @Override
+67:     public RowsAndColumns moreData(RowsAndColumns rac)
+68:     {
+69:       racBuffer.add(rac);
+70:       return null;
+71:     }
+72: 
+73:     @Override
+74:     public RowsAndColumns complete()
+75:     {
+76:       if (racBuffer.isEmpty()) {
+77:         return new EmptyRowsAndColumns();
+78:       }
+79: 
+80:       final RowsAndColumns rac;
+81:       if (racBuffer.size() == 1) {
+82:         rac = racBuffer.get(0);
+83:       } else {
+84:         rac = new ConcatRowsAndColumns(racBuffer);
+85:       }
+86: 
+87:       // One int for the racBuffer, another for the rowIndex
+88:       int[] sortedPointers = new int[rac.numRows()];
+89:       for (int i = 0; i < sortedPointers.length; ++i) {
+90:         sortedPointers[i] = i;
+91:       }
+92: 
+93:       int index = 0;
+94:       int[] direction = new int[ordering.size()];
+95:       ColumnAccessor[] accessors = new ColumnAccessor[ordering.size()];
+96:       for (ColumnWithDirection orderByColumnSpec : ordering) {
+97:         final Column col = rac.findColumn(orderByColumnSpec.getColumn());
+98:         // Null columns are all the same value: null.  Therefore, it is already sorted, so just ignore
+99:         if (col != null) {
+100:           accessors[index] = col.toAccessor();
+101:           direction[index] = orderByColumnSpec.getDirection().getDirectionInt();
+102:           ++index;
+103:         }
+104:       }
+105: 
+106:       final int numColsToCompare = index;
+107: 
+108:       // Use stable sort, so peer rows retain original order.
+109:       Arrays.mergeSort(
+110:           0,
+111:           rac.numRows(),
+112:           (k1, k2) -> {
+113:             for (int i = 0; i < numColsToCompare; ++i) {
+114:               final ColumnAccessor accessy = accessors[i];
+115:               int val = accessy.compareRows(sortedPointers[k1], sortedPointers[k2]);
+116:               if (val != 0) {
+117:                 return val * direction[i];
+118:               }
+119:             }
+120:             return 0;
+121:           },
+122:           (a, b) -> {
+123:             int bufPos = sortedPointers[a];
+124:             sortedPointers[a] = sortedPointers[b];
+125:             sortedPointers[b] = bufPos;
+126:           }
+127:       );
+128: 
+129:       return new RearrangedRowsAndColumns(sortedPointers, rac);
+130:     }
+131:   }
+132: }
+
+(End of file - total 132 lines)
+</content>
+[54] assistant: [reasoning]
+The sort uses `accessor.compareRows` * direction. Let me check how compareRows handles nulls. Let me look at `ColumnAccessorBasedColumn` or one of the accessor bases, e.g. `LongColumnAccessorBase` or `ObjectColumnAccessorBase`:
+[tool:bash] {"command": "grep -rn \"compareRows\" /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/accessor/*.java /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/*.java | head -20"}
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/accessor/DoubleColumnAccessorBase.java:65:  public int compareRows(int lhsRowNum, int rhsRowNum)
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/accessor/FloatColumnAccessorBase.java:65:  public int compareRows(int lhsRowNum, int rhsRowNum)
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/accessor/LongColumnAccessorBase.java:65:  public int compareRows(int lhsRowNum, int rhsRowNum)
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/accessor/ObjectColumnAccessorBase.java:115:  public int compareRows(int lhsRowNum, int rhsRowNum)
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ColumnAccessor.java:103:  int compareRows(int lhsRowNum, int rhsRowNum);
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ConstantObjectColumn.java:128:    public int compareRows(int lhsRowNum, int rhsRowNum)
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/DoubleArrayColumn.java:131:    public int compareRows(int lhsRowNum, int rhsRowNum)
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/IntArrayColumn.java:131:    public int compareRows(int lhsRowNum, int rhsRowNum)
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/LongArrayColumn.java:131:    public int compareRows(int lhsRowNum, int rhsRowNum)
+/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/NullColumn.java:117:    public int compareRows(int lhsRowNum, int rhsRowNum)

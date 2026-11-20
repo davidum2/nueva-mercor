@@ -1,0 +1,140 @@
+- Add a public instance method `selectMaxWeight` to the existing `Layer` class taking a single `ToDoubleFunction<Annotation>`.
+- `selectMaxWeight` returns a new anonymous `Layer` belonging to the same `Section` even when the original layer is empty.
+- `selectMaxWeight` returns a new anonymous `Layer` belonging to the same `Section` even when the selected subset is empty.
+- The returned `Layer` holds the non-overlapping subset of annotations from the original layer maximizing the sum of evaluated weights.
+- Two annotations overlap when each starts before the other ends.
+- Touching spans where one annotation ends where another starts do not overlap.
+- A zero-length annotation overlaps only annotations extending on both sides of its position.
+- A zero-length annotation does not overlap another zero-length annotation.
+- A zero-length annotation does not overlap an annotation starting or ending at its position.
+- The empty subset with total `0.0` is always a candidate.
+- `Double.NaN` weights must be normalized to `0.0`.
+- Every non-NaN weight, including positive infinity and negative infinity, contributes under ordinary double arithmetic without clamping or normalization.
+- A subset whose total is NaN is never selected, so an annotation weighted negative infinity never appears in the result.
+- Equal plain-double totals break deterministically to the subset whose member indices in the layer's canonical order are lexicographically least, where a strict prefix compares as less.
+- Next to a positive infinite weight, a finite weight of either sign leaves the total at positive infinity so the lexicographic tie-break alone decides whether it is selected.
+- Where floating-point rounding makes a total depend on addition order, any order is acceptable.
+- Expose a `best-disjoint` operator in the `nav` library.
+- Support the literal-layer form `best-disjoint:LAYER` without a weight expression.
+- Support the literal-layer form `best-disjoint:LAYER(WEIGHT)` with a weight expression.
+- Support the dynamic-layer form `best-disjoint(LAYER_EXPR)` without a weight expression.
+- Support the dynamic-layer form `best-disjoint(LAYER_EXPR, WEIGHT)` with a weight expression.
+- Every `best-disjoint` form must work bare without a library prefix.
+- Every `best-disjoint` form must work qualified with the `nav:` prefix.
+- `LAYER_EXPR` must be evaluated as a string against the context element on every evaluation.
+- Evaluation must return an empty annotation set without evaluating `WEIGHT` when the context element cannot be downcast to a `Section`.
+- Evaluation must return an empty annotation set without evaluating `WEIGHT` when the named layer is absent.
+- Otherwise `WEIGHT` must be evaluated exactly once per annotation with that annotation as context element, coerced to double regardless of expression type.
+- The selected annotations must be returned in canonical order.
+- An omitted `WEIGHT` gives every annotation an equal positive weight so the largest non-overlapping subset wins.
+- The operator's reported evaluation type must be annotations (`EvaluationType.ANNOTATIONS`).
+- `toString()` must serialize `nav:best-disjoint:LAYER` as `best-disjoint:LAYER` without the `nav:` prefix.
+- `toString()` must serialize `nav:best-disjoint:LAYER(WEIGHT)` as `best-disjoint:LAYER(WEIGHT)` without the `nav:` prefix.
+- Serialized text for each `best-disjoint` form must re-parse into an equivalent expression.
+- Name usage collection must register literal layer names as `NameType.LAYER`.
+- Name usage collection must recursively collect from `LAYER_EXPR`.
+- Name usage collection must recursively collect from `WEIGHT`.
+- Each `best-disjoint` form needs its own `function-doc` entry in `NavigationLibraryDoc.xml` carrying only `first-ftor` plus `synopsis` attributes.
+
+- The working repository is `/app`.
+- `pom.xml` declares Maven module `alvisnlp-core`.
+- `pom.xml` declares Maven module `alvisnlp-bibliome`.
+- `pom.xml` configures Java `1.8` compiler source.
+- `pom.xml` configures Java `1.8` compiler target.
+- Updated `alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java` via `apply_patch`.
+- Added `import java.util.function.ToDoubleFunction;` to `Layer.java`.
+- Added `public Layer selectMaxWeight(ToDoubleFunction<Annotation> weightFunction)` after `getAnonymousCopy()` in `Layer.java`.
+- `selectMaxWeight` returns `new Layer(section)` when `size == 0`.
+- `selectMaxWeight` evaluates `weightFunction.applyAsDouble` once per annotation in canonical order.
+- `selectMaxWeight` normalizes `Double.isNaN(weight)` to `0.0`.
+- Added private `selectMaxWeight(double[] weights)` in `Layer.java` running weighted-interval DP over non-zero-length annotations sorted by ascending `end`.
+- Added private static helper `countEndingAtMost` in `Layer.java` using binary search on `ends[middle] <= position`.
+- Added private static helper `best` in `Layer.java` comparing state totals with plain numeric comparisons before tie-breaking via `compareIndices`.
+- Added private static helper `compareIndices` in `Layer.java` comparing `SelectionIndices` prefixes and lengths.
+- Added private static helper `dropIndices` in `Layer.java` aligning two `SelectionIndices` chains to equal length.
+- Added private static helper `compareEqualLengthIndices` in `Layer.java` comparing equal-length `SelectionIndices` chains recursively from earliest index.
+- Added private static class `WeightedInterval` in `Layer.java`.
+- Added private static class `SelectionIndices` in `Layer.java`.
+- Added private static class `SelectionState` in `Layer.java` with `SelectionState.EMPTY`.
+- Added a reverse canonical post-pass in `Layer.java` over zero-length annotations (`annot.getStart() == annot.getEnd()`) tracking `maxSelectedIndex`.
+- The zero-length post-pass in `Layer.java` adds a zero-length annotation when `total > state.total` or when `total == state.total` with `maxSelectedIndex > i`.
+- The zero-length post-pass in `Layer.java` does not check containment inside selected non-zero-length intervals.
+- Updated `alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java` via `apply_patch`.
+- Added four `bestDisjoint` overloads after `overlapping` in `NavigationLibrary.java`.
+- Added `bestDisjoint(String layerName)` annotated `@Function(firstFtor="best-disjoint", ftors=1, nameTypes={NameType.LAYER})` returning `new BestDisjointEvaluator(layerName, null)`.
+- Added `bestDisjoint(Evaluator layerName)` annotated `@Function` returning `new BestDisjointEvaluator(layerName, null)`.
+- Added `bestDisjoint(String layerName, Evaluator weight)` annotated `@Function(firstFtor="best-disjoint", ftors=1, nameTypes={NameType.LAYER})` returning `new BestDisjointEvaluator(layerName, weight)`.
+- Added `bestDisjoint(Evaluator layerName, Evaluator weight)` annotated `@Function` returning `new BestDisjointEvaluator(layerName, weight)`.
+- Created `alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/BestDisjointEvaluator.java` via `apply_patch`.
+- `BestDisjointEvaluator` extends `AbstractListEvaluator`.
+- `BestDisjointEvaluator` defines `DEFAULT_WEIGHT = 1.0`.
+- `evaluateList` in `BestDisjointEvaluator` resolves the layer name via `getLayerName(ctx, elt)`.
+- `evaluateList` in `BestDisjointEvaluator` downcasts the context element via `DownCastElement.toSection(elt)`.
+- `evaluateList` in `BestDisjointEvaluator` returns `Collections.emptyList()` without evaluating `weight` when `section == null` or `!section.hasLayer(name)`.
+- `evaluateList` in `BestDisjointEvaluator` delegates to `layer.selectMaxWeight` returning `DEFAULT_WEIGHT` when `weight == null`.
+- `evaluateList` in `BestDisjointEvaluator` calls `weight.evaluateDouble(ctx, annotation)` when `weight != null`.
+- `getTypes()` in `BestDisjointEvaluator` returns `Collections.singleton(EvaluationType.ANNOTATIONS)`.
+- `collectUsedNames` in `BestDisjointEvaluator` calls `nameUsage.addNames(NameType.LAYER, layerName)` when `layerName != null`.
+- `collectUsedNames` in `BestDisjointEvaluator` recurses into `layerNameEvaluator` when `layerNameEvaluator != null`.
+- `collectUsedNames` in `BestDisjointEvaluator` recurses into `weight` when `weight != null`.
+
+- Omitted a copyright header from `BestDisjointEvaluator.java` because developer instructions prohibit adding copyright headers unless requested.
+- Used `Collections.sort` with an explicit `Comparator` in `Layer.java` because `pom.xml` targets Java `1.8` where `Collections.sort` is stable.
+- Compared DP state totals in `best` with plain numeric operators rather than `Double.compare` so positive zero ties with negative zero under ordinary double arithmetic.
+- Chose recursive `compareEqualLengthIndices` over `BigInteger` bitmasks for lexicographic tie-breaking because linked `SelectionIndices` nodes use O(n) memory.
+- Chose a reverse canonical-order post-pass tracking `maxSelectedIndex` for zero-length annotations because processing descending lets later selected indices serve as lexicographic anchors.
+- Decided to evaluate `LAYER_EXPR` via `getLayerName(ctx, elt)` before downcasting `elt` via `DownCastElement.toSection(elt)` in `BestDisjointEvaluator` because the requirement only suppresses evaluating `WEIGHT` when the context element cannot be downcast to a `Section` or the named layer is absent.
+- Decided to update only `NavigationLibraryDoc.xml` rather than `docs/reference/library/nav.md` because the request specifically asks for the standard navigation library documentation XML.
+- `LibraryModel.java` emits a warning when a library function `is not documented` in its documentation XML.
+- `LibraryModel.java` warns (`the name types will be ignored`) when `nameTypes` is specified on a `@Function` method that returns `Evaluator`.
+- Settled the four `bestDisjoint` overload signatures in `NavigationLibrary.java` with distinct functor-to-argument arities so the annotation processor avoids overload ambiguity.
+- In `LibraryModel.java`, `@Function` defaults `firstFtor` to the method name (`"bestDisjoint"`) when `firstFtor` is omitted.
+- Applied `@Function(firstFtor="best-disjoint", ftors=1, nameTypes={NameType.LAYER})` to the two `String` layer-name overloads in `NavigationLibrary.java`.
+- Applied plain `@Function` with no `ftors` attribute to the two `Evaluator` layer-name overloads in `NavigationLibrary.java`.
+- In `Expression.java`, `navToString` delegates listed operators to `libEllipsisToString(a)` to strip the `nav:` prefix.
+- In `Expression.java`, `navToString` falls through to `defaultToString(a)` for unlisted operators.
+- In `LegacyFunctors.java`, `getFunctors` maps bare operator calls to `NavigationLibrary.NAME` inside `switch (lib)`.
+- Qualified `nav:` expressions pass through `LegacyFunctors.getFunctors`, which returns `new Pair<String,List<String>>(lib, ftors)` unchanged by default.
+- Observed that `apply_patch` must be invoked as a single dedicated command because combining `apply_patch` with additional shell commands failed with `apply_patch: command not found`.
+- The attempted patch on `LegacyFunctors.java` failed with `Failed to find expected lines` because additional `nav` switch cases sit between `case "layer":` and `if (arity == 0)`.
+- The failed `LegacyFunctors.java` patch also placed two `best-disjoint` case labels in the same `switch`.
+- Decided in `LegacyFunctors.java` to handle all bare `best-disjoint` forms inside a single `best-disjoint` branch in `getFunctors` to avoid duplicate case labels.
+- Decided in `LegacyFunctors.java` to map bare colon literal-layer calls (`n == 1` with `arity` 0 or 1) to `NavigationLibrary.NAME` with `Arrays.asList(lib, ftors.get(0))`.
+- Decided in `LegacyFunctors.java` to map bare parenthesized expression-layer calls (`n == 0` with `arity` 1 or 2) directly by arity to `NavigationLibrary.NAME` with `Arrays.asList(lib)`.
+- Rejected supporting a bare `best-disjoint:expr` form because the grammar parses it with one functor and zero arguments, making it indistinguishable from a literal layer name when expression forms use parentheses.
+- Planned `NavigationLibraryDoc.xml` entry 1 sets `first-ftor` to `best-disjoint` with synopsis `nav:best-disjoint:layerName()`.
+- Planned `NavigationLibraryDoc.xml` entry 2 sets `first-ftor` to `best-disjoint` with synopsis `nav:best-disjoint:layerName(weight)`.
+- Planned `NavigationLibraryDoc.xml` entry 3 sets `first-ftor` to `best-disjoint` with synopsis `nav:best-disjoint(layerName)`.
+- Planned `NavigationLibraryDoc.xml` entry 4 sets `first-ftor` to `best-disjoint` with synopsis `nav:best-disjoint(layerName, weight)`.
+
+- `Layer.java` has been edited in `/app`.
+- `NavigationLibrary.java` has been edited in `/app`.
+- `BestDisjointEvaluator.java` has been created in `/app`.
+- `LegacyFunctors.java` is unchanged because its `apply_patch` call failed verification.
+- Bare `best-disjoint` forms do not yet map to `NavigationLibrary.NAME` in `LegacyFunctors.java`.
+- Bare `best-disjoint` forms do not parse yet.
+- `Expression.java` is unchanged.
+- `navToString` still falls through to `defaultToString(a)` for `best-disjoint`.
+- `NavigationLibraryDoc.xml` is unchanged.
+- No Maven compilation (`mvn package`) has been run yet.
+- No tests have been created yet.
+- No tests have been executed yet.
+- No `alvisnlp-bibliome/src/test` directory exists in `/app`.
+
+- Next step: patch `LegacyFunctors.java` with a single `best-disjoint` branch in `getFunctors` implementing the settled distinction between bare colon literal-layer forms (`n == 1` with `arity` 0 or 1 returning `Arrays.asList(lib, ftors.get(0))`) and bare parenthesized expression-layer forms mapped directly by arity (`n == 0` with `arity` 1 or 2 returning `Arrays.asList(lib)`), with no bare `best-disjoint:expr` form.
+- Next step: patch `Expression.java` to add `best-disjoint` to the `libEllipsisToString(a)` case group in `navToString`.
+- Next step: add the four `function-doc` entries for `best-disjoint` to `NavigationLibraryDoc.xml`.
+- Next step: run `mvn package` in `/app` to compile the Maven modules.
+- Next step: verify `selectMaxWeight` on `Layer` against overlap, zero-length, `Double.NaN`, infinity, and lexicographic tie-breaking requirements.
+- Next step: verify `best-disjoint` evaluation across bare and `nav:`-qualified forms.
+- Next step: verify `best-disjoint` `toString()` round-trip serialization.
+- Next step: verify `best-disjoint` `collectUsedNames` name usage collection.
+
+- Relevant file: `alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java`
+- Relevant file: `alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java`
+- Relevant file: `alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/BestDisjointEvaluator.java`
+- Relevant file: `alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/converters/expression/parser/LegacyFunctors.java`
+- Relevant file: `alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/expressions/Expression.java`
+- Relevant file: `alvisnlp-bibliome/src/main/resources/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibraryDoc.xml`
+- Relevant file: `alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/annotation/LibraryModel.java`
+- Relevant file: `pom.xml`

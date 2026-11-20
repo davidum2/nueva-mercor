@@ -1,0 +1,663 @@
+[268] assistant: [tool:bash] {"command": "sed -n 130,160p /app/sql/src/test/java/org/apache/druid/sql/calcite/util/CalciteTests.java; grep -n \"FOO_TABLE\\|RowSignature\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | head -10"}
+public static final String SOME_DATSOURCE_ESCAPED = "some\\_datasource";
+  public static final String SOMEXDATASOURCE = "somexdatasource";
+  public static final String USERVISITDATASOURCE = "visits";
+  public static final String DRUID_SCHEMA_NAME = "druid";
+  public static final String WIKIPEDIA = "wikipedia";
+  public static final String WIKIPEDIA_FIRST_LAST = "wikipedia_first_last";
+  public static final String TBL_WITH_NULLS_PARQUET = "tblWnulls.parquet";
+  public static final String SML_TBL_PARQUET = "smlTbl.parquet";
+  public static final String ALL_TYPES_UNIQ_PARQUET = "allTypsUniq.parquet";
+  public static final String FEW_ROWS_ALL_DATA_PARQUET = "fewRowsAllData.parquet";
+  public static final String T_ALL_TYPE_PARQUET = "t_alltype.parquet";
+  public static final String BENCHMARK_DATASOURCE = "benchmark_ds";
+
+  public static final String TEST_SUPERUSER_NAME = "testSuperuser";
+  public static final Policy POLICY_NO_RESTRICTION_SUPERUSER = NoRestrictionPolicy.instance();
+  public static final Policy POLICY_RESTRICTION = RowFilterPolicy.from(
+      BaseCalciteQueryTest.equality("m1", 6, ColumnType.LONG)
+  );
+  public static final AuthorizerMapper TEST_AUTHORIZER_MAPPER = new AuthorizerMapper(null)
+  {
+    @Override
+    public Authorizer getAuthorizer(String name)
+    {
+      return TestAuthorizer.simple(TEST_SUPERUSER_NAME, POLICY_RESTRICTION);
+    }
+  };
+
+  public static final AuthenticatorMapper TEST_AUTHENTICATOR_MAPPER;
+
+  static {
+    final Map<String, Authenticator> defaultMap = new HashMap<>();
+75:import org.apache.druid.segment.column.RowSignature;
+566:      RowSignature.builder()
+586:      JOINABLE_BACKING_DATA.getRowSignature(),
+[269] assistant: [tool:bash] {"command": "sed -n 555,600p /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java"}
+x.get("dim2"),
+          x.get("dim3"),
+          x.get("dim4"),
+          x.get("dim5"),
+          x.get("dbl1"),
+          x.get("dbl2"),
+          x.get("f1"),
+          x.get("f2"),
+          x.get("l1"),
+          x.get("l2")
+      }).collect(Collectors.toList()),
+      RowSignature.builder()
+                  .add("dim1", ColumnType.STRING)
+                  .add("dim2", ColumnType.STRING)
+                  .add("dim3", ColumnType.STRING)
+                  .add("dim4", ColumnType.STRING)
+                  .add("dim5", ColumnType.STRING)
+                  .add("dbl1", ColumnType.DOUBLE)
+                  .add("dbl2", ColumnType.DOUBLE)
+                  .add("f1", ColumnType.FLOAT)
+                  .add("f2", ColumnType.FLOAT)
+                  .add("l1", ColumnType.LONG)
+                  .add("l2", ColumnType.LONG)
+                  .build()
+  );
+
+  private static final Set<String> KEY_COLUMNS = ImmutableSet.of("dim4");
+
+  private static final RowBasedIndexedTable JOINABLE_TABLE = new RowBasedIndexedTable(
+      JOINABLE_BACKING_DATA.getRowsAsList(),
+      JOINABLE_BACKING_DATA.rowAdapter(),
+      JOINABLE_BACKING_DATA.getRowSignature(),
+      KEY_COLUMNS,
+      DateTimes.nowUtc().toString()
+  );
+
+  public static QueryableIndex makeWikipediaIndex(File tmpDir)
+  {
+    try {
+      final File directory = new File(tmpDir, StringUtils.format("wikipedia-index-%s", UUID.randomUUID()));
+      final IncrementalIndex index = TestIndex.makeWikipediaIncrementalIndex();
+      TestIndex.INDEX_MERGER.persist(index, directory, IndexSpec.getDefault(), null);
+      return TestIndex.INDEX_IO.loadIndex(directory);
+    }
+    catch (IOException e) {
+      throw new RuntimeException(e);
+[270] assistant: [tool:bash] {"command": "grep -n \"RAW_ROWS1\\|createRowBasedIns\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | head; sed -n 30,80p /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java"}
+238:  public static final List<ImmutableMap<String, Object>> RAW_ROWS1 = ImmutableList.of(
+287:  public static final List<InputRow> RAW_ROWS1_X = ImmutableList.of(
+349:      RAW_ROWS1.stream().map(TestDataBuilder::createRow).collect(Collectors.toList());
+351:  public static final List<ImmutableMap<String, Object>> RAW_ROWS1_WITH_NUMERIC_DIMS = ImmutableList.of(
+460:  public static final List<ImmutableMap<String, Object>> RAW_ROWS1_WITH_FULL_TIMESTAMP = ImmutableList.of(
+479:      RAW_ROWS1_WITH_FULL_TIMESTAMP.stream().map(TestDataBuilder::createRow).collect(Collectors.toList());
+553:      RAW_ROWS1_WITH_NUMERIC_DIMS.stream().map(x -> new Object[]{
+791:        .rows(RAW_ROWS1_X)
+import org.apache.druid.data.input.InputRowSchema;
+import org.apache.druid.data.input.MapBasedInputRow;
+import org.apache.druid.data.input.ResourceInputSource;
+import org.apache.druid.data.input.impl.DimensionSchema;
+import org.apache.druid.data.input.impl.DimensionsSpec;
+import org.apache.druid.data.input.impl.DoubleDimensionSchema;
+import org.apache.druid.data.input.impl.JsonInputFormat;
+import org.apache.druid.data.input.impl.LongDimensionSchema;
+import org.apache.druid.data.input.impl.MapInputRowParser;
+import org.apache.druid.data.input.impl.StringDimensionSchema;
+import org.apache.druid.data.input.impl.TimestampSpec;
+import org.apache.druid.jackson.DefaultObjectMapper;
+import org.apache.druid.java.util.common.DateTimes;
+import org.apache.druid.java.util.common.Intervals;
+import org.apache.druid.java.util.common.RE;
+import org.apache.druid.java.util.common.StringUtils;
+import org.apache.druid.java.util.common.granularity.Granularities;
+import org.apache.druid.java.util.common.io.Closer;
+import org.apache.druid.java.util.common.parsers.JSONPathSpec;
+import org.apache.druid.query.DataSource;
+import org.apache.druid.query.GlobalTableDataSource;
+import org.apache.druid.query.InlineDataSource;
+import org.apache.druid.query.NestedDataTestUtils;
+import org.apache.druid.query.QueryRunnerFactoryConglomerate;
+import org.apache.druid.query.aggregation.CountAggregatorFactory;
+import org.apache.druid.query.aggregation.DoubleSumAggregatorFactory;
+import org.apache.druid.query.aggregation.FloatSumAggregatorFactory;
+import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
+import org.apache.druid.query.aggregation.firstlast.first.DoubleFirstAggregatorFactory;
+import org.apache.druid.query.aggregation.firstlast.first.LongFirstAggregatorFactory;
+import org.apache.druid.query.aggregation.firstlast.first.StringFirstAggregatorFactory;
+import org.apache.druid.query.aggregation.firstlast.last.DoubleLastAggregatorFactory;
+import org.apache.druid.query.aggregation.firstlast.last.FloatLastAggregatorFactory;
+import org.apache.druid.query.aggregation.firstlast.last.LongLastAggregatorFactory;
+import org.apache.druid.query.aggregation.firstlast.last.StringLastAggregatorFactory;
+import org.apache.druid.query.aggregation.hyperloglog.HyperUniquesAggregatorFactory;
+import org.apache.druid.query.lookup.LookupExtractorFactoryContainerProvider;
+import org.apache.druid.segment.AutoTypeColumnSchema;
+import org.apache.druid.segment.IndexBuilder;
+import org.apache.druid.segment.IndexSpec;
+import org.apache.druid.segment.QueryableIndex;
+import org.apache.druid.segment.SegmentWrangler;
+import org.apache.druid.segment.TestHelper;
+import org.apache.druid.segment.TestIndex;
+import org.apache.druid.segment.column.ColumnType;
+import org.apache.druid.segment.column.RowSignature;
+import org.apache.druid.segment.column.StringEncodingStrategy;
+import org.apache.druid.segment.generator.GeneratorBasicSchemas;
+import org.apache.druid.segment.generator.GeneratorSchemaInfo;
+import org.apache.druid.segment.generator.SegmentGenerator;
+import org.apache.druid.segment.incremental.IncrementalIndex;
+[271] assistant: [tool:bash] {"command": "sed -n 238,290p /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java; grep -n \"FOO_TABLE\\|foo.*RowSignature\\|public static.*foo\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | head -5"}
+public static final List<ImmutableMap<String, Object>> RAW_ROWS1 = ImmutableList.of(
+      ImmutableMap.<String, Object>builder()
+                  .put("t", "2000-01-01")
+                  .put("m1", "1.0")
+                  .put("m2", "1.0")
+                  .put("dim1", "")
+                  .put("dim2", ImmutableList.of("a"))
+                  .put("dim3", ImmutableList.of("a", "b"))
+                  .build(),
+      ImmutableMap.<String, Object>builder()
+                  .put("t", "2000-01-02")
+                  .put("m1", "2.0")
+                  .put("m2", "2.0")
+                  .put("dim1", "10.1")
+                  .put("dim2", ImmutableList.of())
+                  .put("dim3", ImmutableList.of("b", "c"))
+                  .build(),
+      ImmutableMap.<String, Object>builder()
+                  .put("t", "2000-01-03")
+                  .put("m1", "3.0")
+                  .put("m2", "3.0")
+                  .put("dim1", "2")
+                  .put("dim2", ImmutableList.of(""))
+                  .put("dim3", ImmutableList.of("d"))
+                  .build(),
+      ImmutableMap.<String, Object>builder()
+                  .put("t", "2001-01-01")
+                  .put("m1", "4.0")
+                  .put("m2", "4.0")
+                  .put("dim1", "1")
+                  .put("dim2", ImmutableList.of("a"))
+                  .put("dim3", ImmutableList.of(""))
+                  .build(),
+      ImmutableMap.<String, Object>builder()
+                  .put("t", "2001-01-02")
+                  .put("m1", "5.0")
+                  .put("m2", "5.0")
+                  .put("dim1", "def")
+                  .put("dim2", ImmutableList.of("abc"))
+                  .put("dim3", ImmutableList.of())
+                  .build(),
+      ImmutableMap.<String, Object>builder()
+                  .put("t", "2001-01-03")
+                  .put("m1", "6.0")
+                  .put("m2", "6.0")
+                  .put("dim1", "abc")
+                  .build()
+  );
+
+  public static final List<InputRow> RAW_ROWS1_X = ImmutableList.of(
+      createRow(
+          ImmutableMap.<String, Object>builder()
+                      .put("t", "2000-01-01")
+[272] assistant: [reasoning]
+foo data confirmed: 6 rows, m1/m2 = "1.0".."6.0" (as strings converted to metrics — m1 FLOAT? m2 DOUBLE? — need the FOO signature). Let me check the foo RowSignature. Actually from the CalciteTests: `WIKIPEDIA_FIRST_LAST`... Let me find the foo table signature — `FOO_TABLE` or `makeFoo`... In CalciteTests there's `public static final RowSignature FOO_TABLE`? Let me grep. Actually — the important thing for expectedResults: whether m1 comes back as Float or Double or Long. Existing tests show things like `new Object[] {1.0f, ...}`? Let me grep a simple foo query result with m1.
+[tool:bash] {"command": "grep -n \"1.0f\\|1.0d\" /app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java | head -5; grep -rn \"FOO signature\\|RowSignature.*foo\\|\\\"m1\\\", ColumnType\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/CalciteTests.java | head -8"}
+716:            new Object[]{1L, 1.0f, 0L, 1L},
+838:            new Object[]{1L, 1.0f, "", "", 2L, 2.0f, "1", 1L, 3.0f, "2", 2L, 4.0f, "21", "21"}
+1131:        ImmutableList.of(new Object[]{1L, 1.0f, 1.0, "", 2L, 2.0f, "1"})
+1158:            new Object[]{7L, 1.0, 1.0f}
+1189:            new Object[]{1.0f},
+[273] assistant: [tool:bash] {"command": "grep -rn \"\\\"m1\\\"\\|\\\"m2\\\"\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | grep -i \"signature\\|add\\|column\" | head -5; grep -rn \"FOO_ROW_SIGNATURE\\|RowSignature.*FOO\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/*.java | head -5"}
+(no output)
+[274] assistant: [tool:bash] {"command": "grep -rn \"add(\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | sed -n 1,25p"}
+168:              ImmutableList.<String>builder().add("dimHyperUnique")
+169:                           .add("dimMultivalEnumerated")
+170:                           .add("dimMultivalEnumerated2")
+171:                           .add("dimMultivalSequentialWithNulls")
+172:                           .add("dimSequential")
+173:                           .add("dimSequentialHalfNull")
+174:                           .add("dimUniform")
+175:                           .add("dimZipf")
+176:                           .add("metFloatNormal")
+177:                           .add("metFloatZipf")
+178:                           .add("metLongSequential")
+179:                           .add("metLongUniform")
+567:                  .add("dim1", ColumnType.STRING)
+568:                  .add("dim2", ColumnType.STRING)
+569:                  .add("dim3", ColumnType.STRING)
+570:                  .add("dim4", ColumnType.STRING)
+571:                  .add("dim5", ColumnType.STRING)
+572:                  .add("dbl1", ColumnType.DOUBLE)
+573:                  .add("dbl2", ColumnType.DOUBLE)
+574:                  .add("f1", ColumnType.FLOAT)
+575:                  .add("f2", ColumnType.FLOAT)
+576:                  .add("l1", ColumnType.LONG)
+577:                  .add("l2", ColumnType.LONG)
+826:    return walker.add(
+835:    ).add(
+[275] assistant: [reasoning]
+The `1.0f` results in existing tests show m1 comes back as Float (e.g., `new Object[]{1L, 1.0f, ...}`). So in foo, m1 is FLOAT and m2 is DOUBLE? From line 1131: `new Object[]{1L, 1.0f, 1.0, "", ...}` — m1 → 1.0f (float), m2... Actually from line 716 `new Object[]{1L, 1.0f, 0L, 1L}`. Hmm, mixed. Let me check the actual foo schema — CalciteTests probably creates foo via makeFoo... Search "makeFoo" or the walker.add for foo.
+[tool:bash] {"command": "grep -rn \"makeFoo\\|DATASOURCE1\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | head -5; grep -rn \"add(\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | sed -n 25,40p"}
+828:                   .dataSource(CalciteTests.DATASOURCE1)
+835:    ).add(
+844:    ).add(
+853:   ).add(
+859:    ).add(
+868:    ).add(
+872:    ).add(
+876:    ).add(
+885:    ).add(
+894:    ).add(
+903:    ).add(
+912:    ).add(
+916:    ).add(
+920:    ).add(
+929:    ).add(
+938:    ).add(
+947:    ).add(
+[276] assistant: [tool:bash] {"command": "sed -n 820,860p /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java"}
+)
+        )
+        .inputFormat(TestDataBuilder.DEFAULT_JSON_INPUT_FORMAT)
+        .inputTmpDir(new File(tmpDir, "9-input"))
+        .buildMMappedIndex();
+
+    return walker.add(
+        DataSegment.builder()
+                   .dataSource(CalciteTests.DATASOURCE1)
+                   .interval(index1.getDataInterval())
+                   .version("1")
+                   .shardSpec(new LinearShardSpec(0))
+                   .size(0)
+                   .build(),
+        index1
+    ).add(
+        DataSegment.builder()
+                   .dataSource(CalciteTests.DATASOURCE2)
+                   .interval(index2.getDataInterval())
+                   .version("1")
+                   .shardSpec(new LinearShardSpec(0))
+                   .size(0)
+                   .build(),
+        index2
+    ).add(
+       DataSegment.builder()
+                  .dataSource(CalciteTests.RESTRICTED_DATASOURCE)
+                  .interval(index1.getDataInterval())
+                  .version("1")
+                  .shardSpec(new LinearShardSpec(0))
+                  .size(0)
+                  .build(),
+       index1
+   ).add(
+        DataSegment.builder(SegmentId.of(CalciteTests.READ_ONLY_DATASOURCE, index1.getDataInterval(), "1", 0))
+                   .shardSpec(new LinearShardSpec(0))
+                   .size(0)
+                   .build(),
+        index1
+    ).add(
+        DataSegment.builder()
+[277] assistant: [reasoning]
+Rather than tracing the schema, use existing test results as reference. Let me search for a simple existing test on foo selecting m1 and m2 to see boxed types. From line 1131: `new Object[]{1L, 1.0f, 1.0, "", 2L, 2.0f, "1"}` — hmm. Let me check `testSelfJoin` or simpler: search for a window test with SUM(m2)... e.g. "testOver" — or check the CalciteTests FOO signature directly: `grep "m2" CalciteTests.java`:
+[tool:bash] {"command": "grep -rn \"FOO_TABLE\\|\\\"m1\\\", ColumnType\\|\\\"m2\\\", ColumnType\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/CalciteTests.java | head; grep -rn \"ROW_SIGNATURE\\|RowSignature\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/CalciteTests.java | sed -n 1,10p"}
+(no output)
+[278] assistant: [tool:bash] {"command": "grep -rn \"signature\\|Schemaless\\|foo.*Index\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | grep -in \"foo\\|m1\\|m2\" | head -5; grep -rn \"DEFAULT_AGGSPEC\\|\\\"m1\\\"\\|\\\"m2\\\"\" /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java | grep -v RAW_ROWS | head -10"}
+190:          new FloatSumAggregatorFactory("m1", "m1"),
+191:          new DoubleSumAggregatorFactory("m2", "m2"),
+209:          new LongSumAggregatorFactory("m1", "m1"),
+210:          new DoubleSumAggregatorFactory("m2", "m2"),
+241:                  .put("m1", "1.0")
+242:                  .put("m2", "1.0")
+249:                  .put("m1", "2.0")
+250:                  .put("m2", "2.0")
+257:                  .put("m1", "3.0")
+258:                  .put("m2", "3.0")
+[279] assistant: [tool:bash] {"command": "sed -n 183,215p /app/sql/src/test/java/org/apache/druid/sql/calcite/util/TestDataBuilder.java"}
+null
+  );
+
+
+  public static final IncrementalIndexSchema INDEX_SCHEMA = new IncrementalIndexSchema.Builder()
+      .withMetrics(
+          new CountAggregatorFactory("cnt"),
+          new FloatSumAggregatorFactory("m1", "m1"),
+          new DoubleSumAggregatorFactory("m2", "m2"),
+          new HyperUniquesAggregatorFactory("unique_dim1", "dim1")
+      )
+      .withRollup(false)
+      .build();
+
+  private static final IncrementalIndexSchema INDEX_SCHEMA_DIFFERENT_DIM3_M1_TYPES = new IncrementalIndexSchema.Builder()
+      .withDimensionsSpec(
+          new DimensionsSpec(
+              ImmutableList.of(
+                  new StringDimensionSchema("dim1"),
+                  new StringDimensionSchema("dim2"),
+                  new LongDimensionSchema("dim3")
+              )
+          )
+      )
+      .withMetrics(
+          new CountAggregatorFactory("cnt"),
+          new LongSumAggregatorFactory("m1", "m1"),
+          new DoubleSumAggregatorFactory("m2", "m2"),
+          new HyperUniquesAggregatorFactory("unique_dim1", "dim1")
+      )
+      .withRollup(false)
+      .build();
+[280] assistant: [reasoning]
+Confirmed: `m1` is FLOAT (FloatSum), `m2` is DOUBLE (DoubleSum), `cnt` LONG. So:
+- `SELECT m1` → Float values (1.0f, ...)
+- `SUM(m2)` → Double
+- `SUM(cnt)` → Long
+- `__time` → Long
+
+For ordering by m1 (float) — fine, numeric.
+
+Now — the RANGE frame on `ORDER BY m1` — Calcite type FLOAT → planner: `sig.getColumnType` → ColumnType.FLOAT → isNumeric ✓ → allowed ✓.
+
+Now write the SQL tests. Placement: right after `testUnSupportedRangeBoundsOnStringKey`. Test list:
+
+1. `testRangeFrameAsc` — `SELECT m1, SUM(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM foo` → expected (m1 asc):
+   (1.0f, 3.0D), (2.0f, 6.0D), (3.0f, 9.0D), (4.0f, 12.0D), (5.0f, 15.0D), (6.0f, 11.0D)
+
+2. `testRangeFrameDesc` — `ORDER BY m1 DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING` → output sorted m1 DESC:
+   (6.0f, 11.0D), (5.0f, 15.0D), (4.0f, 12.0D), (3.0f, 9.0D), (2.0f, 6.0D), (1.0f, 3.0D)
+
+3. `testRangeFrameUnboundedPrecedingCurrentRow` — `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` → cumsum: (1,1),(2,3),(3,6),(4,10),(5,15),(6,21).
+
+4. `testRangeFrameInterval` — `SELECT __time, SUM(cnt) OVER (ORDER BY __time RANGE BETWEEN INTERVAL '1' DAY PRECEDING AND INTERVAL '1' DAY FOLLOWING) FROM foo` → (946684800000,2),(946771200000,3),(946857600000,2),(978307200000,2),(978393600000,3),(978480000000,2).
+
+Hmm — wait: `ORDER BY __time` → ColumnType.LONG → isNumeric ✓.
+
+5. `testRangeFrameFirstValueLastValue`? — FIRST_VALUE(m2) OVER (ORDER BY m1 RANGE ...) — RewriteFirstValueLastValueRule — let me check what it does. Actually, let me skip FIRST/LAST SQL tests unless the rewrite is safe... Let me look at the rule quickly.
+
+Also need `msqIncompatible()`? The window tests use it (e.g. testWindowingWithOrderBy). Window functions aren't supported in MSQ — `msqIncompatible()` marks that. Actually `testWindowingWithOrderBy` has `msqIncompatible()`. And `assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS)` — which the unsupported tests use. For positive tests — use both conventions: `msqIncompatible(); assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);`.
+
+Hmm wait — what does testWindowingWithOrderBy use? Just `msqIncompatible()`. But the assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS) is for native-window support. BaseCalciteQueryTest line 543 — `assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS)` in a @Before? Let me check — earlier finding: "assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS) in BaseCalciteQueryTest line 543". So it's in the base class setup? Let me check.
+m1 is FLOAT, m2 DOUBLE, cnt LONG. Let me check the base test setup and the FIRST/LAST rewrite rule:
+[tool:bash] {"command": "sed -n 535,550p /app/sql/src/test/java/org/apache/druid/sql/calcite/BaseCalciteQueryTest.java; sed -n 30,90p /app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java"}
+try {
+      return queryFrameworkRule.get();
+    }
+    catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+  }
+
+  public void assumeFeatureAvailable(EngineFeature feature)
+  {
+    boolean featureAvailable = queryFramework().engine().featureAvailable(feature);
+    assumeTrue(featureAvailable, StringUtils.format("test disabled; feature [%s] is not available!", feature));
+  }
+
+  public void assertQueryIsUnplannable(final String sql, String expectedError)
+  {
+import org.apache.calcite.rex.RexShuttle;
+import org.apache.calcite.rex.RexWindow;
+import org.apache.calcite.rex.RexWindowBound;
+import org.apache.calcite.sql.SqlAggFunction;
+import org.apache.calcite.sql.SqlKind;
+import org.apache.calcite.sql.SqlOperator;
+import org.apache.calcite.sql.fun.SqlStdOperatorTable;
+
+import java.math.BigDecimal;
+import java.util.List;
+
+/**
+ * Rewrites exotic cases of FIRST_VALUE/LAST_VALUE to simpler plans.
+ *
+ * LAST_VALUE(x) OVER (ORDER BY Y)
+ * implicitly means:
+ * LAST_VALUE(x) OVER (ORDER BY Y RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+ * which is equiv to
+ * LAST_VALUE(x) OVER (ORDER BY Y ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+ * since it will take the last value from the window; the value of the window will be:
+ * X at the CURRENT ROW.
+ *
+ * This rule does this and a symmetric one for FIRST_VALUE.
+ */
+public class RewriteFirstValueLastValueRule extends RelOptRule implements SubstitutionRule
+{
+  public RewriteFirstValueLastValueRule()
+  {
+    super(operand(RelNode.class, any()));
+  }
+
+  @Override
+  public void onMatch(RelOptRuleCall call)
+  {
+    final RelNode oldNode = call.rel(0);
+    final RewriteShuttle shuttle = new RewriteShuttle(oldNode.getCluster().getRexBuilder());
+    final RelNode newNode = oldNode.accept(shuttle);
+
+    // noinspection ObjectEquality
+    if (newNode != oldNode) {
+      call.transformTo(newNode);
+      call.getPlanner().prune(oldNode);
+    }
+  }
+
+  private static class RewriteShuttle extends RexShuttle
+  {
+    private final RexBuilder rexBuilder;
+
+    public RewriteShuttle(RexBuilder rexBuilder)
+    {
+      this.rexBuilder = rexBuilder;
+    }
+
+    @Override
+    public RexNode visitOver(RexOver over)
+    {
+      SqlOperator operator = over.getOperator();
+      RexWindow window = over.getWindow();
+      RexWindowBound upperBound = window.getUpperBound();
+      RexWindowBound lowerBound = window.getLowerBound();
+[281] assistant: [reasoning]
+The RewriteFirstValueLastValueRule only rewrites when bounds are null (default frames). With explicit RANGE bounds it likely leaves them alone. So FIRST_VALUE/LAST_VALUE with explicit RANGE frames flow through to `WindowFirstProcessor`/`WindowLastProcessor` with my Range frame ✓. I can include such a test.
+
+Now let me write the SQL tests. I'll add them right after `testUnSupportedRangeBoundsOnStringKey`. Conventions: `msqIncompatible(); assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS); testBuilder().sql(...).expectedResults(...).run();`
+
+Wait — do positive window tests use `msqIncompatible()`? testWindowingWithOrderBy does. But ALSO — the `@DecoupledTestConfig(quidemReason = ...)` annotations — testWindowingWithScanAndSort has `@DecoupledTestConfig(quidemReason = QuidemTestCaseReason.SLIGHTLY_WORSE_PLAN)`. What's that for? It's about the quidem/decoupled testing infra. Do I need it? Let me look at what it means... Actually simpler: run the test and see if the infra complains. The annotation relates to `@NotYetSupported(Modes.DD_WINDOW)` too. Let me write the tests plainly and run them; if the framework demands annotations it'll fail with clear messages.
+
+Ordering of results: For window queries without outer ORDER BY, the output order is the window sort order. But is the expectedResults comparison order-sensitive? In testWindowingWithOrderBy the results are in ascending day order ✓ order-sensitive. For DESC test → descending.
+
+Hmm — one important question: does `SELECT m1, SUM(m2) OVER (ORDER BY m1 ...)` produce rows sorted by m1? The window operator sorts by its ORDER BY columns ✓. So yes.
+
+Now expected types: m1 → Float objects (1.0f etc.). In expectedResults ImmutableList.of(new Object[]{1.0f, 3.0D}, ...).
+
+Hmm — actually wait: `SUM(m2)` → DOUBLE → 3.0D ✓. And `SUM(cnt)` → LONG ✓.
+
+For the __time test: `SELECT __time, SUM(cnt) OVER (ORDER BY __time RANGE BETWEEN INTERVAL '1' DAY PRECEDING AND INTERVAL '1' DAY FOLLOWING) FROM foo` — expected __time values: 946684800000L etc. (Long). Sum values: 2L, 3L, 2L, 2L, 3L, 2L.
+
+Also — FIRST_VALUE test: `SELECT m1, FIRST_VALUE(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM foo` → first value of frame:
+- m1=1: frame values m2 ∈ {1,2} → first = 1.0D
+- m1=2: {1,2,3} → 1.0D
+- m1=3: {2,3,4} → 2.0D
+- m1=4: {3,4,5} → 3.0D
+- m1=5: {4,5,6} → 4.0D
+- m1=6: {5,6} → 5.0D
+LAST_VALUE:
+- m1=1: 2.0D; m1=2: 3.0D; m1=3: 4.0D; m1=4: 5.0D; m1=5: 6.0D; m1=6: 6.0D
+
+Hmm — but wait: FIRST_VALUE/LAST_VALUE with frame → the WindowFirstProcessor gets the frame from `agg.getGroup().getWindowFrame()` → Range ✓ → works via my WindowValueProcessorBase changes ✓.
+
+But hold on — does the WindowOperatorQueryBuilder path project m2 for FIRST_VALUE... it should.
+
+Hmm, also — FIRST_VALUE(m2) — m2 is DOUBLE → FIRST_VALUE returns 1.0D... but native returns what type? ObjectArrayColumn with the value type — the signature from Calcite says DOUBLE ✓.
+
+Also — one more consideration: my new Range branch in Windowing.getWindowFrame is only triggered when at least one bound is PRECEDING/FOLLOWING offset. For `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW` → both null → `groups(...)` path (existing behavior, GROUPS frame with unbounded semantics... wait — groups(null lower?...) — hmm: `WindowFrame.groups` with what bounds? The existing code: `getWindowFrame()` — let me re-read my modified implementation to make sure the UNBOUNDED/CURRENT ROW case still maps to groups ✓ (per the plan: "keeps the groups(...) path when no bound is a PRECEDING/FOLLOWING offset"). So test 3 (UNBOUNDED PRECEDING + CURRENT ROW) exercises the existing groups path — a fine regression test.
+
+Let me now write all these SQL tests. Also — should I add `@DecoupledTestConfig`? Looking at testWindowingWithOrderBy — plain @Test + msqIncompatible(). I'll follow that. But — new tests will also run under the "decoupled planning" test config? The @NotYetSupported(Modes.DD_WINDOW) annotations suggest some tests are excluded from a different engine mode. If my tests fail under some auto-generated config, I'll see it in the run.
+
+Also for the native window tests — is `assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS)` needed in addition? The unsupported tests do it. Positive window tests like testWindowingWithOrderBy DON'T. Since both run in the same test class with the default engine... but BaseCalciteQueryTest line 543 — hmm that was the method definition, not a @Before. testWindowingWithOrderBy works without it. But — maybe the default engine for CalciteQueryTest IS the native one... testWindowingWithOrderBy doesn't call assumeFeatureAvailable and asserts results → so window functions ARE available in the default test engine. OK — but calling it is harmless; I'll skip it for positive tests (follow testWindowingWithOrderBy convention) — wait, actually no: the negative tests call it because... whatever, harmless. I'll include it for safety? testUnSupportedRangeBounds includes it. For consistency with neighboring tests, I'll include `msqIncompatible()` and `assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS)` in each new test.
+
+Now, writing the tests. Insert after testUnSupportedRangeBoundsOnStringKey (which is right after testUnSupportedRangeBounds, before testUnSupportedWindowBoundExpressions).
+The rewrite rule only rewrites default frames, so explicit RANGE bounds flow to my processors. Now add the positive SQL tests after `testUnSupportedRangeBoundsOnStringKey`:
+[tool:edit] {"filePath": "/app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java", "newString": "  @Test\n  public void testUnSupportedRangeBoundsOnStringKey()\n  {\n    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);\n\n    // A single STRING ORDER BY key with offset-based RANGE bounds passes validation but is rejected\n    // during planning: the ordering key must be numeric or a timestamp.\n    QueryException e = assertThrows(QueryException.class, () -> testBuilder()\n        .sql(\"SELECT dim1,SUM(m2) OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo\")\n        .run());\n    Assert.assertEquals(\n        QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,\n        e.getErrorCode()\n    );\n  }\n\n  @Test\n  public void testRangeFrameAsc()\n  {\n    msqIncompatible();\n    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);\n    testBuilder()\n        .sql(\"SELECT m1, SUM(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM foo\")\n        .expectedResults(\n            ImmutableList.of(\n                new Object[]{1.0f, 3.0D},\n                new Object[]{2.0f, 6.0D},\n                new Object[]{3.0f, 9.0D},\n                new Object[]{4.0f, 12.0D},\n                new Object[]{5.0f, 15.0D},\n                new Object[]{6.0f, 11.0D}\n            )\n        )\n        .run();\n  }\n\n  @Test\n  public void testRangeFrameDesc()\n  {\n    msqIncompatible();\n    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);\n    testBuilder()\n        .sql(\n            \"SELECT m1, SUM(m2) OVER (ORDER BY m1 DESC RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM foo\"\n        )\n        .expectedResults(\n            ImmutableList.of(\n                new Object[]{6.0f, 11.0D},\n                new Object[]{5.0f, 15.0D},\n                new Object[]{4.0f, 12.0D},\n                new Object[]{3.0f, 9.0D},\n                new Object[]{2.0f, 6.0D},\n                new Object[]{1.0f, 3.0D}\n            )\n        )\n        .run();\n  }\n\n  @Test\n  public void testRangeFrameUnboundedPrecedingAndCurrentRow()\n  {\n    msqIncompatible();\n    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);\n    testBuilder()\n        .sql(\n            \"SELECT m1, SUM(m2) OVER (ORDER BY m1 RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM foo\"\n        )\n        .expectedResults(\n            ImmutableList.of(\n                new Object[]{1.0f, 1.0D},\n                new Object[]{2.0f, 3.0D},\n                new Object[]{3.0f, 6.0D},\n                new Object[]{4.0f, 10.0D},\n                new Object[]{5.0f, 15.0D},\n                new Object[]{6.0f, 21.0D}\n            )\n        )\n        .run();\n  }\n\n  @Test\n  public void testRangeFrameCurrentRowAndUnboundedFollowing()\n  {\n    msqIncompatible();\n    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);\n    testBuilder()\n        .sql(\n            \"SELECT m1, SUM(m2) OVER (ORDER BY m1 RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) FROM foo\"\n        )\n        .expectedResults(\n            ImmutableList.of(\n                new Object[]{1.0f, 21.0D},\n                new Object[]{2.0f, 20.0D},\n                new Object[]{3.0f, 18.0D},\n                new Object[]{4.0f, 15.0D},\n                new Object[]{5.0f, 11.0D},\n                new Object[]{6.0f, 6.0D}\n            )\n        )\n        .run();\n  }\n\n  @Test\n  public void testRangeFrameInterval()\n  {\n    msqIncompatible();\n    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);\n    // A day-time INTERVAL bound maps to its millisecond magnitude as a value offset on the\n    // (long valued) __time ordering key.\n    testBuilder()\n        .sql(\n            \"SELECT __time, SUM(cnt) OVER (\"\n            + \"ORDER BY __time RANGE BETWEEN INTERVAL '1' DAY PRECEDING AND INTERVAL '1' DAY FOLLOWING\"\n            + \") FROM foo\"\n        )\n        .expectedResults(\n            ImmutableList.of(\n                new Object[]{946684800000L, 2L},\n                new Object[]{946771200000L, 3L},\n                new Object[]{946857600000L, 2L},\n                new Object[]{978307200000L, 2L},\n                new Object[]{978393600000L, 3L},\n                new Object[]{978480000000L, 2L}\n            )\n        )\n        .run();\n  }\n\n  @Test\n  public void testRangeFrameFirstLastValue()\n  {\n    msqIncompatible();\n    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);\n    testBuilder()\n        .sql(\n            \"SELECT m1, \"\n            + \"FIRST_VALUE(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING), \"\n            + \"LAST_VALUE(m2) OVER (ORDER BY m1 RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING) \"\n            + \"FROM foo\"\n        )\n        .expectedResults(\n            ImmutableList.of(\n                new Object[]{1.0f, 1.0D, 2.0D},\n                new Object[]{2.0f, 1.0D, 3.0D},\n                new Object[]{3.0f, 2.0D, 4.0D},\n                new Object[]{4.0f, 3.0D, 5.0D},\n                new Object[]{5.0f, 4.0D, 6.0D},\n                new Object[]{6.0f, 5.0D, 6.0D}\n            )\n        )\n        .run();\n  }", "oldString": "  @Test\n  public void testUnSupportedRangeBoundsOnStringKey()\n  {\n    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);\n\n    // A single STRING ORDER BY key with offset-based RANGE bounds passes validation but is rejected\n    // during planning: the ordering key must be numeric or a timestamp.\n    QueryException e = assertThrows(QueryException.class, () -> testBuilder()\n        .sql(\"SELECT dim1,SUM(m2) OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo\")\n        .run());\n    Assert.assertEquals(\n        QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,\n        e.getErrorCode()\n    );\n  }"}
+Edit applied successfully.
+[patch] /app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java
+[282] assistant: [reasoning]
+Wait — I need to double-check my expected values for `testRangeFrameCurrentRowAndUnboundedFollowing`: `RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING` — CURRENT ROW → 0 offset upper... but this goes through the GROUPS path (both bounds null-offset: CURRENT ROW is not PRECEDING/FOLLOWING → groups frame). Groups frame with [current group, unbounded following]: frame = [current peer group start, numRows) → for m1 (all distinct values 1..6): each group is one row → sum from current row to end:
+- 1: 1+2+3+4+5+6 = 21 ✓
+- 2: 20 ✓
+- 3: 18 ✓
+- 4: 15 ✓
+- 5: 11 ✓
+- 6: 6 ✓
+
+Hmm — wait, but GROUPS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING — SQL RANGE CURRENT ROW semantics: frame = current peer group + following rows within range... For RANGE CURRENT ROW AND UNBOUNDED FOLLOWING: rows with value ≥ current (peers included) → for distinct values: current row to end → same ✓. GROUPS frame: [current group, last group] ✓ same result.
+
+And `testRangeFrameUnboundedPrecedingAndCurrentRow`: cumsum: 1, 3, 6, 10, 15, 21 ✓ (goes through groups path too — regression coverage).
+
+For `testRangeFrameAsc` — RANGE ± 1 → my new Range path:
+- m1=1: frame values in [0, 2] → m1 ∈ {1, 2} → m2 sum = 3 ✓
+- m1=2: [1,3] → {1,2,3} → 6 ✓
+- m1=3: [2,4] → {2,3,4} → 9 ✓
+- m1=4: [3,5] → {3,4,5} → 12 ✓
+- m1=5: [4,6] → {4,5,6} → 15 ✓
+- m1=6: [5,7] → {5,6} → 11 ✓
+
+Desc test: frames same (value intervals), output sorted m1 DESC → (6,11),(5,15),(4,12),(3,9),(2,6),(1,3) ✓.
+
+Interval test: __time = 2000-01-01 (946684800000), 2000-01-02 (946771200000), 2000-01-03 (946857600000), 2001-01-01 (978307200000), 2001-01-02 (978393600000), 2001-01-03 (978480000000).
+- 2000-01-01 ± 1 day: [1999-12-31, 2000-01-02] → rows 1,2 → cnt 2 ✓
+- 2000-01-02: [2000-01-01, 2000-01-03] → rows 1,2,3 → 3 ✓
+- 2000-01-03: [2000-01-02, 2000-01-04] → rows 2,3 → 2 ✓
+- 2001-01-01: [2000-12-31, 2001-01-02] → rows 4,5 → 2 ✓
+- 2001-01-02: rows 4,5,6 → 3 ✓
+- 2001-01-03: rows 5,6 → 2 ✓
+
+First/Last test:
+- FIRST_VALUE frame [v-1, v+1]:
+  - 1: [0,2] → first m2 of rows 0,1 → 1.0 ✓
+  - 2: [1,3] → rows 0,1,2 → 1.0 ✓
+  - 3: [2,4] → rows 1,2,3 → 2.0 ✓
+  - 4: [3,5] → rows 2,3,4 → 3.0 ✓
+  - 5: [4,6] → rows 3,4,5 → 4.0 ✓
+  - 6: [5,7] → rows 4,5 → 5.0 ✓
+- LAST_VALUE:
+  - 1: 2.0; 2: 3.0; 3: 4.0; 4: 5.0; 5: 6.0; 6: 6.0 ✓
+
+Now — type question: FIRST_VALUE(m2) → m2 is DOUBLE → results 1.0D etc ✓.
+
+Compile the sql tests. Check imports: EngineFeature, QueryException added ✓. What about `Assert` — used in CalciteQueryTest already? Let me verify import exists. And check that `msqIncompatible()` exists ✓ (used elsewhere). Let me compile.
+Verify expected-value sanity and compile the sql tests:
+[tool:bash] {"command": "grep -n \"import org.junit.Assert;\\|import org.junit.jupiter.api.Assertions\" /app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java | head -3; mvn test-compile -pl sql -Pskip-static-checks -Dweb.console.skip=true -T1C -q 2>&1 | grep -E \"ERROR|BUILD\" | head -20", "timeout": 900000, "workdir": "/app"}
+141:import org.junit.jupiter.api.Assertions;
+[ERROR] COMPILATION ERROR : 
+[ERROR] /app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java:[503,25] cannot find symbol
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.15.0:compile (default-compile) on project druid-sql: Compilation failure
+[ERROR] /app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java:[503,25] cannot find symbol
+[ERROR]   symbol:   method range(java.lang.Double,java.lang.Double,org.apache.druid.query.operator.ColumnWithDirection)
+[ERROR]   location: interface org.apache.druid.query.operator.window.WindowFrame
+[ERROR] 
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException
+[283] assistant: [reasoning]
+Two issues:
+1. `Assert` is not imported (only `org.junit.jupiter.api.Assertions`) — my test uses `Assert.assertEquals`. Need to switch to `Assertions.assertEquals` or import Assert.
+2. `WindowFrame.range` not found when compiling sql — the sql module compiled against an OLD installed processing jar? No wait — `mvn test-compile -pl sql` without `-am` uses the processing artifact from the local repo, which is stale (doesn't have my `range` factory). Earlier compiles used `-pl processing,sql -am`. So I need `-am` to build processing first.
+
+Let me fix the Assert usage and recompile with `-am`.
+Two fixes needed: use `Assertions.assertEquals` (no `Assert` import), and compile with `-am` so sql builds against the fresh processing classes:
+[tool:edit] {"filePath": "/app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java", "newString": "    QueryException e = assertThrows(QueryException.class, () -> testBuilder()\n        .sql(\"SELECT dim1,SUM(m2) OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo\")\n        .run());\n    Assertions.assertEquals(\n        QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,\n        e.getErrorCode()\n    );", "oldString": "    QueryException e = assertThrows(QueryException.class, () -> testBuilder()\n        .sql(\"SELECT dim1,SUM(m2) OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo\")\n        .run());\n    Assert.assertEquals(\n        QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,\n        e.getErrorCode()\n    );"}
+Edit applied successfully.
+[patch] /app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java
+[284] assistant: [tool:bash] {"command": "mvn test-compile -pl sql -am -Pskip-static-checks -Dweb.console.skip=true -T1C 2>&1 | grep -E \"ERROR|BUILD\" | head -20", "timeout": 900000, "workdir": "/app"}
+[INFO] BUILD SUCCESS
+[285] assistant: [reasoning]
+Compiles. But wait — I need to double check `Windowing.java:[503,25] cannot find symbol WindowFrame.range` — that was because processing wasn't rebuilt. Now with `-am` it built ✓. Note for future: ALWAYS use `-am` for sql compiles.
+
+Now run the new SQL tests. The test class is CalciteQueryTest — run specific methods:
+- testUnSupportedRangeBounds
+- testUnSupportedRangeBoundsOnStringKey
+- testRangeFrameAsc
+- testRangeFrameDesc
+- testRangeFrameUnboundedPrecedingAndCurrentRow
+- testRangeFrameCurrentRowAndUnboundedFollowing
+- testRangeFrameInterval
+- testRangeFrameFirstLastValue
+
+`-Dtest="org.apache.druid.sql.calcite.CalciteQueryTest#testRangeFrame*+testUnSupportedRangeBounds*"` — surefire supports `Class#method1+method2` syntax. Let me use that.
+Run the new SQL tests:
+[tool:bash] {"command": "mvn test -pl sql -am -Dtest=\"org.apache.druid.sql.calcite.CalciteQueryTest#testRangeFrame*+testUnSupportedRangeBounds*\" -Dsurefire.failIfNoSpecifiedTests=false -Pskip-static-checks -Dweb.console.skip=true -T1C 2>&1 | grep -E \"Tests run:|BUILD|FAILURE!|ERROR\\]\" | head -30", "timeout": 900000, "workdir": "/app"}
+[ERROR] Tests run: 8, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 8.709 s <<< FAILURE! -- in org.apache.druid.sql.calcite.CalciteQueryTest
+[ERROR] org.apache.druid.sql.calcite.CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey -- Time elapsed: 0.054 s <<< FAILURE!
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 2.111 s <<< FAILURE! -- in org.apache.druid.sql.calcite.CalciteQueryTest
+[ERROR] org.apache.druid.sql.calcite.CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey -- Time elapsed: 2.089 s <<< FAILURE!
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 1.882 s <<< FAILURE! -- in org.apache.druid.sql.calcite.CalciteQueryTest
+[ERROR] org.apache.druid.sql.calcite.CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey -- Time elapsed: 1.873 s <<< FAILURE!
+[ERROR] Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 1.721 s <<< FAILURE! -- in org.apache.druid.sql.calcite.CalciteQueryTest
+[ERROR] org.apache.druid.sql.calcite.CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey -- Time elapsed: 1.710 s <<< FAILURE!
+[ERROR] Failures: 
+[ERROR] org.apache.druid.sql.calcite.CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey
+[ERROR]   Run 1: CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey:15639 Unexpected exception type thrown, expected: <org.apache.druid.query.QueryException> but was: <org.apache.druid.error.DruidException>
+[ERROR]   Run 2: CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey:15639 Unexpected exception type thrown, expected: <org.apache.druid.query.QueryException> but was: <org.apache.druid.error.DruidException>
+[ERROR]   Run 3: CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey:15639 Unexpected exception type thrown, expected: <org.apache.druid.query.QueryException> but was: <org.apache.druid.error.DruidException>
+[ERROR]   Run 4: CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey:15639 Unexpected exception type thrown, expected: <org.apache.druid.query.QueryException> but was: <org.apache.druid.error.DruidException>
+[ERROR] Tests run: 8, Failures: 1, Errors: 0, Skipped: 0
+[INFO] BUILD FAILURE
+[ERROR] Failed to execute goal org.apache.maven.plugins:maven-surefire-plugin:3.5.6:test (default-test) on project druid-sql: There are test failures.
+[ERROR] 
+[ERROR] See /app/sql/target/surefire-reports for the individual test results.
+[ERROR] See dump files (if any exist) [date].dump, [date]-jvmRun[N].dump and [date].dumpstream.
+[ERROR] -> [Help 1]
+[ERROR] 
+[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.
+[ERROR] Re-run Maven using the -X switch to enable full debug logging.
+[ERROR] 
+[ERROR] For more information about the errors and possible solutions, please read the following articles:
+[ERROR] [Help 1] http://cwiki.apache.org/confluence/display/MAVEN/MojoFailureException
+[ERROR] 
+[ERROR] After correcting the problems, you can resume the build with the command
+[ERROR]   mvn <args> -rf :druid-sql
+[286] assistant: [reasoning]
+7/8 tests pass! All the positive RANGE frame SQL tests PASS (testRangeFrameAsc, Desc, UnboundedPrecedingAndCurrentRow, CurrentRowAndUnboundedFollowing, Interval, FirstLastValue) and testUnSupportedRangeBounds (multi-key) PASSES.
+
+The only failure: `testUnSupportedRangeBoundsOnStringKey` — expected QueryException but got `DruidException`. So the QueryException thrown from `Windowing.buildRangeFrame()` gets WRAPPED into a DruidException somewhere in the planning pipeline. Hmm — interesting. Where? Probably in the planner: `PlannerContext.transform()` catches RuntimeException and wraps... or the DruidQueryRel/Windowing bind → the exception gets caught and rethrown as DruidException somewhere.
+
+Let me see the actual DruidException message in the surefire report to know what it says.
+7 of 8 pass — all positive RANGE tests work. The string-key rejection surfaces as `DruidException`, not `QueryException`. Let me see its message:
+[tool:bash] {"command": "grep -B3 -A 25 \"testUnSupportedRangeBoundsOnStringKey\" /app/sql/target/surefire-reports/org.apache.druid.sql.calcite.CalciteQueryTest.txt | head -40"}
+Test set: org.apache.druid.sql.calcite.CalciteQueryTest
+-------------------------------------------------------------------------------
+Tests run: 1, Failures: 1, Errors: 0, Skipped: 0, Time elapsed: 1.721 s <<< FAILURE! -- in org.apache.druid.sql.calcite.CalciteQueryTest
+org.apache.druid.sql.calcite.CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey -- Time elapsed: 1.710 s <<< FAILURE!
+org.opentest4j.AssertionFailedError: Unexpected exception type thrown, expected: <org.apache.druid.query.QueryException> but was: <org.apache.druid.error.DruidException>
+	at org.junit.jupiter.api.AssertionFailureBuilder.build(AssertionFailureBuilder.java:151)
+	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:67)
+	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:35)
+	at org.junit.jupiter.api.Assertions.assertThrows(Assertions.java:3128)
+	at org.apache.druid.sql.calcite.CalciteQueryTest.testUnSupportedRangeBoundsOnStringKey(CalciteQueryTest.java:15639)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:565)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+	at java.base/java.util.ArrayList.forEach(ArrayList.java:1604)
+Caused by: org.apache.druid.error.DruidException: Data type of ORDER BY prohibits use of RANGE clause (line [1], column [55])
+	at org.apache.druid.error.BaseFailure.makeException(BaseFailure.java:57)
+	at org.apache.druid.error.InvalidSqlInput.makeException(InvalidSqlInput.java:52)
+	at org.apache.druid.error.DruidException.fromFailure(DruidException.java:157)
+	at org.apache.druid.error.InvalidSqlInput.exception(InvalidSqlInput.java:37)
+	at org.apache.druid.sql.calcite.planner.DruidPlanner.parseValidationMessage(DruidPlanner.java:367)
+	at org.apache.druid.sql.calcite.planner.DruidPlanner.translateException(DruidPlanner.java:333)
+	at org.apache.druid.sql.calcite.planner.QueryHandler.validate(QueryHandler.java:121)
+	at org.apache.druid.sql.calcite.planner.QueryHandler$SelectHandler.validate(QueryHandler.java:717)
+	at org.apache.druid.sql.calcite.planner.DruidPlanner.validate(DruidPlanner.java:134)
+	at org.apache.druid.sql.AbstractStatement.validate(AbstractStatement.java:133)
+	at org.apache.druid.sql.DirectStatement.plan(DirectStatement.java:199)
+	at org.apache.druid.sql.DirectStatement.execute(DirectStatement.java:173)
+	at org.apache.druid.sql.calcite.QueryTestRunner$ExecuteQuery.lambda$runQuery$0(QueryTestRunner.java:310)
+	at org.apache.druid.sql.calcite.util.QueryLogHook.logQueriesFor(QueryLogHook.java:67)
+	at org.apache.druid.sql.calcite.QueryTestRunner$ExecuteQuery.runQuery(QueryTestRunner.java:308)
+	at org.apache.druid.sql.calcite.QueryTestRunner$ExecuteQuery.run(QueryTestRunner.java:288)
+	at org.apache.druid.sql.calcite.QueryTestRunner.run(QueryTestRunner.java:763)
+	at org.apache.druid.sql.calcite.QueryTestBuilder.run(QueryTestBuilder.java:302)
+	at org.apache.druid.sql.calcite.CalciteQueryTest.lambda$testUnSupportedRangeBoundsOnStringKey$0(CalciteQueryTest.java:15641)
+	at org.junit.jupiter.api.AssertThrows.assertThrows(AssertThrows.java:53)
+	... 6 more
+Caused by: org.apache.calcite.tools.ValidationException: org.apache.calcite.runtime.CalciteContextException: At line 1, column 55: Data type of ORDER BY prohibits use of RANGE clause
+	at org.apache.druid.sql.calcite.planner.CalcitePlanner.validate(CalcitePlanner.java:265)
+	at org.apache.druid.sql.calcite.planner.QueryHandler.validate(QueryHandler.java:118)
+	... 19 more
+Caused by: org.apache.calcite.runtime.CalciteContextException: At line 1, column 55: Data type of ORDER BY prohibits use of RANGE clause

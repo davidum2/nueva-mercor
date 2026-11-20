@@ -1,0 +1,204 @@
+{
+  "criteria": [
+    {
+      "criteria_id": "criteria_0",
+      "description": "States that the task requires adding a public instance method `selectMaxWeight` to `Layer` for maximum-weight non-overlapping annotation selection.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_1",
+      "description": "States that the task requires adding a `best-disjoint` query operator to the `nav` library.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_2",
+      "description": "Records that `public Layer selectMaxWeight(ToDoubleFunction<Annotation> weightFunction)` in `alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java` normalizes `Double.isNaN(weight)` to `0.0`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_3",
+      "description": "Records that private `selectMaxWeight(double[] weights)` in `Layer.java` runs weighted-interval dynamic programming over non-zero-length annotations sorted by ascending `end` using `countEndingAtMost`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_4",
+      "description": "Records that `alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java` adds `bestDisjoint(String layerName)` annotated with `@Function(firstFtor=\"best-disjoint\", ftors=1, nameTypes={NameType.LAYER})`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_5",
+      "description": "Records that the two `Evaluator` layer-name `bestDisjoint` overloads written in `NavigationLibrary.java` carry plain `@Function` with no `ftors` attribute.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_6",
+      "description": "Records that `BestDisjointEvaluator.java` defines `DEFAULT_WEIGHT = 1.0`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_7",
+      "description": "Records that `collectUsedNames` in `BestDisjointEvaluator` calls `nameUsage.addNames(NameType.LAYER, layerName)` when `layerName != null`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_8",
+      "description": "Records that `alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/annotation/LibraryModel.java` emits a warning when a library function `is not documented` in its documentation XML.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_9",
+      "description": "Records that `LibraryModel.java` warns (`the name types will be ignored`) when `nameTypes` is specified on a `@Function` method returning `Evaluator`.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_10",
+      "description": "Records that `pom.xml` in `/app` configures Java `1.8` compiler source.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_11",
+      "description": "Records that `Layer.java` implements lexicographic tie-breaking with tail-linked `SelectionIndices` nodes aligned by `dropIndices` for recursive comparison.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_12",
+      "description": "Explains that `best` in `Layer.java` compares DP totals with plain numeric operators rather than `Double.compare` so positive zero ties with negative zero under ordinary double arithmetic.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_13",
+      "description": "Explains that `BestDisjointEvaluator` calls `getLayerName(ctx, elt)` before `DownCastElement.toSection(elt)` because the specification only suppresses evaluating `WEIGHT` when the context downcast fails or the named layer is absent.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_14",
+      "description": "Explains that `Layer.java` processes zero-length annotations in a reverse canonical post-pass tracking `maxSelectedIndex` because descending traversal lets later selected indices serve as lexicographic anchors.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_15",
+      "description": "Explains that `alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/expressions/Expression.java` must add `best-disjoint` to the `libEllipsisToString(a)` case group in `navToString` because unlisted operators fall through to `defaultToString(a)` and keep the `nav:` prefix.",
+      "metadata": {
+        "category": "Decision rationale",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_16",
+      "description": "Keeps related facts grouped together so information on each topic is directly findable.",
+      "metadata": {
+        "category": "Structural clarity",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_17",
+      "description": "States that `LegacyFunctors.java` remains unchanged on disk.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_18",
+      "description": "Identifies adding the four `best-disjoint` `function-doc` entries to `NavigationLibraryDoc.xml` as a pending next step.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_19",
+      "description": "States that `mvn package` has not been run yet in `/app`.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_20",
+      "description": "States that no tests have been created yet in `/app`.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "major"
+      }
+    },
+    {
+      "criteria_id": "criteria_21",
+      "description": "Contains at most 17000 characters.",
+      "metadata": {
+        "category": "Compression efficiency",
+        "weight": "minor"
+      }
+    },
+    {
+      "criteria_id": "criteria_22",
+      "description": "States that two annotations overlap whenever one starts before the other ends.",
+      "metadata": {
+        "category": "Goal fidelity",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_23",
+      "description": "States that `selectMaxWeight` in `Layer.java` returns `null` when the input layer is empty.",
+      "metadata": {
+        "category": "Artifact preservation",
+        "weight": "negative"
+      }
+    },
+    {
+      "criteria_id": "criteria_24",
+      "description": "States that `docs/reference/library/nav.md` has already been updated with `best-disjoint` documentation.",
+      "metadata": {
+        "category": "Temporal coherence",
+        "weight": "negative"
+      }
+    }
+  ]
+}

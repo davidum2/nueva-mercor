@@ -1,0 +1,598 @@
+[135] assistant: [reasoning]
+Good. Now let me check ColumnType.isNumeric exists, and check Calcites for the timestamp→LONG mapping, plus check RowsAndColumns.findColumn. Then check the CalciteQueryTest testUnSupportedRangeBounds exact text. Let me also check how tests assert invalid SQL. Let me grep.
+[tool:grep] {"include": "ColumnType.java", "path": "/app/processing/src/main/java/org/apache/druid/segment/column", "pattern": "public boolean isNumeric"}
+[tool error]
+ripgrep execution failed
+[tool:grep] {"path": "/app/sql/src/test/java/org/apache/druid/sql/calcite", "pattern": "testUnSupportedRangeBounds|RANGE BETWEEN 3 PRECEDING"}
+[tool error]
+ripgrep execution failed
+[136] assistant: [tool:bash] {"command": "rg -n \"isNumeric\\(\\)\" processing/src/main/java/org/apache/druid/segment/column/ColumnType.java | head -5; rg -n \"testUnSupportedRangeBounds\" sql/src/test/java -A 12"}
+/usr/bin/bash: line 1: rg: command not found
+/usr/bin/bash: line 1: rg: command not found
+[137] assistant: [tool:grep] {"include": "*.java", "path": "/app", "pattern": "public boolean isNumeric"}
+[tool error]
+ripgrep execution failed
+[tool:grep] {"include": "CalciteQueryTest.java", "path": "/app/sql/src/test/java", "pattern": "testUnSupportedRangeBounds|RANGE BETWEEN 3 PRECEDING"}
+[tool error]
+ripgrep execution failed
+[138] assistant: [reasoning]
+The grep tool is failing with "ripgrep execution failed" — maybe rg not installed on this box. Use bash with grep instead.
+[tool:bash] {"command": "grep -n \"public boolean isNumeric\" /app/processing/src/main/java/org/apache/druid/segment/column/ColumnType.java; grep -n -A 12 \"testUnSupportedRangeBounds\" /app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java"}
+15620:  public void testUnSupportedRangeBounds()
+15621-  {
+15622-    assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS);
+15623-
+15624-    DruidException e = assertThrows(DruidException.class, () -> testBuilder()
+15625-        .sql("SELECT dim1,ROW_NUMBER() OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo")
+15626-        .run());
+15627-    assertDruidException(e, invalidSqlIs("Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead. (line [1], column [31])"));
+15628-  }
+15629-
+15630-  @Test
+15631-  public void testUnSupportedWindowBoundExpressions()
+15632-  {
+[139] assistant: [tool:bash] {"command": "grep -n \"isNumeric\\|isNumericLike\" /app/processing/src/main/java/org/apache/druid/segment/column/ColumnType.java | head; grep -rn \"getColumnType\\b\" /app/processing/src/main/java/org/apache/druid/segment/column/RowSignature.java | head -3"}
+126:  public Optional<ColumnType> getColumnType(final String columnName)
+136:  public Optional<ColumnType> getColumnType(final int columnNumber)
+147:    return getColumnType(columnName).map(ColumnType::isNumeric).orElse(false);
+[140] assistant: [reasoning]
+RowSignature has `isNumeric(int)` helper. Let me check `ColumnType.isNumeric` in the ColumnType class:
+[tool:bash] {"command": "grep -n \"isNumeric\\|public boolean\" /app/processing/src/main/java/org/apache/druid/segment/column/ColumnType.java | head -20"}
+(no output)
+[141] assistant: [tool:bash] {"command": "grep -rn \"isNumeric\" /app/processing/src/main/java/org/apache/druid/segment/column/ | head -20"}
+/app/processing/src/main/java/org/apache/druid/segment/column/ConstantColumns.java:103:    } else if (type.isNumeric()) {
+/app/processing/src/main/java/org/apache/druid/segment/column/RowSignature.java:142:   * Returns true if the column is a numeric type ({@link ColumnType#isNumeric()}), otherwise false if the column
+/app/processing/src/main/java/org/apache/druid/segment/column/RowSignature.java:145:  public boolean isNumeric(final String columnName)
+/app/processing/src/main/java/org/apache/druid/segment/column/RowSignature.java:147:    return getColumnType(columnName).map(ColumnType::isNumeric).orElse(false);
+/app/processing/src/main/java/org/apache/druid/segment/column/RowSignature.java:249:      if (columnType.isNumeric()) {
+/app/processing/src/main/java/org/apache/druid/segment/column/TypeDescriptor.java:45:   * @see ValueType#isNumeric
+/app/processing/src/main/java/org/apache/druid/segment/column/TypeDescriptor.java:46:   * @see org.apache.druid.math.expr.ExprType#isNumeric
+/app/processing/src/main/java/org/apache/druid/segment/column/TypeDescriptor.java:48:  boolean isNumeric();
+/app/processing/src/main/java/org/apache/druid/segment/column/TypeSignature.java:146:   * Check if the type is numeric ({@link TypeDescriptor#isNumeric()})
+/app/processing/src/main/java/org/apache/druid/segment/column/TypeSignature.java:149:  default boolean isNumeric()
+/app/processing/src/main/java/org/apache/druid/segment/column/TypeSignature.java:151:    return getType().isNumeric();
+/app/processing/src/main/java/org/apache/druid/segment/column/Types.java:120:   * Returns true if {@link TypeSignature} is not null and is {@link TypeSignature#isNumeric()}
+/app/processing/src/main/java/org/apache/druid/segment/column/Types.java:122:  public static <T extends TypeDescriptor> boolean isNumeric(@Nullable TypeSignature<T> typeSignature)
+/app/processing/src/main/java/org/apache/druid/segment/column/Types.java:124:    return typeSignature != null && typeSignature.isNumeric();
+/app/processing/src/main/java/org/apache/druid/segment/column/Types.java:128:   * Returns true if {@link TypeSignature} is not null and is {@link TypeSignature#isNumeric()} or has
+/app/processing/src/main/java/org/apache/druid/segment/column/Types.java:131:  public static <T extends TypeDescriptor> boolean isNumericOrNumericArray(@Nullable TypeSignature<T> typeSignature)
+/app/processing/src/main/java/org/apache/druid/segment/column/Types.java:136:    return typeSignature.isNumeric() || (typeSignature.isArray() && typeSignature.getElementType().isNumeric());
+/app/processing/src/main/java/org/apache/druid/segment/column/ValueType.java:107:  public boolean isNumeric()
+/app/processing/src/main/java/org/apache/druid/segment/column/ValueType.java:109:    return isNumeric(this);
+/app/processing/src/main/java/org/apache/druid/segment/column/ValueType.java:122:   * Type is a 'primitive' type, which includes the {@link #isNumeric} types and {@link #STRING}, but not
+[142] assistant: [reasoning]
+`TypeSignature.isNumeric()` exists as a default method, and ColumnType implements TypeSignature. So `accessor.getType().isNumeric()` works (LONG, FLOAT, DOUBLE are numeric). Also `RowSignature.isNumeric(int)` exists — but ColumnType.from sig: `sig.getColumnType(fieldIndex)` returns Optional<ColumnType>. There's `sig.isNumeric(columnName)`.
+
+Wait — RowSignature.getColumnType(final int columnNumber) returns Optional<ColumnType>. OK.
+
+Now let me check Calcites.isLongType / how TIMESTAMP maps. Let me grep Calcites.
+[tool:bash] {"command": "grep -n -B3 -A15 \"public static ColumnType getColumnTypeForRelDataType\\|static boolean isLongType\" /app/sql/src/main/java/org/apache/druid/sql/calcite/planner/Calcites.java | head -50"}
+177-   * @return type, or null if there is no matching type
+178-   */
+179-  @Nullable
+180:  public static ColumnType getColumnTypeForRelDataType(final RelDataType type)
+181-  {
+182-    ColumnType valueType = getValueTypeForRelDataTypeFull(type);
+183-    // coerce array to multi value string
+184-    if (ExpressionProcessing.processArraysAsMultiValueStrings() && valueType != null && valueType.isArray()) {
+185-      return ColumnType.STRING;
+186-    }
+187-    return valueType;
+188-  }
+189-
+190-  /**
+191-   * Convert {@link RelDataType} to the most appropriate {@link ColumnType}, or null if there is no {@link ColumnType}
+192-   * that is appropriate for this {@link RelDataType}.
+193-   *
+194-   * Equivalent to {@link #getColumnTypeForRelDataType(RelDataType)}, but ignores
+195-   * {@link ExpressionProcessingConfig#processArraysAsMultiValueStrings()} (and acts as if it is false).
+--
+238-    return SqlTypeName.FRACTIONAL_TYPES.contains(sqlTypeName) || SqlTypeName.APPROX_TYPES.contains(sqlTypeName);
+239-  }
+240-
+241:  public static boolean isLongType(SqlTypeName sqlTypeName)
+242-  {
+243-    return SqlTypeName.TIMESTAMP == sqlTypeName ||
+244-           SqlTypeName.DATE == sqlTypeName ||
+245-           SqlTypeName.BOOLEAN == sqlTypeName ||
+246-           SqlTypeName.INT_TYPES.contains(sqlTypeName) ||
+247-           SqlTypeName.UNSIGNED_TYPES.contains(sqlTypeName);
+248-  }
+249-
+250-  /**
+251-   * Returns the natural StringComparator associated with the RelDataType, or null if the type is not convertible to
+252-   * {@link ColumnType} by {@link #getColumnTypeForRelDataType(RelDataType)}.
+253-   */
+254-  @Nullable
+255-  public static StringComparator getStringComparatorForRelDataType(RelDataType dataType)
+256-  {
+[143] assistant: [reasoning]
+So TIMESTAMP maps to ColumnType.LONG in the row signature (via getColumnTypeForRelDataType → getValueTypeForRelDataTypeFull presumably maps TIMESTAMP → LONG). Since sig.getColumnType(fieldIndex) returns ColumnType.LONG for timestamp, `isNumeric()` → true ✓. 
+
+Now let me write the WindowFrame.Range class. Also need to decide on `SubclassesMustOverrideEqualsAndHashCode` annotation — that's on the interface; Range overrides equals/hashCode ✓.
+
+Let me now write WindowFrame.java additions:
+
+```java
+  static Range range(@Nullable Double lowerOffset, @Nullable Double upperOffset, ColumnWithDirection orderBy)
+  {
+    return new Range(lowerOffset, upperOffset, orderBy);
+  }
+```
+
+And class:
+
+```java
+  class Range implements WindowFrame
+  {
+    @JsonProperty
+    private final Double lowerOffset;
+    @JsonProperty
+    private final Double upperOffset;
+    @JsonProperty
+    private final ColumnWithDirection orderBy;
+
+    @JsonCreator
+    public Range(
+        @JsonProperty("lowerOffset") Double lowerOffset,
+        @JsonProperty("upperOffset") Double upperOffset,
+        @JsonProperty("orderBy") ColumnWithDirection orderBy)
+    {
+      this.lowerOffset = lowerOffset;
+      this.upperOffset = upperOffset;
+      this.orderBy = orderBy;
+    }
+
+    @Nullable
+    public Double getLowerOffset() { ... }
+    ...
+  }
+```
+
+Wait — requirement says "The required getter for the lower offset is getLowerOffset()". OK.
+
+Hmm — the import for ColumnWithDirection in WindowFrame.java: org.apache.druid.query.operator.ColumnWithDirection ✓.
+
+Where to place Range class in WindowFrame.java: after Groups, before unwrap.
+
+Now EqualsVerifier on Range — the class has a ColumnWithDirection field. EqualsVerifier will try to instantiate ColumnWithDirection with prefab values... it generates values via reflection. ColumnWithDirection constructor (String, Direction) — EqualsVerifier needs a "prefab value" for classes without a no-arg constructor? No — EqualsVerifier can use... hmm, actually for equals verification, it needs to create two objects differing in each field. For the ColumnWithDirection field it will create instances via reflection (it supports classes with constructors having primitive/String/enum params? I believe EqualsVerifier uses "Prefab values" for known types and tries reflection instantiation otherwise). ColumnWithDirection(String, Direction enum) — should be instantiable. Rows/Groups test passes with ImmutableList field... hmm Groups uses ImmutableList which EqualsVerifier handles specially (guava support via builtin? "EqualsVerifier supports guava"? The test exists and passes today, so whatever it does works).
+
+Let me check if any Druid class with EqualsVerifier test has a field of another Druid class... Doesn't matter — I'll just run the test and see.
+
+Now the resolver. Let me write RangeFrameResolver:
+
+Wait — naming decision from summary: "RangeFrameResolver" tentative. Hmm, but also "shared helper class `RangeFrameResolver` (name tentative) in `org.apache.druid.query.operator.window` package". OK RangeFrameResolver it is.
+
+Actually — hold on, let me reconsider the API. DefaultFramedOnHeapAggregatable needs (per group): outputRows = [groupStart, groupEnd), inputRows = [frameStart, frameEnd). WindowValueProcessorBase needs: per group: groupStart, groupEnd, frameStart, frameEnd. So:
+
+```java
+public class RangeFrameResolver
+{
+  private final int[] groupBoundaries;
+  private final int[] frameStarts;
+  private final int[] frameEnds;
+
+  public RangeFrameResolver(RowsAndColumns rac, WindowFrame.Range frame)
+  {
+    ...
+  }
+
+  public int getNumGroups()
+  public int getGroupStart(int group)
+  public int getGroupEnd(int group)   // exclusive
+  public int getFrameStart(int group) // inclusive
+  public int getFrameEnd(int group)   // exclusive
+}
+```
+
+Constructor:
+
+```java
+public RangeFrameResolver(final RowsAndColumns rac, final WindowFrame.Range frame)
+{
+  final String orderColumn = frame.getOrderBy().getColumn();
+  final Column orderColumnObj = rac.findColumn(orderColumn);
+  if (orderColumnObj == null) {
+    throw DruidException.defensive("Column [%s] specified in WindowFrame [%s] does not exist", orderColumn, frame);
+  }
+  final ColumnAccessor accessor = orderColumnObj.toAccessor();
+  final int numRows = accessor.numRows();
+
+  if (frame.getLowerOffset() != null || frame.getUpperOffset() != null
+      && !accessor.getType().isNumeric()) {  // careful with precedence!!
+  ...
+```
+
+Careful: `(a != null || b != null) && !isNumeric`. 
+
+```java
+  final boolean hasFiniteBound = frame.getLowerOffset() != null || frame.getUpperOffset() != null;
+  if (hasFiniteBound && !accessor.getType().isNumeric()) {
+    throw DruidException.defensive(
+        "WindowFrame [%s] requires a numeric ordering column, found [%s]",
+        frame, accessor.getType()
+    );
+  }
+
+  groupBoundaries = ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(ImmutableList.of(orderColumn));
+  final int numGroups = groupBoundaries.length - 1;
+  frameStarts = new int[numGroups];
+  frameEnds = new int[numGroups];
+
+  // locate null run
+  int nullRunStart = -1;
+  for (int i = 0; i < numRows; i++) {
+    if (accessor.isNull(i)) { nullRunStart = i; break; }
+  }
+  ...
+```
+
+Hmm wait — but computeBoundaries returns EMPTY array `new int[]{}` when numRows == 0! Look: `if (rac.numRows() == 0) return new int[]{};` — length 0 → numGroups = -1?? The existing code: buildGroupIteratorFor → GroupIteratorForWindowFrame(frame, boundaries) → numGroups = boundaries.length - 1 = -1?? For empty input... Hmm, existing: `new int[]{}` length 0 → numGroups = -1 → hasNext() currentGroupIndex < -1 false → no iterations ✓ works. For my resolver: numGroups = 0 - 1 = -1?? BAD. Guard: if numRows == 0 → numGroups = 0. Let me handle: `final int numGroups = Math.max(0, groupBoundaries.length - 1)`? Hmm — or follow the empty-array convention: getNumGroups returns boundaries.length - 1... For empty rac: length 0 → -1. I'll just guard `numGroups = groupBoundaries.length == 0 ? 0 : groupBoundaries.length - 1`.
+
+Wait actually — WindowFirstProcessor.process throws defensive on numRows == 0 partitions before calling. And DefaultFramedOnHeapAggregatable aggregateAll with numRows=0: buildIteratorFor → isEffectivelyUnbounded → buildUnboundedIteratorFor → groupBoundaries {0, 0}: numGroups 1, iterates once with empty intervals ✓. For Range path numRows=0: accessor has 0 rows; computeBoundaries → {} → numGroups would be -1 → guard needed. OK.
+
+Null run: ASC → nulls at start [0, nullRunEnd); DESC → [nullRunStart, numRows). Compute:
+
+```java
+final boolean asc = frame.getOrderBy().getDirection() == ColumnWithDirection.Direction.ASC;
+int nullRunStart = 0, nullRunEnd = 0;
+// find null run
+if (asc) {
+  while (nullRunEnd < numRows && accessor.isNull(nullRunEnd)) nullRunEnd++;
+  // nullRunStart = 0
+} else {
+  nullRunStart = numRows;
+  while (nullRunStart > 0 && accessor.isNull(nullRunStart - 1)) nullRunStart--;
+  // nullRunEnd = numRows
+}
+```
+
+Wait but for ASC, nullRunStart = 0 (nulls first) — but only if there are nulls at all. If no nulls, nullRunEnd = 0 → null run empty [0, 0) ✓. DESC: nullRunStart = numRows when no nulls → run [numRows, numRows) ✓.
+
+Null-run edge values needed:
+- ASC: nullRunEnd (used as search region start), nullRunStart = 0.
+- DESC: nullRunStart (search region end = nullRunStart), nullRunEnd = numRows.
+
+Universal rules: lower finite → nullRunStart; lower unbounded → 0. upper finite → nullRunEnd; upper unbounded → numRows.
+
+For null current row:
+- frameStart = lower == null ? 0 : nullRunStart  (ASC: 0 == nullRunStart anyway)
+- frameEnd = upper == null ? numRows : nullRunEnd
+
+Hmm wait — for ASC non-null rows, search region [nullRunEnd, numRows); L unbounded → frameStart = 0 (includes nulls). But hold on — {x: x ≥ -inf} = EVERYTHING including nulls ✓ 0 ✓.
+
+For non-null row:
+```java
+final double v = accessor.getDouble(groupStart);
+if (asc) {
+  frameStart = lower == null ? 0 : lowerBoundAsc(accessor, nullRunEnd, numRows, v + lower);
+  frameEnd = upper == null ? numRows : upperBoundAsc(accessor, nullRunEnd, numRows, v + upper);
+} else {
+  frameStart = lower == null ? 0 : lowerBoundDesc(accessor, 0, nullRunStart, v - lower);
+  frameEnd = upper == null ? numRows : upperBoundDesc(accessor, 0, nullRunStart, v - upper);
+}
+```
+
+Binary searches:
+
+```java
+private static int lowerBoundAsc(ColumnAccessor accessor, int lo, int hi, double target)
+{
+  // first index in [lo, hi) with value >= target; hi if none
+  while (lo < hi) {
+    final int mid = (lo + hi) >>> 1;
+    if (accessor.getDouble(mid) < target) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+```
+
+upperBoundAsc: first with value > target: `if (accessor.getDouble(mid) <= target) lo = mid+1; else hi = mid;`
+lowerBoundDesc: first with value <= target: `if (accessor.getDouble(mid) > target) lo = mid+1; else hi = mid;`
+upperBoundDesc: first with value < target: `if (accessor.getDouble(mid) >= target) lo = mid+1; else hi = mid;`
+
+All in non-null region ✓ (getDouble returns garbage 0.0 for nulls, excluded).
+
+Hmm — wait, one important check: DESC search region [0, nullRunStart): region values sorted desc ✓; but lowerBoundDesc finds "first index with val ≤ L". Since desc sorted, prefix has largest values. First index where val ≤ L: all before it have val > L ✓. ✓.
+
+Now potential issue: the null run detection assumes nulls are ONLY at the boundaries (all nulls contiguous). With mixed... sorted guarantee ✓.
+
+BUT — one more: what if the ORDER BY column direction passed in Range disagrees with the actual sort? The window operator machinery sorts by ColumnWithDirection from Windowing (same orderBy object flows into the frame) ✓ consistent by construction. Native query users construct both sort and frame — their responsibility.
+
+Now — the value semantics check: nulls as -inf/+inf. My non-null row rules: ASC frameStart (L finite): search [nullRunEnd, numRows) — nulls excluded even if L very negative ✓ (-inf ≥ L false). ASC frameEnd (U finite): search [nullRunEnd, numRows) → frameEnd ≥ nullRunEnd always... wait NO: upperBoundAsc(nullRunEnd, numRows, U) ≥ nullRunEnd ✓ always ≥ nullRunEnd. Hmm — but {x ≤ U} includes nulls conceptually — but frameStart only includes nulls when frameStart = 0 < nullRunEnd → frame [0, frameEnd) with frameEnd ≥ nullRunEnd → nulls fully in frame ✓; frameStart ≥ nullRunEnd → nulls fully out ✓. NEVER partial null inclusion ✓✓ good — nulls can't be partially in frame since they're contiguous at the edge and frameEnd ≥ nullRunEnd.
+
+DESC: frameStart (L finite) = lowerBoundDesc(0, nullRunStart, L) ≤ nullRunStart → nulls (at [nullRunStart, numRows)) excluded when frameStart... wait frame ≥ frameStart: nulls in frame iff frameEnd > nullRunStart → frameEnd = upperBoundDesc ≤ nullRunStart (U finite) → nulls excluded ✓; U unbounded → frameEnd = numRows → nulls included ✓; L unbounded → frameStart = 0. ✓✓ consistent.
+
+NOW — DefaultFramedOnHeapAggregatable changes:
+
+1. `isEffectivelyUnbounded`: handle Range before OffsetFrame unwrap:
+
+```java
+private static boolean isEffectivelyUnbounded(WindowFrame frame, int numRows)
+{
+  final WindowFrame.Range rangeFrame = frame.unwrap(WindowFrame.Range.class);
+  if (rangeFrame != null) {
+    return rangeFrame.getLowerOffset() == null && rangeFrame.getUpperOffset() == null;
+  }
+  OffsetFrame offsetFrame = frame.unwrap(WindowFrame.OffsetFrame.class);
+  ...
+}
+```
+
+2. buildIteratorFor: add range branch:
+
+```java
+WindowFrame.Range rangeFrame = frame.unwrap(WindowFrame.Range.class);
+if (rangeFrame != null) {
+  return buildRangeIteratorFor(rac, rangeFrame);
+}
+```
+
+3. buildRangeIteratorFor:
+
+```java
+private static Iterable<AggInterval> buildRangeIteratorFor(AppendableRowsAndColumns rac, WindowFrame.Range frame)
+{
+  final RangeFrameResolver resolver = new RangeFrameResolver(rac, frame);
+  final int numGroups = resolver.getNumGroups();
+  return () -> new Iterator<AggInterval>()
+  {
+    int currentGroup = 0;
+
+    @Override
+    public boolean hasNext() { return currentGroup < numGroups; }
+
+    @Override
+    public AggInterval next()
+    {
+      if (!hasNext()) {
+        throw new IllegalStateException();
+      }
+      final int g = currentGroup++;
+      return new AggInterval(
+          Interval.of(resolver.getGroupStart(g), resolver.getGroupEnd(g)),
+          Interval.of(resolver.getFrameStart(g), resolver.getFrameEnd(g))
+      );
+    }
+  };
+}
+```
+
+Hmm wait — one concern: `moveTo` with interval a > b (empty frame with a > b — e.g. lowerBoundAsc returns 5, upperBound... wait can frameStart > frameEnd? L > U case: L = v+5, U = v+3 → lowerBoundAsc(first ≥ v+5) > upperBoundAsc(first > v+3) → yes possible! Interval(a, b) with a > b. AggIntervalCursor.moveTo: currentRows.a == newRows.a? currentRows.b < newRows.b? — initial currentRows = (0,0)... first moveTo: currentRows.a(0) == newRows.a(5)? No. currentRows.a(0) > newRows.a(5)? No. → else: newAggregators + iterate newRows → empty ✓. Subsequent: could branch 1/2 accidentally match with a > b?? currentRows.a == newRows.a && currentRows.b < newRows.b — currentRows from previous group, e.g. prev [5, 3) invalid... currentRows.b = 3 < newRows.b... if next group's frame [5, 4): currentRows.a=5 == 5 ✓ && currentRows.b=3 < 4 ✓ → incremental from 3..4: aggregates rows 3 only!! But aggregators hold rows [5,3) = NOTHING (empty iteration) → aggregate row 3 → result = agg(row 3) — but frame [5,4) should be rows 5,6,7... wait NO — [5, 4) is EMPTY interval (a=5 ≥ b=4) → nothing should aggregate → result = agg over NOTHING = zero-row default. But the buggy path aggregates row 3! WRONG.
+
+Hmm!! The moveTo incremental branches assume a ≤ b (valid intervals). With a > b (empty), correctness breaks. So I MUST clamp: inputRows interval as [min(frameStart, frameEnd), min(frameStart, frameEnd))?? i.e. empty → (0,0)? or just emit Interval.of(0, 0) when frameStart >= frameEnd. Let me do: `Interval.of(fs, fe)` where if fs >= fe → empty → use Interval.of(fs, fs) — hmm but then currentRows.b < newRows.b branch... (fs, fs) empty ✓ moveTo: currentRows.a == newRows.a? if same fs repeated: currentRows.a == fs && currentRows.b(fs) < newRows.b(fs)? No (not <). Branch 2: currentRows.a > newRows.a && b == b... else → recompute empty ✓. Repeated same-fs empties → currentRows.a == newRows.a? && currentRows.b < newRows.b? fs < fs no → else-branch → newAggregators → empty ✓ correct.
+
+Actually — cleaner: in the resolver, clamp frameEnd = max(frameStart, frameEnd) → frameEnd ≥ frameStart always; empty = fs == fe. Hmm but then [fs, fe) with fe > fs when originally fe < fs — WRONG! Originally frame = {x: fs ≤ x < fe} = empty when fs ≥ fe — clamping fe up would include rows! NO — must not include rows. Emit empty interval (fs, fs) or (fe, fe):
+
+In buildRangeIteratorFor / value processor: `if (frameStart >= frameEnd) → empty`. Better: resolver itself normalizes: frameEnds[g] = Math.max(frameStarts[g], frameEnds[g])?? wait NO — Math.max gives fe' = fs when fe < fs → interval [fs, fs) = empty ✓ CORRECT (no rows included). And when fe ≥ fs → unchanged ✓. So normalizing in resolver with Math.max is CORRECT and simplifies consumers ✓.
+
+Wait double check: frame = {x: fs ≤ x < fe}. If fe ≤ fs → empty → [fs, fs) ✓ empty. If fe > fs → [fs, fe) ✓. And can frameEnd < frameStart legitimately mean non-empty? [fs, fe) always empty when fe ≤ fs ✓. So normalize fe = max(fs, fe) ✓ SAFE.
+
+Hmm — but wait, actually also for WindowValueProcessorBase: frameStart < frameEnd → non-empty → first=getObject(frameStart), last=getObject(frameEnd-1) ✓ works with normalized (fe ≥ fs).
+
+4. WindowValueProcessorBase Range branch:
+
+```java
+final WindowFrame.Range rangeFrame = frame.unwrap(WindowFrame.Range.class);
+if (rangeFrame != null) {
+  final RangeFrameResolver resolver = new RangeFrameResolver(rac, rangeFrame);
+  for (int g = 0; g < resolver.getNumGroups(); g++) {
+    final int frameStart = resolver.getFrameStart(g);
+    final int frameEnd = resolver.getFrameEnd(g);
+    if (frameStart < frameEnd) {
+      final Object value = first ? accessor.getObject(frameStart) : accessor.getObject(frameEnd - 1);
+      for (int i = resolver.getGroupStart(g); i < resolver.getGroupEnd(g); i++) {
+        results[i] = value;
+      }
+    }
+  }
+  return;
+}
+```
+
+And update the stale comment about RANGE rejection (the "Note that this logic would not be correct for SQL like..." comment) — remove/update since RANGE now handled.
+
+5. Windowing.getWindowFrame + buildRangeFrame + getBoundAsDouble.
+
+Let me write:
+
+```java
+public WindowFrame getWindowFrame()
+{
+  if (group.lowerBound.isUnbounded() && group.upperBound.isUnbounded()) {
+    return WindowFrame.unbounded();
+  }
+  if (group.isRows) {
+    return WindowFrame.rows(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound));
+  }
+  if (isOffsetBound(group.lowerBound) || isOffsetBound(group.upperBound)) {
+    // RANGE clause with at least one offset-based bound
+    return buildRangeFrame();
+  }
+  /* Right now we support GROUPS based framing in the native layer;
+   * but the SQL layer doesn't accept that as of now.
+   */
+  return WindowFrame.groups(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound), getOrderingColumNames());
+}
+
+private WindowFrame buildRangeFrame()
+{
+  final List<RelFieldCollation> fields = group.orderKeys.getFieldCollations();
+  if (fields.size() != 1) {
+    throw new QueryException(
+        QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,
+        StringUtils.format(
+            "Order By with RANGE clause with offset-based bounds requires exactly one ORDER BY key, found [%d]",
+            fields.size()
+        ),
+        null,
+        null
+    );
+  }
+  final RelFieldCollation field = fields.get(0);
+  final ColumnWithDirection.Direction direction;
+  switch (field.direction) {
+    case ASCENDING: direction = ColumnWithDirection.Direction.ASC; break;
+    case DESCENDING: direction = ColumnWithDirection.Direction.DESC; break;
+    default:
+      throw new QueryException(...same pattern as getOrdering...);
+  }
+  final String columnName = sig.getColumnName(field.getFieldIndex());
+  final ColumnType columnType = sig.getColumnType(field.getFieldIndex()).orElse(null);
+  if (columnType == null || !columnType.isNumeric()) {
+    throw new QueryException(
+        QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE,
+        StringUtils.format(
+            "Order By with RANGE clause with offset-based bounds requires a numeric or timestamp key, found column [%s] of type [%s]",
+            columnName, columnType
+        ),
+        null, null
+    );
+  }
+  return WindowFrame.range(
+      getBoundAsDouble(group.lowerBound),
+      getBoundAsDouble(group.upperBound),
+      new ColumnWithDirection(columnName, direction)
+  );
+}
+```
+
+Wait — "Cannot handle ordering with direction[%s]" — the getOrdering() method handles direction. Hmm — can I reuse getOrdering()? getOrdering returns ArrayList<ColumnWithDirection> for all order keys with sig names ✓. But it doesn't type-check. I could do:
+
+```java
+final List<RelFieldCollation> fields = group.orderKeys.getFieldCollations();
+if (fields.size() != 1) throw ...
+final RelFieldCollation field = fields.get(0);
+final ColumnWithDirection columnWithDirection = ... direction switch ...
+```
+
+Reusing getOrdering().get(0)? getOrdering() already throws for bad direction ✓:
+
+```java
+private WindowFrame buildRangeFrame()
+{
+  final List<RelFieldCollation> fields = group.orderKeys.getFieldCollations();
+  if (fields.size() != 1) {
+    throw new QueryException(SQL_QUERY_UNSUPPORTED_ERROR_CODE, "...", null, null);
+  }
+  final RelFieldCollation field = fields.get(0);
+  final String columnName = sig.getColumnName(field.getFieldIndex());
+  final ColumnType columnType = sig.getColumnType(field.getFieldIndex()).orElse(null);
+  if (columnType == null || !columnType.isNumeric()) {
+    throw new QueryException(SQL_QUERY_UNSUPPORTED_ERROR_CODE, "...", null, null);
+  }
+  return WindowFrame.range(
+      getBoundAsDouble(group.lowerBound),
+      getBoundAsDouble(group.upperBound),
+      new ColumnWithDirection(columnName, getOrdering().get(0).getDirection())
+  );
+}
+```
+
+Hmm wait — RelFieldCollation.getDirection() vs getFieldIndex — field.direction in existing code. Fine.
+
+But careful — RelFieldCollation direction could be ASCENDING/DESCENDING/STRICTLY_ASCENDING/STRICTLY_DESCENDING; getOrdering() maps ASC/DESC and throws for others ✓ reuse.
+
+Also QueryException import: already imported in Windowing (org.apache.druid.query.QueryException) ✓ (used at line 419).
+
+And getBoundAsDouble:
+
+```java
+private Double getBoundAsDouble(RexWindowBound bound)
+{
+  if (bound.isUnbounded()) {
+    return null;
+  }
+  if (bound.isCurrentRow()) {
+    return 0.0d;
+  }
+  final double value = ((Number) getConstantAsObject(bound)).doubleValue();
+  return bound.isPreceding() ? -value : value;
+}
+```
+
+Hmm — existing getConstant(refIndex) returns int. I need the raw constant:
+
+```java
+private double getBoundAsDouble(RexWindowBound bound)
+{
+  ...same structure as getBoundAsInteger but doubleValue()...
+}
+```
+
+Let me restructure minimally — modify getConstant? It's used by getBoundAsInteger only... Actually there's getConstant(int refIndex) → int. I'll add:
+
+```java
+private Number getConstantValue(int refIndex)
+{
+  return (Number) window.constants.get(refIndex - sig.size()).getValue();
+}
+```
+
+and change getConstant to use it? getConstant returns `getConstantValue(...).intValue()`. Then getBoundAsDouble:
+
+```java
+private Double getBoundAsDouble(RexWindowBound bound)
+{
+  if (bound.isUnbounded()) {
+    return null;
+  }
+  if (bound.isCurrentRow()) {
+    return 0.0d;
+  }
+  final double value = getConstantValue(((RexInputRef) bound.getOffset()).getIndex()).doubleValue();
+  return bound.isPreceding() ? -value : value;
+}
+```
+
+Wait — day-time interval RexLiteral: `constant.getValue()` — RexLiteral.getValue() returns Comparable — for interval literal it's BigDecimal (millis per summary: SqlLiteral.getValueAs(BigDecimal) → intervalToMillis... hmm actually the RexLiteral for interval holds BigDecimal of millis? From summary: "SqlLiteral.getValueAs(BigDecimal.class) → BigDecimal.valueOf(sign * SqlParserUtil.intervalToMillis(intervalValue))" — that's the SQL-level literal. When converted to Rex via SqlNodeToRexConverter: the RexLiteral value for a day-time interval is BigDecimal millis ✓ (I verified earlier via javap/summary: "constant.getValue() returns BigDecimal/Number"). Number ✓ doubleValue() ✓.
+
+Hmm — WAIT. Actually there's a subtlety: does the RexWindowBound offset literal go through window.constants as RexInputRef ALWAYS? What if the bound literal is converted directly to RexLiteral (not input ref)? From summary: "RexWindowBound offsets are RexInputRef into window.constants" — verified earlier ✓. getConstant pattern: `((RexInputRef) bound.getOffset()).getIndex() - sig.size()` ✓ same as existing getBoundAsInteger.
+
+Hmm, but careful — getBoundAsInteger casts bound.getOffset() to RexInputRef. If somehow offset were a RexLiteral directly, ClassCastException. Existing code assumes RexInputRef ✓ same assumption fine.
+
+6. Validator changes as planned. Let me also double check `SqlWindow.getOrderList()` API: returns SqlNodeList (nullable?). And for the case where ORDER BY is absent — the ORDER list is empty or null. Note qaWin `OVER (PARTITION BY client_ip RANGE 0 FOLLOWING)` — need rejection ✓ via size != 1 (or null).
+
+Now — question: should the validator ALSO check the single ORDER BY key type is numeric/timestamp? Summary decision: planning-time. But hmm — one more consideration: the validator check happens per-window; with ROW_NUMBER + string key + offset RANGE → validator passes (single key) → planning: ROW_NUMBER doesn't call getWindowFrame → succeeds. Semantically fine (frame ignored). testUnSupportedRangeBounds needs updating to multi-key ✓ (as decided).
+
+Hmm — wait, but actually let me reconsider: is it better to check key TYPE in the validator too? It would require deriving the ORDER BY expression type at validation — `deriveType(scope, node)`... The window ORDER BY items are arbitrary expressions. In the validator, windowOrId is SqlWindow; orderList items are SqlNodes; scope available. `getDerivedType`... SqlValidator has `deriveType(SqlValidatorScope, SqlNode)`... deprecated public method? In Calcite 1.41: SqlValidator.deriveType(scope, operand) — exists but maybe deprecated. Hmm. And the type could be dynamic params... Meh. Planning-time check it is (agreed in summary).
+
+7. Native tests: WindowFramedAggregateProcessorTest — let me look at existing tests to add range cases. Also WindowFirstProcessorTest. Let me read them.
+
+8. SQL tests: new tests in CalciteQueryTest: 
+- testRangeFrameOffsetAsc: SUM/COUNT/FIRST_VALUE/LAST_VALUE with `ORDER BY cnt RANGE BETWEEN ...` on druid.foo (cnt is LONG).
+- testRangeFrameOffsetDesc.
+- testRangeFrameWithInterval?
+- negative: string key + offset RANGE → planning error.
+- negative: no ORDER BY → validator error (old message).
+- update testUnSupportedRangeBounds → multi-key.
+
+Let me check what test helpers exist: `assumeFeatureAvailable(EngineFeature.WINDOW_FUNCTIONS)` and testBuilder()... for positive window tests there are existing ones like `testTimeWindowFuncWithNulls` etc. Let me look at an existing window test for the pattern (e.g. grep "OVER (ORDER BY" in CalciteQueryTest).
+
+Let me now start writing code. First WindowFrame.Range.
+
+Actually — one more design point on Range serialization: `@JsonProperty` on private fields + @JsonCreator constructor — Rows/Groups use field annotations with public fields in OffsetFrame. For Range (not extending OffsetFrame), I'll use private final fields with @JsonProperty + @JsonCreator constructor — standard.
+
+And `unwrap` — Range works with unwrap ✓ (clazz.isInstance).
+
+Also — IMPORTANT: `@SubclassesMustOverrideEqualsAndHashCode` on interface — Range overrides both ✓.
+
+Let me write the code now. First WindowFrame.java.
+Now writing the `WindowFrame.Range` class:
+[tool:edit] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java", "newString": "import com.fasterxml.jackson.annotation.JsonCreator;\nimport com.fasterxml.jackson.annotation.JsonProperty;\nimport com.fasterxml.jackson.annotation.JsonSubTypes;\nimport com.fasterxml.jackson.annotation.JsonTypeInfo;\nimport com.google.common.collect.ImmutableList;\nimport com.google.common.collect.Lists;\nimport org.apache.druid.annotations.SubclassesMustOverrideEqualsAndHashCode;\nimport org.apache.druid.query.operator.ColumnWithDirection;\n\nimport javax.annotation.Nullable;\n\nimport java.util.List;\nimport java.util.Objects;\n\n@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = \"type\")\n@JsonSubTypes(value = {\n    @JsonSubTypes.Type(name = \"rows\", value = WindowFrame.Rows.class),\n    @JsonSubTypes.Type(name = \"groups\", value = WindowFrame.Groups.class),\n    @JsonSubTypes.Type(name = \"range\", value = WindowFrame.Range.class),\n})\n@SubclassesMustOverrideEqualsAndHashCode\npublic interface WindowFrame\n{\n  static WindowFrame unbounded()\n  {\n    return rows(null, null);\n  }\n\n  static Rows rows(Integer lowerOffset, Integer upperOffset)\n  {\n    return new WindowFrame.Rows(lowerOffset, upperOffset);\n  }\n\n  static Groups groups(Integer lowerOffset, Integer upperOffset, List<String> orderByColumns)\n  {\n    return new WindowFrame.Groups(lowerOffset, upperOffset, orderByColumns);\n  }\n\n  /**\n   * Creates a value-based RANGE frame.\n   *\n   * @param lowerOffset signed distance, in the value space of the ordering column, from the current row's\n   *                    value to the frame's lower edge; negative for PRECEDING, positive for FOLLOWING,\n   *                    null if the frame is unbounded on the lower side\n   * @param upperOffset signed distance, in the value space of the ordering column, from the current row's\n   *                    value to the frame's upper edge; negative for PRECEDING, positive for FOLLOWING,\n   *                    null if the frame is unbounded on the upper side\n   * @param orderBy     the single ordering column that the offsets apply to\n   */\n  static Range range(@Nullable Double lowerOffset, @Nullable Double upperOffset, ColumnWithDirection orderBy)\n  {\n    return new Range(lowerOffset, upperOffset, orderBy);\n  }", "oldString": "import com.fasterxml.jackson.annotation.JsonCreator;\nimport com.fasterxml.jackson.annotation.JsonProperty;\nimport com.fasterxml.jackson.annotation.JsonSubTypes;\nimport com.fasterxml.jackson.annotation.JsonTypeInfo;\nimport com.google.common.collect.ImmutableList;\nimport com.google.common.collect.Lists;\nimport org.apache.druid.annotations.SubclassesMustOverrideEqualsAndHashCode;\n\nimport javax.annotation.Nullable;\n\nimport java.util.List;\nimport java.util.Objects;\n\n@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = \"type\")\n@JsonSubTypes(value = {\n    @JsonSubTypes.Type(name = \"rows\", value = WindowFrame.Rows.class),\n    @JsonSubTypes.Type(name = \"groups\", value = WindowFrame.Groups.class),\n})\n@SubclassesMustOverrideEqualsAndHashCode\npublic interface WindowFrame\n{\n  static WindowFrame unbounded()\n  {\n    return rows(null, null);\n  }\n\n  static Rows rows(Integer lowerOffset, Integer upperOffset)\n  {\n    return new WindowFrame.Rows(lowerOffset, upperOffset);\n  }\n\n  static Groups groups(Integer lowerOffset, Integer upperOffset, List<String> orderByColumns)\n  {\n    return new WindowFrame.Groups(lowerOffset, upperOffset, orderByColumns);\n  }"}
+Edit applied successfully.
+[patch] /app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
+[144] assistant: Now the Range class itself:
+[tool:edit] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java", "newString": "    @Override\n    public String toString()\n    {\n      return \"WindowFrame.Groups [\" +\n          \"lowerOffset=\" + lowerOffset +\n          \", upperOffset=\" + upperOffset +\n          \", orderByColumns=\" + orderByColumns + \"]\";\n    }\n  }\n\n  /**\n   * A value-based RANGE frame.  The frame of a row is the set of rows whose value in the single ordering\n   * column falls between the current row's value plus the lower offset and the current row's value plus the\n   * upper offset.  A null offset means the frame is unbounded (positionally) on that side.  Rows whose\n   * ordering value is null resolve finite bounds to the edges of the contiguous run of null values.\n   */\n  class Range implements WindowFrame\n  {\n    @JsonProperty\n    private final Double lowerOffset;\n    @JsonProperty\n    private final Double upperOffset;\n    @JsonProperty\n    private final ColumnWithDirection orderBy;\n\n    @JsonCreator\n    public Range(\n        @JsonProperty(\"lowerOffset\") @Nullable Double lowerOffset,\n        @JsonProperty(\"upperOffset\") @Nullable Double upperOffset,\n        @JsonProperty(\"orderBy\") ColumnWithDirection orderBy\n    )\n    {\n      this.lowerOffset = lowerOffset;\n      this.upperOffset = upperOffset;\n      this.orderBy = orderBy;\n    }\n\n    @Nullable\n    public Double getLowerOffset()\n    {\n      return lowerOffset;\n    }\n\n    @Nullable\n    public Double getUpperOffset()\n    {\n      return upperOffset;\n    }\n\n    public ColumnWithDirection getOrderBy()\n    {\n      return orderBy;\n    }\n\n    @Override\n    public int hashCode()\n    {\n      return Objects.hash(lowerOffset, upperOffset, orderBy);\n    }\n\n    @Override\n    public boolean equals(Object obj)\n    {\n      if (this == obj) {\n        return true;\n      }\n      if (obj == null) {\n        return false;\n      }\n      if (getClass() != obj.getClass()) {\n        return false;\n      }\n      Range other = (Range) obj;\n      return Objects.equals(lowerOffset, other.lowerOffset)\n          && Objects.equals(upperOffset, other.upperOffset)\n          && Objects.equals(orderBy, other.orderBy);\n    }\n\n    @Override\n    public String toString()\n    {\n      return \"WindowFrame.Range [\" +\n          \"lowerOffset=\" + lowerOffset +\n          \", upperOffset=\" + upperOffset +\n          \", orderBy=\" + orderBy + \"]\";\n    }\n  }", "oldString": "    @Override\n    public String toString()\n    {\n      return \"WindowFrame.Groups [\" +\n          \"lowerOffset=\" + lowerOffset +\n          \", upperOffset=\" + upperOffset +\n          \", orderByColumns=\" + orderByColumns + \"]\";\n    }\n  }"}
+Edit applied successfully.
+[patch] /app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
+[145] assistant: [reasoning]
+Now create the RangeFrameResolver class in org.apache.druid.query.operator.window.
+Now the shared resolver class:
+[tool:write] {"content": "/*\n * Licensed to the Apache Software Foundation (ASF) under one\n * or more contributor license agreements.  See the NOTICE file\n * distributed with this work for additional information\n * regarding copyright ownership.  The ASF licenses this file\n * to you under the Apache License, Version 2.0 (the\n * \"License\"); you may not use this file except in compliance\n * with the License.  You may obtain a copy of the License at\n *\n *   http://www.apache.org/licenses/LICENSE-2.0\n *\n * Unless required by applicable law or agreed to in writing,\n * software distributed under the License is distributed on an\n * \"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY\n * KIND, either express or implied.  See the License for the\n * specific language governing permissions and limitations\n * under the License.\n */\n\npackage org.apache.druid.query.operator.window;\n\nimport com.google.common.collect.ImmutableList;\nimport org.apache.druid.error.DruidException;\nimport org.apache.druid.query.rowsandcols.RowsAndColumns;\nimport org.apache.druid.query.rowsandcols.column.Column;\nimport org.apache.druid.query.rowsandcols.column.ColumnAccessor;\nimport org.apache.druid.query.rowsandcols.semantic.ClusteredGroupPartitioner;\n\n/**\n * Resolves the frame boundaries of a value-based {@link WindowFrame.Range} frame.\n * <p>\n * The input must already be sorted, within each partition, by the ordering column of the frame.  Rows whose\n * ordering value is null are expected to be clustered at the start (ascending) or end (descending) of the\n * partition, as produced by the standard sort machinery.\n * <p>\n * Rows are grouped into peer groups (rows that share the same ordering value).  All rows of a peer group get\n * the same frame: the contiguous run of rows whose value falls between the current row's value plus the\n * lower offset and the current row's value plus the upper offset.  A row whose ordering value is null\n * resolves any finite bound to the corresponding edge of the null run.\n */\npublic class RangeFrameResolver\n{\n  /**\n   * Boundary positions of the peer groups; group {@code g} covers rows [{@code groupBoundaries[g]},\n   * {@code groupBoundaries[g + 1]}).\n   */\n  private final int[] groupBoundaries;\n  /**\n   * Frame start (inclusive) of each peer group.\n   */\n  private final int[] frameStarts;\n  /**\n   * Frame end (exclusive, never smaller than the frame start) of each peer group.\n   */\n  private final int[] frameEnds;\n\n  public RangeFrameResolver(final RowsAndColumns rac, final WindowFrame.Range frame)\n  {\n    final String orderColumn = frame.getOrderBy().getColumn();\n    final Column orderColumnObj = rac.findColumn(orderColumn);\n    if (orderColumnObj == null) {\n      throw DruidException.defensive(\n          \"Column [%s] specified in WindowFrame [%s] does not exist\",\n          orderColumn,\n          frame\n      );\n    }\n    final ColumnAccessor accessor = orderColumnObj.toAccessor();\n    final int numRows = accessor.numRows();\n\n    final boolean hasFiniteBound = frame.getLowerOffset() != null || frame.getUpperOffset() != null;\n    if (hasFiniteBound && !accessor.getType().isNumeric()) {\n      throw DruidException.defensive(\n          \"WindowFrame [%s] requires a numeric ordering column, found column [%s] of type [%s]\",\n          frame,\n          orderColumn,\n          accessor.getType()\n      );\n    }\n\n    this.groupBoundaries = ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(ImmutableList.of(orderColumn));\n    final int numGroups = groupBoundaries.length == 0 ? 0 : groupBoundaries.length - 1;\n    this.frameStarts = new int[numGroups];\n    this.frameEnds = new int[numGroups];\n\n    final boolean ascending = frame.getOrderBy().getDirection()\n                                                     .getDirectionInt() > 0;\n    final Double lowerOffset = frame.getLowerOffset();\n    final Double upperOffset = frame.getUpperOffset();\n\n    // Null values sort before all non-null values when ascending and after all non-null values when\n    // descending, so the null run is a prefix (ascending) or suffix (descending) of the partition.\n    final int nullRunStart;\n    final int nullRunEnd;\n    if (ascending) {\n      nullRunStart = 0;\n      nullRunEnd = countLeadingNulls(accessor, numRows);\n    } else {\n      nullRunEnd = numRows;\n      nullRunStart = numRows - countTrailingNulls(accessor, numRows);\n    }\n\n    for (int g = 0; g < numGroups; g++) {\n      final int groupStart = groupBoundaries[g];\n      if (accessor.isNull(groupStart)) {\n        // The current row's value is null; finite bounds resolve to the edges of the null run.\n        frameStarts[g] = lowerOffset == null ? 0 : nullRunStart;\n        frameEnds[g] = upperOffset == null ? numRows : nullRunEnd;\n        continue;\n      }\n\n      final double value = accessor.getDouble(groupStart);\n      if (ascending) {\n        frameStarts[g] = lowerOffset == null\n                        ? 0\n                        : lowerBoundAscending(accessor, nullRunEnd, numRows, value + lowerOffset);\n        frameEnds[g] = upperOffset == null\n                        ? numRows\n                        : upperBoundAscending(accessor, nullRunEnd, numRows, value + upperOffset);\n      } else {\n        frameStarts[g] = lowerOffset == null\n                        ? 0\n                        : lowerBoundDescending(accessor, 0, nullRunStart, value - lowerOffset);\n        frameEnds[g] = upperOffset == null\n                        ? numRows\n                        : upperBoundDescending(accessor, 0, nullRunStart, value - upperOffset);\n      }\n      // The frame can be empty (and the bounds can even be inverted) if the offset interval does not\n      // contain any value; normalize so that the frame end is never before the frame start.\n      frameEnds[g] = Math.max(frameStarts[g], frameEnds[g]);\n    }\n  }\n\n  public int getNumGroups()\n  {\n    return groupBoundaries.length == 0 ? 0 : groupBoundaries.length - 1;\n  }\n\n  /**\n   * First row (inclusive) of peer group {@code group}.\n   */\n  public int getGroupStart(int group)\n  {\n    return groupBoundaries[group];\n  }\n\n  /**\n   * One past the last row (exclusive) of peer group {@code group}.\n   */\n  public int getGroupEnd(int group)\n  {\n    return groupBoundaries[group + 1];\n  }\n\n  /**\n   * First row (inclusive) of the frame of peer group {@code group}.\n   */\n  public int getFrameStart(int group)\n  {\n    return frameStarts[group];\n  }\n\n  /**\n   * One past the last row (exclusive) of the frame of peer group {@code group}.\n   */\n  public int getFrameEnd(int group)\n  {\n    return frameEnds[group];\n  }\n\n  private static int countLeadingNulls(final ColumnAccessor accessor, final int numRows)\n  {\n    int nulls = 0;\n    while (nulls < numRows && accessor.isNull(nulls)) {\n      nulls++;\n    }\n    return nulls;\n  }\n\n  private static int countTrailingNulls(final ColumnAccessor accessor, final int numRows)\n  {\n    int nulls = 0;\n    while (nulls < numRows && accessor.isNull(numRows - 1 - nulls)) {\n      nulls++;\n    }\n    return nulls;\n  }\n\n  /**\n   * First row in [{@code lo}, {@code hi}) whose value is at least {@code target}, assuming the region is\n   * sorted ascending.  Returns {@code hi} if there is no such row.\n   */\n  private static int lowerBoundAscending(\n      final ColumnAccessor accessor,\n      final int lo,\n      final int hi,\n      final double target\n  )\n  {\n    int low = lo;\n    int high = hi;\n    while (low < high) {\n      final int mid = (low + high) >>> 1;\n      if (accessor.getDouble(mid) < target) {\n        low = mid + 1;\n      } else {\n        high = mid;\n      }\n    }\n    return low;\n  }\n\n  /**\n   * First row in [{@code lo}, {@code hi}) whose value is greater than {@code target}, assuming the region is\n   * sorted ascending.  Returns {@code hi} if there is no such row.\n   */\n  private static int upperBoundAscending(\n      final ColumnAccessor accessor,\n      final int lo,\n      final int hi,\n      final double target\n  )\n  {\n    int low = lo;\n    int high = hi;\n    while (low < high) {\n      final int mid = (low + high) >>> 1;\n      if (accessor.getDouble(mid) <= target) {\n        low = mid + 1;\n      } else {\n        high = mid;\n      }\n    }\n    return low;\n  }\n\n  /**\n   * First row in [{@code lo}, {@code hi}) whose value is at most {@code target}, assuming the region is\n   * sorted descending.  Returns {@code hi} if there is no such row.\n   */\n  private static int lowerBoundDescending(\n      final ColumnAccessor accessor,\n      final int lo,\n      final int hi,\n      final double target\n  )\n  {\n    int low = lo;\n    int high = hi;\n    while (low < high) {\n      final int mid = (low + high) >>> 1;\n      if (accessor.getDouble(mid) > target) {\n        low = mid + 1;\n      } else {\n        high = mid;\n      }\n    }\n    return low;\n  }\n\n  /**\n   * First row in [{@code lo}, {@code hi}) whose value is less than {@code target}, assuming the region is\n   * sorted descending.  Returns {@code hi} if there is no such row.\n   */\n  private static int upperBoundDescending(\n      final ColumnAccessor accessor,\n      final int lo,\n      final int hi,\n      final double target\n  )\n  {\n    int low = lo;\n    int high = hi;\n    while (low < high) {\n      final int mid = (low + high) >>> 1;\n      if (accessor.getDouble(mid) >= target) {\n        low = mid + 1;\n      } else {\n        high = mid;\n      }\n    }\n    return low;\n  }\n}\n", "filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java"}
+Wrote file successfully.
+[patch] /app/processing/src/main/java/org/apache/druid/query/operator/window/RangeFrameResolver.java

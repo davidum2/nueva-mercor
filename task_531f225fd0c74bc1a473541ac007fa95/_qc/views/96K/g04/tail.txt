@@ -1,0 +1,1013 @@
+[46] assistant: [reasoning]
+Now reading:
+- StateMachineProcessHandler (full)
+- StateInstruction (full)
+- ServiceTaskHandlerInterceptor (full)
+- CompensationTriggerStateHandler (full)
+- CompensationHolder
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateMachineProcessHandler.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext;
+18: 
+19: import org.apache.seata.common.exception.FrameworkException;
+20: import org.apache.seata.common.util.CollectionUtils;
+21: import org.apache.seata.saga.engine.pcext.handlers.ChoiceStateHandler;
+22: import org.apache.seata.saga.engine.pcext.handlers.CompensationTriggerStateHandler;
+23: import org.apache.seata.saga.engine.pcext.handlers.FailEndStateHandler;
+24: import org.apache.seata.saga.engine.pcext.handlers.LoopStartStateHandler;
+25: import org.apache.seata.saga.engine.pcext.handlers.ScriptTaskStateHandler;
+26: import org.apache.seata.saga.engine.pcext.handlers.ServiceTaskStateHandler;
+27: import org.apache.seata.saga.engine.pcext.handlers.SubStateMachineHandler;
+28: import org.apache.seata.saga.engine.pcext.handlers.SucceedEndStateHandler;
+29: import org.apache.seata.saga.proctrl.ProcessContext;
+30: import org.apache.seata.saga.proctrl.handler.ProcessHandler;
+31: import org.apache.seata.saga.statelang.domain.State;
+32: import org.apache.seata.saga.statelang.domain.StateType;
+33: 
+34: import java.util.ArrayList;
+35: import java.util.List;
+36: import java.util.Map;
+37: import java.util.concurrent.ConcurrentHashMap;
+38: 
+39: /**
+40:  * StateMachine ProcessHandler
+41:  *
+42:  * @see ProcessHandler
+43:  */
+44: public class StateMachineProcessHandler implements ProcessHandler {
+45: 
+46:     private final Map<StateType, StateHandler> stateHandlers = new ConcurrentHashMap<>();
+47: 
+48:     @Override
+49:     public void process(ProcessContext context) throws FrameworkException {
+50:         StateInstruction instruction = context.getInstruction(StateInstruction.class);
+51:         State state = instruction.getState(context);
+52:         StateType stateType = state.getType();
+53:         StateHandler stateHandler = stateHandlers.get(stateType);
+54: 
+55:         List<StateHandlerInterceptor> interceptors = null;
+56:         if (stateHandler instanceof InterceptableStateHandler) {
+57:             interceptors = ((InterceptableStateHandler) stateHandler).getInterceptors();
+58:         }
+59: 
+60:         List<StateHandlerInterceptor> executedInterceptors = null;
+61:         Exception exception = null;
+62:         try {
+63:             if (CollectionUtils.isNotEmpty(interceptors)) {
+64:                 executedInterceptors = new ArrayList<>(interceptors.size());
+65:                 for (StateHandlerInterceptor interceptor : interceptors) {
+66:                     executedInterceptors.add(interceptor);
+67:                     interceptor.preProcess(context);
+68:                 }
+69:             }
+70: 
+71:             stateHandler.process(context);
+72: 
+73:         } catch (Exception e) {
+74:             exception = e;
+75:             throw e;
+76:         } finally {
+77:             if (CollectionUtils.isNotEmpty(executedInterceptors)) {
+78:                 for (int i = executedInterceptors.size() - 1; i >= 0; i--) {
+79:                     StateHandlerInterceptor interceptor = executedInterceptors.get(i);
+80:                     interceptor.postProcess(context, exception);
+81:                 }
+82:             }
+83:         }
+84:     }
+85: 
+86:     public void initDefaultHandlers() {
+87:         if (!stateHandlers.isEmpty()) {
+88:             return;
+89:         }
+90: 
+91:         stateHandlers.put(StateType.SERVICE_TASK, new ServiceTaskStateHandler());
+92:         stateHandlers.put(StateType.SCRIPT_TASK, new ScriptTaskStateHandler());
+93:         stateHandlers.put(StateType.SUB_MACHINE_COMPENSATION, new ServiceTaskStateHandler());
+94:         stateHandlers.put(StateType.SUB_STATE_MACHINE, new SubStateMachineHandler());
+95:         stateHandlers.put(StateType.CHOICE, new ChoiceStateHandler());
+96:         stateHandlers.put(StateType.SUCCEED, new SucceedEndStateHandler());
+97:         stateHandlers.put(StateType.FAIL, new FailEndStateHandler());
+98:         stateHandlers.put(StateType.COMPENSATION_TRIGGER, new CompensationTriggerStateHandler());
+99:         stateHandlers.put(StateType.LOOP_START, new LoopStartStateHandler());
+100:     }
+101: 
+102:     public Map<StateType, StateHandler> getStateHandlers() {
+103:         return stateHandlers;
+104:     }
+105: 
+106:     public void setStateHandlers(Map<StateType, StateHandler> stateHandlers) {
+107:         this.stateHandlers.putAll(stateHandlers);
+108:     }
+109: }
+
+(End of file - total 109 lines)
+</content>
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateInstruction.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/StateInstruction.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.util.StringUtils;
+21: import org.apache.seata.saga.engine.StateMachineConfig;
+22: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+23: import org.apache.seata.saga.proctrl.Instruction;
+24: import org.apache.seata.saga.proctrl.ProcessContext;
+25: import org.apache.seata.saga.statelang.domain.DomainConstants;
+26: import org.apache.seata.saga.statelang.domain.State;
+27: import org.apache.seata.saga.statelang.domain.StateMachine;
+28: 
+29: /**
+30:  * State Instruction
+31:  *
+32:  * @see Instruction
+33:  */
+34: public class StateInstruction implements Instruction {
+35: 
+36:     private String stateName;
+37:     private String stateMachineName;
+38:     private String tenantId;
+39:     private boolean end;
+40: 
+41:     /**
+42:      * Temporary state node for running temporary nodes in the state machine
+43:      */
+44:     private State temporaryState;
+45: 
+46:     public StateInstruction() {}
+47: 
+48:     public StateInstruction(String stateMachineName, String tenantId) {
+49:         this.stateMachineName = stateMachineName;
+50:         this.tenantId = tenantId;
+51:     }
+52: 
+53:     public State getState(ProcessContext context) {
+54: 
+55:         if (getTemporaryState() != null) {
+56: 
+57:             return temporaryState;
+58:         }
+59: 
+60:         String stateName = getStateName();
+61:         String stateMachineName = getStateMachineName();
+62:         String tenantId = getTenantId();
+63: 
+64:         if (StringUtils.isEmpty(stateMachineName)) {
+65:             throw new EngineExecutionException("StateMachineName is required", FrameworkErrorCode.ParameterRequired);
+66:         }
+67: 
+68:         StateMachineConfig stateMachineConfig =
+69:                 (StateMachineConfig) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
+70:         StateMachine stateMachine =
+71:                 stateMachineConfig.getStateMachineRepository().getStateMachine(stateMachineName, tenantId);
+72:         if (stateMachine == null) {
+73:             throw new EngineExecutionException(
+74:                     "StateMachine[" + stateMachineName + "] is not exist", FrameworkErrorCode.ObjectNotExists);
+75:         }
+76: 
+77:         if (StringUtils.isEmpty(stateName)) {
+78: 
+79:             stateName = stateMachine.getStartState();
+80:             setStateName(stateName);
+81:         }
+82: 
+83:         State state = stateMachine.getStates().get(stateName);
+84:         if (state == null) {
+85:             throw new EngineExecutionException(
+86:                     "State[" + stateName + "] is not exist", FrameworkErrorCode.ObjectNotExists);
+87:         }
+88: 
+89:         return state;
+90:     }
+91: 
+92:     /**
+93:      * Gets get state name.
+94:      *
+95:      * @return the get state name
+96:      */
+97:     public String getStateName() {
+98:         return stateName;
+99:     }
+100: 
+101:     /**
+102:      * Sets set state name.
+103:      *
+104:      * @param stateName the state name
+105:      */
+106:     public void setStateName(String stateName) {
+107:         this.stateName = stateName;
+108:     }
+109: 
+110:     /**
+111:      * Gets get state machine name.
+112:      *
+113:      * @return the get state machine name
+114:      */
+115:     public String getStateMachineName() {
+116:         return stateMachineName;
+117:     }
+118: 
+119:     /**
+120:      * Sets set state machine name.
+121:      *
+122:      * @param stateMachineName the state machine name
+123:      */
+124:     public void setStateMachineName(String stateMachineName) {
+125:         this.stateMachineName = stateMachineName;
+126:     }
+127: 
+128:     /**
+129:      * Is end boolean.
+130:      *
+131:      * @return the boolean
+132:      */
+133:     public boolean isEnd() {
+134:         return end;
+135:     }
+136: 
+137:     /**
+138:      * Sets set end.
+139:      *
+140:      * @param end the end
+141:      */
+142:     public void setEnd(boolean end) {
+143:         this.end = end;
+144:     }
+145: 
+146:     /**
+147:      * Gets get temporary state.
+148:      *
+149:      * @return the get temporary state
+150:      */
+151:     public State getTemporaryState() {
+152:         return temporaryState;
+153:     }
+154: 
+155:     /**
+156:      * Sets set temporary state.
+157:      *
+158:      * @param temporaryState the temporary state
+159:      */
+160:     public void setTemporaryState(State temporaryState) {
+161:         this.temporaryState = temporaryState;
+162:     }
+163: 
+164:     public String getTenantId() {
+165:         return tenantId;
+166:     }
+167: 
+168:     public void setTenantId(String tenantId) {
+169:         this.tenantId = tenantId;
+170:     }
+171: }
+
+(End of file - total 171 lines)
+</content>
+[47] assistant: [reasoning]
+Now let me read:
+- ServiceTaskHandlerInterceptor (full)
+- CompensationTriggerStateHandler (full)
+- CompensationHolder
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/interceptors/ServiceTaskHandlerInterceptor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.interceptors;
+18: 
+19: import org.apache.seata.common.exception.FrameworkErrorCode;
+20: import org.apache.seata.common.loader.LoadLevel;
+21: import org.apache.seata.common.lock.ResourceLock;
+22: import org.apache.seata.common.util.CollectionUtils;
+23: import org.apache.seata.common.util.StringUtils;
+24: import org.apache.seata.saga.engine.StateMachineConfig;
+25: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+26: import org.apache.seata.saga.engine.expression.ELExpression;
+27: import org.apache.seata.saga.engine.expression.Expression;
+28: import org.apache.seata.saga.engine.expression.ExpressionResolver;
+29: import org.apache.seata.saga.engine.expression.exception.ExceptionMatchExpression;
+30: import org.apache.seata.saga.engine.pcext.InterceptableStateHandler;
+31: import org.apache.seata.saga.engine.pcext.StateHandlerInterceptor;
+32: import org.apache.seata.saga.engine.pcext.StateInstruction;
+33: import org.apache.seata.saga.engine.pcext.handlers.ServiceTaskStateHandler;
+34: import org.apache.seata.saga.engine.pcext.handlers.SubStateMachineHandler;
+35: import org.apache.seata.saga.engine.pcext.utils.CompensationHolder;
+36: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+37: import org.apache.seata.saga.engine.pcext.utils.LoopTaskUtils;
+38: import org.apache.seata.saga.engine.pcext.utils.ParameterUtils;
+39: import org.apache.seata.saga.engine.utils.ExceptionUtils;
+40: import org.apache.seata.saga.proctrl.HierarchicalProcessContext;
+41: import org.apache.seata.saga.proctrl.ProcessContext;
+42: import org.apache.seata.saga.statelang.domain.DomainConstants;
+43: import org.apache.seata.saga.statelang.domain.ExecutionStatus;
+44: import org.apache.seata.saga.statelang.domain.StateInstance;
+45: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+46: import org.apache.seata.saga.statelang.domain.impl.ServiceTaskStateImpl;
+47: import org.apache.seata.saga.statelang.domain.impl.StateInstanceImpl;
+48: import org.slf4j.Logger;
+49: import org.slf4j.LoggerFactory;
+50: 
+51: import java.util.Date;
+52: import java.util.LinkedHashMap;
+53: import java.util.List;
+54: import java.util.Map;
+55: 
+56: /**
+57:  * StateInterceptor for ServiceTask, SubStateMachine, CompensateState
+58:  *
+59:  */
+60: @LoadLevel(name = "ServiceTask", order = 100)
+61: public class ServiceTaskHandlerInterceptor implements StateHandlerInterceptor {
+62: 
+63:     private static final Logger LOGGER = LoggerFactory.getLogger(ServiceTaskHandlerInterceptor.class);
+64: 
+65:     private final ResourceLock statusLock = new ResourceLock();
+66: 
+67:     @Override
+68:     public boolean match(Class<? extends InterceptableStateHandler> clazz) {
+69:         return clazz != null
+70:                 && (ServiceTaskStateHandler.class.isAssignableFrom(clazz)
+71:                         || SubStateMachineHandler.class.isAssignableFrom(clazz));
+72:     }
+73: 
+74:     @Override
+75:     public void preProcess(ProcessContext context) throws EngineExecutionException {
+76: 
+77:         StateInstruction instruction = context.getInstruction(StateInstruction.class);
+78: 
+79:         StateMachineInstance stateMachineInstance =
+80:                 (StateMachineInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INST);
+81:         StateMachineConfig stateMachineConfig =
+82:                 (StateMachineConfig) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
+83: 
+84:         if (EngineUtils.isTimeout(
+85:                 stateMachineInstance.getGmtUpdated(), stateMachineConfig.getTransOperationTimeout())) {
+86:             String message = "Saga Transaction [stateMachineInstanceId:" + stateMachineInstance.getId()
+87:                     + "] has timed out, stop execution now.";
+88: 
+89:             LOGGER.error(message);
+90: 
+91:             EngineExecutionException exception = ExceptionUtils.createEngineExecutionException(
+92:                     null,
+93:                     FrameworkErrorCode.StateMachineExecutionTimeout,
+94:                     message,
+95:                     stateMachineInstance,
+96:                     instruction.getStateName());
+97: 
+98:             EngineUtils.failStateMachine(context, exception);
+99: 
+100:             throw exception;
+101:         }
+102: 
+103:         StateInstanceImpl stateInstance = new StateInstanceImpl();
+104: 
+105:         Map<String, Object> contextVariables =
+106:                 (Map<String, Object>) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONTEXT);
+107:         ServiceTaskStateImpl state = (ServiceTaskStateImpl) instruction.getState(context);
+108:         List<Object> serviceInputParams = null;
+109:         if (contextVariables != null) {
+110:             try {
+111:                 serviceInputParams = ParameterUtils.createInputParams(
+112:                         stateMachineConfig.getExpressionResolver(), stateInstance, state, contextVariables);
+113:             } catch (Exception e) {
+114: 
+115:                 String message = "Task [" + state.getName()
+116:                         + "] input parameters assign failed, please check 'Input' expression:" + e.getMessage();
+117: 
+118:                 EngineExecutionException exception = ExceptionUtils.createEngineExecutionException(
+119:                         e, FrameworkErrorCode.VariablesAssignError, message, stateMachineInstance, state.getName());
+120: 
+121:                 EngineUtils.failStateMachine(context, exception);
+122: 
+123:                 throw exception;
+124:             }
+125:         }
+126: 
+127:         ((HierarchicalProcessContext) context)
+128:                 .setVariableLocally(DomainConstants.VAR_NAME_INPUT_PARAMS, serviceInputParams);
+129: 
+130:         stateInstance.setMachineInstanceId(stateMachineInstance.getId());
+131:         stateInstance.setStateMachineInstance(stateMachineInstance);
+132:         boolean isForCompensation = state.isForCompensation();
+133:         if (context.hasVariable(DomainConstants.VAR_NAME_IS_LOOP_STATE) && !isForCompensation) {
+134:             stateInstance.setName(LoopTaskUtils.generateLoopStateName(context, state.getName()));
+135:             StateInstance lastRetriedStateInstance =
+136:                     LoopTaskUtils.findOutLastRetriedStateInstance(stateMachineInstance, stateInstance.getName());
+137:             stateInstance.setStateIdRetriedFor(
+138:                     lastRetriedStateInstance == null ? null : lastRetriedStateInstance.getId());
+139:         } else {
+140:             stateInstance.setName(state.getName());
+141:             stateInstance.setStateIdRetriedFor(
+142:                     (String) context.getVariable(state.getName() + DomainConstants.VAR_NAME_RETRIED_STATE_INST_ID));
+143:         }
+144:         stateInstance.setGmtStarted(new Date());
+145:         stateInstance.setGmtUpdated(stateInstance.getGmtStarted());
+146:         stateInstance.setStatus(ExecutionStatus.RU);
+147: 
+148:         if (StringUtils.hasLength(stateInstance.getBusinessKey())) {
+149: 
+150:             ((Map<String, Object>) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONTEXT))
+151:                     .put(state.getName() + DomainConstants.VAR_NAME_BUSINESSKEY, stateInstance.getBusinessKey());
+152:         }
+153: 
+154:         stateInstance.setType(state.getType());
+155: 
+156:         stateInstance.setForUpdate(state.isForUpdate());
+157:         stateInstance.setServiceName(state.getServiceName());
+158:         stateInstance.setServiceMethod(state.getServiceMethod());
+159:         stateInstance.setServiceType(state.getServiceType());
+160: 
+161:         if (isForCompensation) {
+162:             CompensationHolder compensationHolder = CompensationHolder.getCurrent(context, true);
+163:             StateInstance stateToBeCompensated =
+164:                     compensationHolder.getStatesNeedCompensation().get(state.getName());
+165:             if (stateToBeCompensated != null) {
+166: 
+167:                 stateToBeCompensated.setCompensationState(stateInstance);
+168:                 stateInstance.setStateIdCompensatedFor(stateToBeCompensated.getId());
+169:             } else {
+170:                 LOGGER.error(
+171:                         "Compensation State[{}] has no state to compensate, maybe this is a bug.", state.getName());
+172:             }
+173:             CompensationHolder.getCurrent(context, true)
+174:                     .addForCompensationState(stateInstance.getName(), stateInstance);
+175:         }
+176: 
+177:         if (DomainConstants.OPERATION_NAME_FORWARD.equals(context.getVariable(DomainConstants.VAR_NAME_OPERATION_NAME))
+178:                 && StringUtils.isEmpty(stateInstance.getStateIdRetriedFor())
+179:                 && !state.isForCompensation()) {
+180: 
+181:             List<StateInstance> stateList = stateMachineInstance.getStateList();
+182:             if (CollectionUtils.isNotEmpty(stateList)) {
+183:                 for (int i = stateList.size() - 1; i >= 0; i--) {
+184:                     StateInstance executedState = stateList.get(i);
+185: 
+186:                     if (stateInstance.getName().equals(executedState.getName())) {
+187:                         stateInstance.setStateIdRetriedFor(executedState.getId());
+188:                         executedState.setIgnoreStatus(true);
+189:                         break;
+190:                     }
+191:                 }
+192:             }
+193:         }
+194: 
+195:         stateInstance.setInputParams(serviceInputParams);
+196: 
+197:         if (stateMachineInstance.getStateMachine().isPersist()
+198:                 && state.isPersist()
+199:                 && stateMachineConfig.getStateLogStore() != null) {
+200: 
+201:             try {
+202:                 stateMachineConfig.getStateLogStore().recordStateStarted(stateInstance, context);
+203:             } catch (Exception e) {
+204: 
+205:                 String message = "Record state[" + state.getName() + "] started failed, stateMachineInstance["
+206:                         + stateMachineInstance.getId() + "], Reason: " + e.getMessage();
+207: 
+208:                 EngineExecutionException exception = ExceptionUtils.createEngineExecutionException(
+209:                         e, FrameworkErrorCode.ExceptionCaught, message, stateMachineInstance, state.getName());
+210: 
+211:                 EngineUtils.failStateMachine(context, exception);
+212: 
+213:                 throw exception;
+214:             }
+215:         }
+216: 
+217:         if (StringUtils.isEmpty(stateInstance.getId())) {
+218:             stateInstance.setId(stateMachineConfig.getSeqGenerator().generate(DomainConstants.SEQ_ENTITY_STATE_INST));
+219:         }
+220:         stateMachineInstance.putStateInstance(stateInstance.getId(), stateInstance);
+221:         ((HierarchicalProcessContext) context).setVariableLocally(DomainConstants.VAR_NAME_STATE_INST, stateInstance);
+222:     }
+223: 
+224:     @Override
+225:     public void postProcess(ProcessContext context, Exception exp) throws EngineExecutionException {
+226: 
+227:         StateInstruction instruction = context.getInstruction(StateInstruction.class);
+228:         ServiceTaskStateImpl state = (ServiceTaskStateImpl) instruction.getState(context);
+229: 
+230:         StateMachineInstance stateMachineInstance =
+231:                 (StateMachineInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INST);
+232:         StateInstance stateInstance = (StateInstance) context.getVariable(DomainConstants.VAR_NAME_STATE_INST);
+233:         if (stateInstance == null || !stateMachineInstance.isRunning()) {
+234:             LOGGER.warn("StateMachineInstance[id:" + stateMachineInstance.getId() + "] is end. stop running");
+235:             return;
+236:         }
+237: 
+238:         StateMachineConfig stateMachineConfig =
+239:                 (StateMachineConfig) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
+240: 
+241:         if (exp == null) {
+242:             exp = (Exception) context.getVariable(DomainConstants.VAR_NAME_CURRENT_EXCEPTION);
+243:         }
+244:         stateInstance.setException(exp);
+245: 
+246:         decideExecutionStatus(context, stateInstance, state, exp);
+247: 
+248:         if (ExecutionStatus.SU.equals(stateInstance.getStatus()) && exp != null) {
+249: 
+250:             if (LOGGER.isInfoEnabled()) {
+251:                 LOGGER.info(
+252:                         "Although an exception occurs, the execution status map to SU, and the exception is ignored when "
+253:                                 + "the execution status decision.");
+254:             }
+255:             context.removeVariable(DomainConstants.VAR_NAME_CURRENT_EXCEPTION);
+256:         }
+257: 
+258:         Map<String, Object> contextVariables =
+259:                 (Map<String, Object>) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONTEXT);
+260:         Object serviceOutputParams = context.getVariable(DomainConstants.VAR_NAME_OUTPUT_PARAMS);
+261:         if (serviceOutputParams != null) {
+262:             try {
+263:                 Map<String, Object> outputVariablesToContext = ParameterUtils.createOutputParams(
+264:                         stateMachineConfig.getExpressionResolver(), state, serviceOutputParams);
+265:                 if (CollectionUtils.isNotEmpty(outputVariablesToContext)) {
+266:                     contextVariables.putAll(outputVariablesToContext);
+267:                 }
+268:             } catch (Exception e) {
+269:                 String message = "Task [" + state.getName()
+270:                         + "] output parameters assign failed, please check 'Output' expression:" + e.getMessage();
+271: 
+272:                 EngineExecutionException exception = ExceptionUtils.createEngineExecutionException(
+273:                         e, FrameworkErrorCode.VariablesAssignError, message, stateMachineInstance, stateInstance);
+274: 
+275:                 if (stateMachineInstance.getStateMachine().isPersist()
+276:                         && state.isPersist()
+277:                         && stateMachineConfig.getStateLogStore() != null) {
+278: 
+279:                     stateInstance.setGmtEnd(new Date());
+280:                     stateMachineConfig.getStateLogStore().recordStateFinished(stateInstance, context);
+281:                 }
+282: 
+283:                 EngineUtils.failStateMachine(context, exception);
+284: 
+285:                 throw exception;
+286:             }
+287:         }
+288: 
+289:         context.removeVariable(DomainConstants.VAR_NAME_OUTPUT_PARAMS);
+290:         context.removeVariable(DomainConstants.VAR_NAME_INPUT_PARAMS);
+291: 
+292:         stateInstance.setGmtEnd(new Date());
+293: 
+294:         if (stateMachineInstance.getStateMachine().isPersist()
+295:                 && state.isPersist()
+296:                 && stateMachineConfig.getStateLogStore() != null) {
+297:             stateMachineConfig.getStateLogStore().recordStateFinished(stateInstance, context);
+298:         }
+299: 
+300:         if (exp != null
+301:                 && context.getVariable(DomainConstants.VAR_NAME_IS_EXCEPTION_NOT_CATCH) != null
+302:                 && (Boolean) context.getVariable(DomainConstants.VAR_NAME_IS_EXCEPTION_NOT_CATCH)) {
+303:             // If there is an exception and there is no catch, need to exit the state machine to execute.
+304: 
+305:             context.removeVariable(DomainConstants.VAR_NAME_IS_EXCEPTION_NOT_CATCH);
+306:             EngineUtils.failStateMachine(context, exp);
+307:         }
+308:     }
+309: 
+310:     private void decideExecutionStatus(
+311:             ProcessContext context, StateInstance stateInstance, ServiceTaskStateImpl state, Exception exp) {
+312:         Map<String, String> statusMatchList = state.getStatus();
+313:         if (CollectionUtils.isNotEmpty(statusMatchList)) {
+314:             if (state.isAsync()) {
+315:                 if (LOGGER.isWarnEnabled()) {
+316:                     LOGGER.warn(
+317:                             "Service[{}.{}] is execute asynchronously, null return value collected, so user defined "
+318:                                     + "Status Matching skipped. stateName: {}, branchId: {}",
+319:                             state.getServiceName(),
+320:                             state.getServiceMethod(),
+321:                             state.getName(),
+322:                             stateInstance.getId());
+323:                 }
+324:             } else {
+325:                 StateMachineConfig stateMachineConfig =
+326:                         (StateMachineConfig) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
+327:                 ExpressionResolver resolver = stateMachineConfig.getExpressionResolver();
+328: 
+329:                 Map<Object, String> statusEvaluators = state.getStatusEvaluators();
+330:                 if (statusEvaluators == null) {
+331:                     try (ResourceLock ignored = statusLock.obtain()) {
+332:                         statusEvaluators = state.getStatusEvaluators();
+333:                         if (statusEvaluators == null) {
+334:                             statusEvaluators = new LinkedHashMap<>(statusMatchList.size());
+335:                             String expressionStr, statusVal;
+336:                             Expression evaluator;
+337:                             for (Map.Entry<String, String> entry : statusMatchList.entrySet()) {
+338:                                 expressionStr = entry.getKey();
+339:                                 statusVal = entry.getValue();
+340:                                 evaluator = resolver.getExpression(expressionStr);
+341:                                 if (evaluator != null) {
+342:                                     statusEvaluators.put(evaluator, statusVal);
+343:                                 }
+344:                             }
+345:                         }
+346:                         state.setStatusEvaluators(statusEvaluators);
+347:                     }
+348:                 }
+349: 
+350:                 for (Object evaluatorObj : statusEvaluators.keySet()) {
+351:                     Expression evaluator = (Expression) evaluatorObj;
+352:                     String statusVal = statusEvaluators.get(evaluator);
+353:                     Object elContext;
+354: 
+355:                     Class<? extends Expression> expressionClass = evaluator.getClass();
+356:                     if (ExceptionMatchExpression.class.isAssignableFrom(expressionClass)) {
+357:                         elContext = context.getVariable(DomainConstants.VAR_NAME_CURRENT_EXCEPTION);
+358:                     } else if (ELExpression.class.isAssignableFrom(expressionClass)) {
+359:                         elContext = context.getVariable(DomainConstants.VAR_NAME_OUTPUT_PARAMS);
+360:                     } else {
+361:                         elContext = context.getVariables();
+362:                     }
+363: 
+364:                     if (Boolean.TRUE.equals(evaluator.getValue(elContext))) {
+365:                         stateInstance.setStatus(ExecutionStatus.valueOf(statusVal));
+366:                         break;
+367:                     }
+368:                 }
+369: 
+370:                 if (exp == null
+371:                         && (stateInstance.getStatus() == null
+372:                                 || ExecutionStatus.RU.equals(stateInstance.getStatus()))) {
+373: 
+374:                     if (state.isForUpdate()) {
+375:                         stateInstance.setStatus(ExecutionStatus.UN);
+376:                     } else {
+377:                         stateInstance.setStatus(ExecutionStatus.FA);
+378:                     }
+379:                     stateInstance.setGmtEnd(new Date());
+380: 
+381:                     StateMachineInstance stateMachineInstance = stateInstance.getStateMachineInstance();
+382: 
+383:                     if (stateMachineInstance.getStateMachine().isPersist()
+384:                             && state.isPersist()
+385:                             && stateMachineConfig.getStateLogStore() != null) {
+386:                         stateMachineConfig.getStateLogStore().recordStateFinished(stateInstance, context);
+387:                     }
+388: 
+389:                     EngineExecutionException exception = new EngineExecutionException(
+390:                             "State [" + state.getName()
+391:                                     + "] execute finished, but cannot matching status, please check its status manually",
+392:                             FrameworkErrorCode.NoMatchedStatus);
+393:                     if (LOGGER.isDebugEnabled()) {
+394:                         LOGGER.debug(
+395:                                 "State[{}] execute finish with status[{}]", state.getName(), stateInstance.getStatus());
+396:                     }
+397:                     EngineUtils.failStateMachine(context, exception);
+398: 
+399:                     throw exception;
+400:                 }
+401:             }
+402:         }
+403: 
+404:         if (stateInstance.getStatus() == null || ExecutionStatus.RU.equals(stateInstance.getStatus())) {
+405: 
+406:             if (exp == null) {
+407:                 stateInstance.setStatus(ExecutionStatus.SU);
+408:             } else {
+409:                 if (state.isForUpdate() || state.isForCompensation()) {
+410: 
+411:                     stateInstance.setStatus(ExecutionStatus.UN);
+412:                     ExceptionUtils.NetExceptionType t = ExceptionUtils.getNetExceptionType(exp);
+413:                     if (t.equals(ExceptionUtils.NetExceptionType.CONNECT_EXCEPTION)) {
+414:                         stateInstance.setStatus(ExecutionStatus.FA);
+415:                     } else if (t.equals(ExceptionUtils.NetExceptionType.READ_TIMEOUT_EXCEPTION)) {
+416:                         stateInstance.setStatus(ExecutionStatus.UN);
+417:                     }
+418:                 } else {
+419:                     stateInstance.setStatus(ExecutionStatus.FA);
+420:                 }
+421:             }
+422:         }
+423: 
+424:         if (LOGGER.isInfoEnabled()) {
+425:             LOGGER.info("State[{}] finish with status[{}]", state.getName(), stateInstance.getStatus());
+426:         }
+427:     }
+428: }
+
+(End of file - total 428 lines)
+</content>
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/CompensationTriggerStateHandler.java"}
+<path>/workspace/repo/saga/seata-saga-engine/src/main/java/org/apache/seata/saga/engine/pcext/handlers/CompensationTriggerStateHandler.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.engine.pcext.handlers;
+18: 
+19: import org.apache.seata.common.util.CollectionUtils;
+20: import org.apache.seata.saga.engine.StateMachineConfig;
+21: import org.apache.seata.saga.engine.exception.EngineExecutionException;
+22: import org.apache.seata.saga.engine.pcext.StateHandler;
+23: import org.apache.seata.saga.engine.pcext.StateInstruction;
+24: import org.apache.seata.saga.engine.pcext.utils.CompensationHolder;
+25: import org.apache.seata.saga.engine.pcext.utils.EngineUtils;
+26: import org.apache.seata.saga.proctrl.ProcessContext;
+27: import org.apache.seata.saga.statelang.domain.DomainConstants;
+28: import org.apache.seata.saga.statelang.domain.ExecutionStatus;
+29: import org.apache.seata.saga.statelang.domain.StateInstance;
+30: import org.apache.seata.saga.statelang.domain.StateMachineInstance;
+31: 
+32: import java.util.List;
+33: import java.util.Stack;
+34: 
+35: /**
+36:  * CompensationTriggerState Handler
+37:  * Start to execute compensation
+38:  *
+39:  */
+40: public class CompensationTriggerStateHandler implements StateHandler {
+41: 
+42:     @Override
+43:     public void process(ProcessContext context) throws EngineExecutionException {
+44: 
+45:         StateInstruction instruction = context.getInstruction(StateInstruction.class);
+46: 
+47:         StateMachineInstance stateMachineInstance =
+48:                 (StateMachineInstance) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_INST);
+49:         StateMachineConfig stateMachineConfig =
+50:                 (StateMachineConfig) context.getVariable(DomainConstants.VAR_NAME_STATEMACHINE_CONFIG);
+51:         List<StateInstance> stateInstanceList = stateMachineInstance.getStateList();
+52:         if (CollectionUtils.isEmpty(stateInstanceList)) {
+53:             stateInstanceList = stateMachineConfig
+54:                     .getStateLogStore()
+55:                     .queryStateInstanceListByMachineInstanceId(stateMachineInstance.getId());
+56:         }
+57: 
+58:         List<StateInstance> stateListToBeCompensated =
+59:                 CompensationHolder.findStateInstListToBeCompensated(context, stateInstanceList);
+60:         if (CollectionUtils.isNotEmpty(stateListToBeCompensated)) {
+61:             // Clear exceptions that occur during forward execution
+62:             Exception e = (Exception) context.removeVariable(DomainConstants.VAR_NAME_CURRENT_EXCEPTION);
+63:             if (e != null) {
+64:                 stateMachineInstance.setException(e);
+65:             }
+66: 
+67:             Stack<StateInstance> stateStackToBeCompensated =
+68:                     CompensationHolder.getCurrent(context, true).getStateStackNeedCompensation();
+69:             stateStackToBeCompensated.addAll(stateListToBeCompensated);
+70: 
+71:             // If the forward running state is empty or running,
+72:             // it indicates that the compensation state is automatically initiated in the state machine,
+73:             // and the forward state needs to be changed to the UN state.
+74:             // If the forward status is not the two states, then the compensation operation should be initiated by
+75:             // server recovery,
+76:             // and the forward state should not be modified.
+77:             if (stateMachineInstance.getStatus() == null
+78:                     || ExecutionStatus.RU.equals(stateMachineInstance.getStatus())) {
+79:                 stateMachineInstance.setStatus(ExecutionStatus.UN);
+80:             }
+81:             // Record the status of the state machine as "compensating", and the subsequent routing logic will route
+82:             // to the compensation state
+83:             stateMachineInstance.setCompensationStatus(ExecutionStatus.RU);
+84:             context.setVariable(DomainConstants.VAR_NAME_CURRENT_COMPEN_TRIGGER_STATE, instruction.getState(context));
+85:         } else {
+86:             EngineUtils.endStateMachine(context);
+87:         }
+88:     }
+89: }
+
+(End of file - total 89 lines)
+</content>
+[48] assistant: [reasoning]
+Now let me read more:
+- State.java, BaseState.java (domain)
+- StateType.java (full)
+- StateMachineUtils.java
+- StateParserFactory.java
+- ExecutionStatus.java (full)
+- DefaultStatusDecisionStrategy
+- ProcessContextBuilder
+- StateMachineParserImpl (to see how states are parsed)
+- BaseStateParser (already read in full)
+- AbstractTaskStateParser
+
+Let me also check StateMachineInstanceImpl and StateInstanceImpl full, and ProcessCtrlEventPublisher/Consumer.
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/StateType.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/StateType.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.domain;
+18: 
+19: /**
+20:  * StateType
+21:  *
+22:  */
+23: public enum StateType {
+24: 
+25:     /**
+26:      * ServiceTask State
+27:      */
+28:     SERVICE_TASK("ServiceTask"),
+29: 
+30:     /**
+31:      * Choice State
+32:      */
+33:     CHOICE("Choice"),
+34: 
+35:     /**
+36:      * Fail State
+37:      */
+38:     FAIL("Fail"),
+39: 
+40:     /**
+41:      * Succeed State
+42:      */
+43:     SUCCEED("Succeed"),
+44: 
+45:     /**
+46:      * CompensationTrigger State
+47:      */
+48:     COMPENSATION_TRIGGER("CompensationTrigger"),
+49: 
+50:     /**
+51:      * SubStateMachine State
+52:      */
+53:     SUB_STATE_MACHINE("SubStateMachine"),
+54: 
+55:     /**
+56:      * CompensateSubMachine State
+57:      */
+58:     SUB_MACHINE_COMPENSATION("CompensateSubMachine"),
+59: 
+60:     /**
+61:      * ScriptTask State
+62:      */
+63:     SCRIPT_TASK("ScriptTask"),
+64: 
+65:     /**
+66:      * LoopStart State
+67:      */
+68:     LOOP_START("LoopStart");
+69: 
+70:     private String value;
+71: 
+72:     StateType(String value) {
+73:         this.value = value;
+74:     }
+75: 
+76:     public String getValue() {
+77:         return value;
+78:     }
+79: 
+80:     public static StateType getStateType(String value) {
+81:         for (StateType stateType : values()) {
+82:             if (stateType.getValue().equalsIgnoreCase(value)) {
+83:                 return stateType;
+84:             }
+85:         }
+86: 
+87:         throw new IllegalArgumentException("Unknown StateType[" + value + "]");
+88:     }
+89: }
+
+(End of file - total 89 lines)
+</content>
+[tool:read] {"filePath": "/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/ExecutionStatus.java"}
+<path>/workspace/repo/saga/seata-saga-statelang/src/main/java/org/apache/seata/saga/statelang/domain/ExecutionStatus.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one or more
+3:  * contributor license agreements.  See the NOTICE file distributed with
+4:  * this work for additional information regarding copyright ownership.
+5:  * The ASF licenses this file to You under the Apache License, Version 2.0
+6:  * (the "License"); you may not use this file except in compliance with
+7:  * the License.  You may obtain a copy of the License at
+8:  *
+9:  *     http://www.apache.org/licenses/LICENSE-2.0
+10:  *
+11:  * Unless required by applicable law or agreed to in writing, software
+12:  * distributed under the License is distributed on an "AS IS" BASIS,
+13:  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+14:  * See the License for the specific language governing permissions and
+15:  * limitations under the License.
+16:  */
+17: package org.apache.seata.saga.statelang.domain;
+18: 
+19: /**
+20:  * Execution Status
+21:  *
+22:  */
+23: public enum ExecutionStatus {
+24: 
+25:     /**
+26:      * Running
+27:      */
+28:     RU("Running"),
+29: 
+30:     /**
+31:      * Succeed
+32:      */
+33:     SU("Succeed"),
+34: 
+35:     /**
+36:      * Failed
+37:      */
+38:     FA("Failed"),
+39: 
+40:     /**
+41:      * Unknown
+42:      */
+43:     UN("Unknown"),
+44: 
+45:     /**
+46:      * Skipped
+47:      */
+48:     SK("Skipped");
+49: 
+50:     private String statusString;
+51: 
+52:     private ExecutionStatus(String statusString) {
+53:         this.statusString = statusString;
+54:     }
+55: 
+56:     public String getStatusString() {
+57:         return statusString;
+58:     }
+59: }
+
+(End of file - total 59 lines)
+</content>

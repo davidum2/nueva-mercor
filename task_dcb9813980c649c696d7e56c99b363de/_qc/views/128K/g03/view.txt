@@ -1,0 +1,2081 @@
+# compactor view starts at before_compaction.jsonl row 125 (previous compaction summary (assistant row 125; kept from row 123))
+[125] assistant: [reasoning]
+Let me synthesize the conversation and prior summary into a new comprehensive summary.
+
+Key objective: Add native value-based RANGE window framing to Druid in /app, with `WindowFrame.Range` class, SQL validator relaxation, planning support, native resolution logic, and tests.
+
+The conversation continued the design work:
+- Design of `WindowFrame.Range` with JsonSubTypes registration "range"
+- Frame resolution semantics: detailed analysis of ASC/DESC bound computation: boundValue(v, o) = asc ? v + o : v - o, signed offsets (PRECEDING negative, FOLLOWING positive, CURRENT ROW 0.0, UNBOUNDED null)
+- ASC frame: rows x with lowerBound <= x <= upperBound; frameStart = first row >= lowerBound, frameEnd = first row > upperBound (exclusive)
+- DESC frame: frameStart = first row <= lowerBound, frameEnd = first row < upperBound
+- NULL handling: nulls sort first ASC / last DESC (compareRows returns -1 for null lhs, multiplied by direction for DESC); nulls form contiguous run; when current row key is NULL, finite bounds resolve to NULL run boundaries; unbounded bounds positional to partition edges including nulls
+- Empty frames: aggregator zero-row default naturally via existing AggIntervalCursor.moveTo behavior with empty intervals
+- Investigated FramedOnHeapAggregatable implementations: only DefaultFramedOnHeapAggregatable exists; concrete RACs (QueryableIndexRowsAndColumns etc.) don't implement it via as()
+- BinarySearchableAccessor exists but assumes sorted
+- ColumnAccessor interface with getDouble etc.
+- DefaultNaiveSortMaker uses accessor.compareRows * direction
+- LongColumnAccessorBase: nulls sort first in ASC (compareRows returns -1 for null lhs), DESC flips via direction multiplier
+- ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(columns) gives peer group boundaries; nulls form one contiguous peer group (compareRows(null,null)==0)
+- Resolution algorithm designed with binary search on sorted non-null region, double comparisons via getDouble (precision caveat beyond 2^53 accepted)
+- Resolver class design: shared helper class `RangeFrameResolver` (name tentative) in `org.apache.druid.query.operator.window` package, exposing groupBoundaries, frameStart(g), frameEnd(g)
+- DefaultFramedOnHeapAggregatable.buildIteratorFor needs Range branch producing Iterable<AggInterval> with outputRows = peer group, inputRows = frame interval
+- isEffectivelyUnbounded for Range: both offsets null → unbounded
+- WindowValueProcessorBase.computeFirstOrLastValueFramed needs Range branch: value = first ? getObject(frameStart) : getObject(frameEnd-1) if frameStart < frameEnd else null
+- SQL layer:
+  - DruidSqlValidator.validateWindow lines ~153-160: current rejection "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead."
+  - Windowing.WindowGroup.getWindowFrame at lines 446-461: unbounded → WindowFrame.unbounded(); isRows → rows(); else groups(...); getBoundAsInteger reads bound offsets
+  - isUnboundedOrCurrent, isValidEndpoint, updateBoundsIfNeeded helpers verified
+  - updateBoundsIfNeeded: single bound RANGE 0 FOLLOWING → lowerBound = CURRENT ROW, upperBound = 0 FOLLOWING
+  - Calcite SqlWindow.isRows() is boolean literal; ROWS=true, RANGE=false; GROUPS token exists but NOT parsed by Calcite 1.41 parser (token 496 ROWS → createBoolean(true), token 449 RANGE → createBoolean(false); only two tokens in frame switch); so !isRows() ⟺ RANGE; SQL GROUPS frames cannot be parsed
+  - Calcite Window.Group Rel level has only boolean isRows — RANGE/GROUPS conflated
+  - RowSignature maps TIMESTAMP SqlTypeName → ColumnType.LONG via Calcites.getColumnTypeForRelDataType / isLongType includes TIMESTAMP — so planning-time type check sig.getColumnType(fieldIndex) for LONG/FLOAT/DOUBLE covers timestamps
+  - Interval literals: day-time interval SqlLiteral.getValueAs(BigDecimal.class) → BigDecimal.valueOf(sign * SqlParserUtil.intervalToMillis(intervalValue)) — millis; year-month → months (should reject year-month)
+  - RexWindowBound offsets are RexInputRef into window.constants; constant.getValue() returns BigDecimal/Number; getBoundAsDouble design: unbounded→null, currentRow→0.0, preceding→-value, following→+value; ((Number) constant.getValue()).doubleValue()
+  - Quidem !error semantics verified: squash(stackTrace).contains(squash(expectedText)); expected text is just "QueryInterruptedException" (class simple name in stack trace)
+  - qaWin RANGE .iq files: many queries have NO ORDER BY (e.g. `OVER (PARTITION BY client_ip RANGE 0 FOLLOWING)`) or multiple ORDER BY keys (`ORDER BY server_ip ASC, timezone, time_floor(__time, 'PT12H') RANGE 0 FOLLOWING`) — both must keep failing → validator must reject offset RANGE without ORDER BY and with multiple ORDER BY keys
+  - testUnSupportedRangeBounds in CalciteQueryTest.java line 15619-15628: `SELECT dim1,ROW_NUMBER() OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo` expects invalidSqlIs("Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead. (line [1], column [31])") — dim1 is STRING single key; with relaxed validator this query would pass validation (1 key, numeric literal bounds) and ROW_NUMBER doesn't use the frame → query would succeed → test breaks. Decision needed: update this test (e.g. multi-key) or add key type check. Wait — the last tool call was checking all qaWin RANGE queries' ORDER BY patterns with grep -oE "ORDER BY [^)]*RANGE[^)]*\)" which returned empty results per file (the regex didn't match because ORDER BY and RANGE may be separated by newlines/parens). The output was truncated showing "== file" headers with no matches. So the check via that regex didn't capture; need to re-verify with different approach.
+  
+Actually, looking at the last assistant action: it ran a grep to enumerate ORDER BY ... RANGE patterns in each qaWin file; the regex produced no matches in the visible output (truncated). The prior listing showed:
+- `OVER (PARTITION BY client_ip RANGE 0 FOLLOWING)` — no ORDER BY
+- `OVER (RANGE 0 FOLLOWING)` — no ORDER BY
+- `ORDER BY server_ip ASC, timezone, time_floor(__time, 'PT12H') RANGE 0 FOLLOWING` — 3 keys (from the .01 file first query shown at top: `first_value(timezone) OVER (PARTITION BY client_ip ORDER BY server_ip ASC, timezone, time_floor(__time, 'PT12H') RANGE 0 FOLLOWING)`)
+
+So both patterns confirmed in the files. The important design decision: validator must require exactly one ORDER BY key for offset RANGE frames (and reject missing ORDER BY).
+
+Decisions made:
+- Validator relaxation: allow RANGE with offset bounds only when window has exactly one ORDER BY key; keep the old rejection message otherwise; reject offset RANGE without ORDER BY (no ORDER BY → falls into rejection since orderList empty → count != 1)
+- Bound literal kind check at validator: numeric literal or day-time interval literal (isValidEndpoint already requires SqlUtil.isLiteral)
+- Key type check at planning time in Windowing.getWindowFrame via sig.getColumnType (LONG/FLOAT/DOUBLE; TIMESTAMP maps to LONG) — since type derivation at validation is risky; planning-time rejection for non-numeric keys (STRING etc.) — but note ROW_NUMBER doesn't call getWindowFrame, so `ROW_NUMBER() OVER (ORDER BY dim1 RANGE ...)` (string key) would plan fine and succeed (ROW_NUMBER ignores frame) — this changes testUnSupportedRangeBounds behavior → test must be updated
+- Keep GROUPS path for unbounded/current-row forms (no offset) to preserve existing behavior incl. string keys; only emit Range when at least one bound is finite offset (PRECEDING/FOLLOWING with literal)
+- Year-month intervals rejected (intervalToMonths)
+- Double comparisons via accessor.getDouble(rowNum) for LONG/FLOAT/DOUBLE — accept precision caveat beyond 2^53
+- Resolver shared helper class in org.apache.druid.query.operator.window package (both DefaultFramedOnHeapAggregatable and WindowValueProcessorBase can import)
+- AggInterval with empty inputRows handled naturally by existing moveTo/AggIntervalCursor logic → zero-row defaults
+- FIRST_VALUE/LAST_VALUE empty frame → null (same pattern as existing: if frameStart < frameEnd)
+
+Null sort order: LongColumnAccessorBase.compareRows nulls first ASC, last DESC.
+
+Calcite Window.Group at Rel level only has boolean isRows — no RANGE/GROUPS distinction needed since GROUPS not parseable.
+
+Also confirmed:
+- Only DefaultFramedOnHeapAggregatable implements FramedOnHeapAggregatable
+- QueryableIndexRowsAndColumns.as uses AS_MAP, doesn't expose FramedOnHeapAggregatable
+- RewriteFirstValueLastValueRule only rewrites CURRENT ROW bounds — no interference
+- WindowFrameTest uses EqualsVerifier
+- ClusteredGroupPartitioner: computeBoundaries(List<String> columns) → int[] boundaries; nulls form one peer group
+
+Work state: no files edited yet; still in design/verification phase. The todo list (from prior summary): 1. WindowFrame.Range class (in progress), 2. register "range", 3. range() factory, 4. DefaultFramedOnHeapAggregatable resolve Range, 5. WindowValueProcessorBase Range handling, 6. relax DruidSqlValidator.validateWindow, 7. Windowing.getWindowFrame range branch, 8. native Range tests, 9. SQL planner tests, 10. compile, 11. run tests, 12. lint.
+
+The last tool call was verifying qaWin ORDER BY patterns — regex matched nothing (multiline queries); the truncated output shows no matches per file, so still need a multiline-aware check to confirm no single-key-numeric ORDER BY RANGE queries exist in qaWin. Actually wait — from the earlier single-line grep with "OVER ([^)]*RANGE[^)]*)" pattern, we saw the forms `OVER (PARTITION BY client_ip RANGE 0 FOLLOWING)` and `OVER (RANGE 0 FOLLOWING)` and `OVER (PARTITION BY client_ip RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED PRECEDING)` etc. — none with ORDER BY in the OVER clause directly. But the multi-line form `OVER (PARTITION BY client_ip\n ORDER BY server_ip ASC, timezone, time_floor(__time, 'PT12H') RANGE 0 FOLLOWING)` exists (from the head output of the .01 file). Those have 3 keys. The first/last value queries in .01: `first_value(timezone) OVER (PARTITION BY client_ip ORDER BY server_ip ASC, timezone, time_floor(__time, 'PT12H') RANGE 0 FOLLOWING)`. So multi-key.
+
+The last grep attempt output was truncated at "== orderby_rang..." — we don't have full confirmation that ALL files only contain multi-key or no-ORDER-BY patterns. This is a remaining verification item: confirm every qaWin RANGE query either has no ORDER BY or multiple ORDER BY keys (so they keep failing validation with exactly-one-key requirement).
+
+Also important: the test file testUnSupportedRangeBounds needs updating (dim1 string key single → would now succeed). Options: update to multi-key ORDER BY (keeps old message) or change to expect new planning error. Also there's the "column [31]" position in the message. Actually if the ORDER BY count check happens in the validator with the same message, then a multi-key query like `ORDER BY dim1, dim2 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING` would give the same message at possibly same position. The test would need its SQL changed. Or the string-key single-key case: what error should it give? Planning-time rejection in Windowing.getWindowFrame → QueryException SQL_QUERY_UNSUPPORTED_ERROR_CODE → different message. But ROW_NUMBER never calls getWindowFrame so it wouldn't error at all. So for a SUM example: `SELECT dim1, SUM(dim2) OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING) FROM druid.foo` — dim1 string → planning error. But testUnSupportedRangeBounds uses ROW_NUMBER so it would now succeed — must change test to use something frame-using or change SQL.
+
+Design decisions recap for validator:
+```java
+if (!targetWindow.isRows() && (!isUnboundedOrCurrent(lowerBound) || !isUnboundedOrCurrent(upperBound))) {
+  // offset RANGE frame
+  if (targetWindow.getOrderList() == null || targetWindow.getOrderList().size() != 1) {
+    throw buildCalciteContextException("Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.", windowOrId);
+  }
+  // check bound literals are numeric or day-time interval (year-month rejected)
+}
+```
+
+Wait — but also there was uncertainty about whether the bound-literal-kind check should be in the validator. isValidEndpoint requires SqlUtil.isLiteral for PRECEDING/FOLLOWING bounds — string literals pass that. So need additional check: literal numeric or day-time interval.
+
+Also the getBoundAsDouble design:
+```java
+private Double getBoundAsDouble(RexWindowBound bound)
+{
+  if (bound.isUnbounded()) return null;
+  if (bound.isCurrentRow()) return 0.0d;
+  final RexLiteral constant = window.constants.get(((RexInputRef) bound.getOffset()).getIndex() - sig.size());
+  final double value = ((Number) constant.getValue()).doubleValue();
+  return bound.isPreceding() ? -value : value;
+}
+```
+Year-month interval rejection via constant.getType().getSqlTypeName().getFamily() == INTERVAL_YEAR_MONTH → throw.
+
+RangeFrameResolver design (name tentative):
+- constructor(RowsAndColumns rac, WindowFrame.Range frame)
+- uses ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(ImmutableList.of(frame.getOrderBy().getColumnName())) for peer groups
+- accessor = rac.findColumn(orderBy column).toAccessor()
+- type check: ColumnType LONG/FLOAT/DOUBLE → ok; else if finite offsets → DruidException (unchecked); both null → treat as unbounded
+- binary search helpers for ASC (firstIdxGE, firstIdxGT) and DESC (firstIdxLE, firstIdxLT) on getDouble values within non-null region
+- null run boundaries: ASC nulls at start, DESC nulls at end
+
+For DefaultFramedOnHeapAggregatable:
+- aggregateAll accepts Range → buildIteratorFor Range branch → Iterable<AggInterval> per peer group
+- isEffectivelyUnbounded: Range with both offsets null → unbounded (equiv WindowFrame.unbounded())
+
+Also from the conversation: AggIntervalCursor.moveTo analysis — empty intervals handled correctly (fresh aggregators → zero-row default).
+
+Also from the conversation: DefaultFramedOnHeapAggregatable imports WindowFrame.Rows, Groups; buildUnboundedIteratorFor; GroupIteratorForWindowFrame; invertedOrderForLastK.
+
+Also the design statement: for aggregation path, iterate groups in natural order, moveTo recomputes unless extendable — fine for correctness.
+
+Also: "getWindowFrame" logic:
+```java
+public WindowFrame getWindowFrame()
+{
+  if (group.lowerBound.isUnbounded() && group.upperBound.isUnbounded()) {
+    return WindowFrame.unbounded();
+  }
+  if (group.isRows) {
+    return WindowFrame.rows(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound));
+  }
+  if (hasOffsetBound(group.lowerBound) || hasOffsetBound(group.upperBound)) {
+    // RANGE with at least one finite offset
+    // validate single ordering key + type via sig
+    return WindowFrame.range(getBoundAsDouble(group.lowerBound), getBoundAsDouble(group.upperBound), getSingleOrderingColumn());
+  }
+  return WindowFrame.groups(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound), getOrderingColumNames());
+}
+```
+
+Note: the check "at least one bound is PRECEDING/FOLLOWING offset" determines Range vs Groups. For both-current or unbounded+current → keep groups path (works for all types incl strings).
+
+Also: Windowing line 98-100: WindowFirstProcessor/WindowLastProcessor take agg.getGroup().getWindowFrame() — they'd get Range frames too.
+
+The quidem expected error: "QueryInterruptedException" — simple class name appears in the recorded file as the line before !error; matching is stackTrace contains squashed expected.
+
+Now the last move: The last tool call attempted to enumerate ORDER BY patterns in qaWin files but regex returned nothing (multiline). Next move: verify all qaWin RANGE queries' ORDER BY patterns using multiline-aware extraction (e.g. with grep -A or python), to confirm none have exactly one numeric key. Then start writing code: WindowFrame.Range first.
+
+Also unverified: whether every qaWin RANGE case has several ORDER BY keys or none — need multiline check.
+
+Also from conversation: qaWin RANGE bound forms seen: RANGE 0 FOLLOWING, RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED PRECEDING, RANGE BETWEEN 0 FOLLOWING AND 1 PRECEDING, RANGE BETWEEN 0 FOLLOWING AND 0 PRECEDING, RANGE BETWEEN 0 FOLLOWING AND CURRENT ROW, RANGE BETWEEN 0 FOLLOWING AND 0 FOLLOWING, RANGE BETWEEN 0 FOLLOWING AND 1 FOLLOWING, RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED FOLLOWING, RANGE 1 FOLLOWING, RANGE 1 PRECEDING, RANGE BETWEEN -1 PRECEDING AND ..., RANGE BETWEEN 0 PRECEDING ..., etc. These single-bound forms after updateBoundsIfNeeded become BETWEEN CURRENT ROW AND X.
+
+Important: after updateBoundsIfNeeded, `RANGE 0 FOLLOWING` → `RANGE BETWEEN CURRENT ROW AND 0 FOLLOWING` → lowerBound is currentRow (isUnboundedOrCurrent true), upperBound is 0 FOLLOWING (offset bound) → offset RANGE → needs Range support → single key check etc.
+
+Files read in conversation:
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/QueryableIndexRowsAndColumns.java
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ColumnAccessor.java
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/BinarySearchableAccessor.java
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultNaiveSortMaker.java
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/accessor/LongColumnAccessorBase.java
+- /app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java
+- /app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/ClusteredGroupPartitioner.java
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultClusteredGroupPartitioner.java
+- /app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java (validateWindow + helpers lines 100-160, 695-750ish)
+- /app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java (lines 60-240, 380-461)
+- /app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java
+- /app/sql/src/main/java/org/apache/druid/sql/calcite/planner/Calcites.java (getColumnTypeForRelDataType, isLongType includes TIMESTAMP)
+- /app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java
+- /app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java (testUnSupportedRangeBounds etc. lines 15595-15640)
+- qaWin .iq files
+- javap of SqlWindow, Window$Group, SqlParserImpl, SqlLiteral, SqlNodeToRexConverterImpl, RexBuilder, Quidem$ErrorCommand
+
+Let me now write the summary.
+
+Structure:
+## Objective
+Add native value-based RANGE window framing (WindowFrame.Range) to Druid's native window engine plus SQL-layer support, in /app, so single-key numeric/timestamp RANGE offset frames work end-to-end while unsupported forms (multi-key, non-numeric keys) keep failing.
+
+## Important Details
+- All the class/API constraints from prior summary (getters, factory, JsonSubTypes "range", not extending OffsetFrame, equals/hashCode, toString, serde).
+- Frame resolution semantics: boundValue(v,o) = asc ? v+o : v-o; ASC frame = closed [lowerBound, upperBound] with frameStart = first row x >= lowerBound, frameEnd = first row x > upperBound; DESC frameStart = first row x <= lowerBound, frameEnd = first row x < upperBound; offsets signed (PRECEDING negative, FOLLOWING positive, CURRENT ROW = 0.0, UNBOUNDED = null).
+- NULL handling: nulls sort first ASC / last DESC (compareRows null lhs = -1, × direction for DESC); nulls contiguous single peer group; null current row + finite bound → boundary of null run; unbounded → partition edge including nulls.
+- Comparisons in double space via accessor.getDouble(); accepts >2^53 precision fuzz.
+- Aggregation: outputRows = peer group, inputRows = frame interval; empty frames → existing AggIntervalCursor.moveTo → fresh aggregators → zero-row default; FIRST/LAST_VALUE empty frame → null.
+- isEffectivelyUnbounded for Range = both offsets null → same as unbounded.
+- Shared resolver class (e.g. RangeFrameResolver) in org.apache.druid.query.operator.window using ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(single orderBy column) for peer groups; both DefaultFramedOnHeapAggregatable and WindowValueProcessorBase use it.
+- Only DefaultFramedOnHeapAggregatable implements FramedOnHeapAggregatable; concrete RACs don't override as() for it.
+- SQL layer: Calcite 1.41 parser frame switch only ROWS (createBoolean(true)) / RANGE (createBoolean(false)); GROUPS not parseable → !SqlWindow.isRows() ⟺ RANGE; Window.Group Rel level only boolean isRows.
+- Validator: keep message "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead." for rejected cases; allow offset RANGE only with exactly one ORDER BY key (orderList.size()==1) and bound literals numeric or day-time INTERVAL (isValidEndpoint already requires SqlUtil.isLiteral); year-month intervals rejected; no ORDER BY → still rejected by count check.
+- Planning (Windowing.getWindowFrame): keep groups path for unbounded/current-only bounds (preserves string-key behavior); Range only when ≥1 bound is PRECEDING/FOLLOWING offset; key type check via sig.getColumnType(fieldIndex) must be LONG/FLOAT/DOUBLE (TIMESTAMP maps to LONG via Calcites.isLongType/getColumnTypeForRelDataType).
+- getBoundAsDouble: unbounded→null, currentRow→0.0, preceding→-value, following→+value, value = ((Number) window.constants.get(refIndex - sig.size()).getValue()).doubleValue(); day-time interval RexLiteral value = BigDecimal of millis (SqlParserUtil.intervalToMillis), year-month → months → reject.
+- Quidem !error matches squash(stackTrace).contains(squash(expected)); expected text is just "QueryInterruptedException"; qaWin RANGE queries are multi-key or no-ORDER-BY (both keep failing) — full multiline verification of all files still pending.
+- testUnSupportedRangeBounds (CalciteQueryTest.java ~15619) uses single STRING key + ROW_NUMBER — would now succeed (ROW_NUMBER ignores frame, string key check at planning never runs) → test must be updated.
+- ROW_NUMBER/LAG/LEAD/rank fns don't consume the frame (getWindowFrame only called for FIRST_VALUE/LAST_VALUE and framed aggregations).
+
+## Work State
+### Completed
+- git clean; no file edited yet.
+- All design decisions finalized (resolution algorithm, resolver placement, validator/planner split).
+- Verified: only DefaultFramedOnHeapAggregatable implements FramedOnHeapAggregatable; QueryableIndexRowsAndColumns uses AS_MAP.
+- Verified null sort order in LongColumnAccessorBase.compareRows.
+- Verified ClusteredGroupPartitioner/DefaultClusteredGroupPartitioner null==null peer grouping.
+- Verified Calcite parser/GROUPS absence, interval literal millis conversion, Window.Group only isRows boolean.
+- Verified quidem !error matching and "QueryInterruptedException" expected text.
+- Verified Calcites maps TIMESTAMP → ColumnType.LONG.
+- Verified RewriteFirstValueLastValueRule doesn't interfere (only CURRENT ROW rewrites).
+- Read Windowing getWindowFrame/getBoundAsInteger (lines 446-461), validateWindow + helpers (lines 114-162, 695-750).
+
+### Active
+- Todo 1 (WindowFrame.Range class) still in progress; no code written.
+- Last action: attempted multiline grep of all qaWin RANGE .iq ORDER BY patterns — regex found no matches (queries span lines); still must confirm every qaWin RANGE query is multi-key or no-ORDER-BY.
+
+### Blocked
+- None.
+
+## Next Move
+1. Re-run multiline-aware extraction of OVER(...) clauses in all qaWin orderby_range_*.iq files to confirm no single-key numeric ORDER BY RANGE queries exist (they'd now succeed and break recorded outputs).
+2. Write WindowFrame.Range + register "range" + range() factory + WindowFrameTest EqualsVerifier addition.
+3. Write shared Range frame resolver in org.apache.druid.query.operator.window.
+4. Wire DefaultFramedOnHeapAggregatable (buildIteratorFor + aggregateAll + isEffectivelyUnbounded) and WindowValueProcessorBase.computeFirstOrLastValueFramed.
+5. Relax DruidSqlValidator.validateWindow (single ORDER BY key + bound literal kind, keep old message otherwise).
+6. Add Windowing.getWindowFrame range branch + getBoundAsDouble.
+7. Update testUnSupportedRangeBounds; add new native + SQL tests.
+8. mvn compile, run tests, lint.
+
+## Relevant Files
+...
+
+Let me make sure to keep exact paths and identifiers. Also keep the prior summary's important details that are still relevant (all constraints). I need to preserve them all as they're requirements.
+
+Let me write out the full file list:
+- /app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java — holds frame types; add Range + "range" subtype + factory; existing Rows/Groups/OffsetFrame; unbounded() = rows(null,null)
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/FramedOnHeapAggregatable.java — aggregateAll must accept Range
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java — buildIteratorFor, GroupIteratorForWindowFrame, AggInterval, AggIntervalCursor (moveTo analysis), invertedOrderForLastK; only impl of FramedOnHeapAggregatable
+- /app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessor.java — frame in WindowFrame field
+- /app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java — computeFirstOrLastValueFramed; base of WindowFirstProcessor/WindowLastProcessor
+- /app/processing/src/main/java/org/apache/druid/query/operator/ColumnWithDirection.java — ASC(1)/DESC(-1), getDirectionInt()
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/ClusteredGroupPartitioner.java + DefaultClusteredGroupPartitioner.java — computeBoundaries for peer groups; nulls one peer group
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ColumnAccessor.java — getDouble etc.
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/BinarySearchableAccessor.java
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/accessor/LongColumnAccessorBase.java — null compare
+- /app/processing/src/main/java/org/apache/druid/query/rowsandcols/concrete/QueryableIndexRowsAndColumns.java — AS_MAP, no FramedOnHeapAggregatable
+- /app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java — validateWindow (lines 114-162), isValidEndpoint (705), isUnboundedOrCurrent (722), updateBoundsIfNeeded (733)
+- /app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java — getWindowFrame (446-461), getBoundAsInteger, WindowGroup.getOrdering, computeWindowOperations, KNOWN_WINDOW_FNS
+- /app/sql/src/main/java/org/apache/druid/sql/calcite/planner/Calcites.java — getColumnTypeForRelDataType, isLongType includes TIMESTAMP
+- /app/sql/src/main/java/org/apache/druid/sql/calcite/rule/RewriteFirstValueLastValueRule.java — no interference
+- tests: WindowFrameTest.java, WindowFramedAggregateProcessorTest.java, RowsAndColumnsHelper.java, WindowFirstProcessorTest.java, CalciteQueryTest.java (testUnSupportedRangeBounds ~15619)
+- qaWin dir
+- javap'd jars: calcite-core-1.41.0.jar, quidem-0.12.jar
+
+I should also mention the todo list implicitly through next move. The instruction says keep sections terse. I'll consolidate important details into bullets.
+
+The "Important Details" from prior summary that I should carry forward (constraints):
+- Range class API: @Nullable Double lowerOffset/upperOffset, non-null ColumnWithDirection orderBy, getters getLowerOffset/getUpperOffset/getOrderBy, static factory range(...), JsonSubTypes "range", not extending OffsetFrame, equals/hashCode by value, toString, Jackson ser/de.
+- aggregateAll accepts Range; WindowFramedAggregateProcessor/WindowFirstProcessor/WindowLastProcessor accept Range.
+- bound = v+o ASC, v-o DESC; closed interval; unbounded sides reach partition edges incl NULLs; NULL current row finite bounds → edges of contiguous NULL run; peers identical bounds/output; empty frame → zero-row default (aggregations) / null (FIRST/LAST); Range covering whole partition ≡ unbounded(); LONG/FLOAT/DOUBLE ordering columns work; all RowsAndColumns implementations; timestamps as LONG; non-numeric type with finite offset → unchecked DruidException.
+- SQL validator accepts offset RANGE (one-sided, CURRENT ROW combos); Calcite planning → native frames; only with exactly one ORDER BY key; key numeric or timestamp; bound literal number or day-time INTERVAL; day-time INTERVAL → millis magnitude as floating point, no integer truncation; non-numeric non-interval key with finite bounds rejected during validation or planning.
+- WindowFrame maps "rows"→Rows, "groups"→Groups; unbounded() = rows(null,null).
+- ColumnWithDirection ASC(1)/DESC(-1) via getDirectionInt().
+- Windowing rows/groups construction; RexWindowBound getOffset/isPreceding/isFollowing/isCurrentRow; offsets are RexInputRef into window.constants read via window.constants.get(refIndex - sig.size()); getBoundAsInteger keeps intValue(); decision: new getBoundAsDouble using doubleValue().
+- Quidem qaWin file names; expect QueryInterruptedException + !error; files left as recorded.
+- decisions about validator message kept.
+
+New from conversation:
+- Full resolution algorithm details.
+- null sort order.
+- resolver class design.
+- Calcite parser facts (GROUPS unparseable, isRows boolean).
+- TIMESTAMP → LONG in RowSignature.
+- interval millis; year-month reject.
+- quidem !error = squash(stackTrace).contains(squash(expected)).
+- qaWin queries multi-key or no ORDER BY patterns (partially verified).
+- testUnSupportedRangeBounds needs update (ROW_NUMBER + string key would succeed).
+- AggIntervalCursor empty interval handling verified correct.
+- Keep GROUPS path for unbounded/current-only bounds.
+
+Also note: the last bash command's output truncated — the per-file grep with regex "ORDER BY [^)]*RANGE[^)]*\)" found no matches due to line breaks; earlier single-line grep of "OVER ([^)]*RANGE[^)]*)" found forms: OVER (PARTITION BY client_ip RANGE 0 FOLLOWING), OVER (RANGE 0 FOLLOWING), OVER (PARTITION BY client_ip RANGE BETWEEN 0 FOLLOWING AND UNBOUNDED PRECEDING), etc. — all no ORDER BY within single line. The .01/.02 files' first_value queries have 3-key ORDER BY (server_ip ASC, timezone, time_floor(__time,'PT12H')).
+
+I'll note "full multiline verification of all qaWin files still pending" as active work.
+
+Now compose the final answer. Keep it structured per template. Terse bullets. I'll aim for completeness but not excessive length.
+## Objective
+- Add native value-based `RANGE` window framing to Druid in `/app`.
+- The new type must be `WindowFrame.Range`.
+- `WindowFrame.Range` must be a public nested class of `WindowFrame`.
+- `WindowFrame.Range` must be registered as Jackson subtype `"range"`.
+- Multi-key `RANGE` queries must still fail when the work is done.
+
+## Important Details
+- `WindowFrame.Range` must have a `@Nullable Double lowerOffset`.
+- `WindowFrame.Range` must have a `@Nullable Double upperOffset`.
+- `WindowFrame.Range` must have a non-null `ColumnWithDirection orderBy`.
+- The required getter for the lower offset is `getLowerOffset()`.
+- The required getter for the upper offset is `getUpperOffset()`.
+- The required getter for the ordering column is `getOrderBy()`.
+- A null offset must mean a positionally unbounded side.
+- A non-null offset must be a signed distance in the ordering key's value space.
+- The required static factory is `WindowFrame.range(@Nullable Double lowerOffset, @Nullable Double upperOffset, ColumnWithDirection orderBy)`.
+- `Range` must not extend `OffsetFrame`.
+- `Range` must override `equals` by value.
+- `Range` must override `hashCode` by value.
+- `Range` must support Jackson serialization.
+- `Range` must support Jackson deserialization.
+- `FramedOnHeapAggregatable#aggregateAll` must accept `Range`.
+- `WindowFramedAggregateProcessor` must accept `Range`.
+- `WindowFirstProcessor` must accept `Range`.
+- `WindowLastProcessor` must accept `Range`.
+- For a non-null ordering key value `v` and a finite offset `o`, a bound must be `v + o` under `ASC`.
+- For a non-null ordering key value `v` and a finite offset `o`, a bound must be `v - o` under `DESC`.
+- A `Range` frame must be the closed interval between its lower bound and its upper bound.
+- Unbounded sides of a `Range` frame must reach the partition edges.
+- Unbounded sides of a `Range` frame must include rows whose key is `NULL`.
+- When the current row's key is `NULL`, finite bounds must resolve to the edges of the contiguous `NULL` run that holds the row.
+- Peers with equal keys must get identical frame bounds.
+- Peers with equal keys must get identical output.
+- An empty frame must yield the aggregator's zero-row default.
+- `FIRST_VALUE` must return `null` on an empty frame.
+- `LAST_VALUE` must return `null` on an empty frame.
+- A `Range` that covers the whole partition for every row must evaluate the same as `WindowFrame.unbounded()`.
+- `LONG` ordering columns must work.
+- `FLOAT` ordering columns must work.
+- `DOUBLE` ordering columns must work.
+- Range resolution must work for every `RowsAndColumns` implementation.
+- Timestamp columns reach the native engine as `LONG`.
+- An ordering type that cannot do value arithmetic with a finite offset must throw an unchecked `DruidException`.
+- The SQL validator must accept offset `RANGE` frames.
+- The SQL validator must accept one-sided offset `RANGE` frames.
+- The SQL validator must accept offset `RANGE` frames with a `CURRENT ROW` bound.
+- Calcite planning must turn offset `RANGE` frames into native frames.
+- Offset `RANGE` support must apply only when the window has exactly one `ORDER BY` key.
+- The single key must be numeric or a timestamp.
+- The bound literal may be a number.
+- The bound literal may be a day-time `INTERVAL`.
+- A day-time `INTERVAL` must map to its millisecond magnitude as a floating-point offset with no integer truncation.
+- An offset `RANGE` frame with finite bounds on a non-numeric and non-interval key must be rejected during validation or planning.
+- `WindowFrame` maps the Jackson name `"rows"` to `WindowFrame.Rows`.
+- `WindowFrame` maps the Jackson name `"groups"` to `WindowFrame.Groups`.
+- `WindowFrame.unbounded()` returns `rows(null, null)`.
+- The agent found earlier that `ColumnWithDirection` encodes `ASC` as `ASC(1)`, read through `getDirectionInt()`.
+- The agent found earlier that `ColumnWithDirection` encodes `DESC` as `DESC(-1)`, read through `getDirectionInt()`.
+- Only `DefaultFramedOnHeapAggregatable` implements `FramedOnHeapAggregatable` in the main code.
+- `QueryableIndexRowsAndColumns` serves `as()` through its `AS_MAP`.
+- The agent concluded that handling `Range` in `DefaultFramedOnHeapAggregatable` and in the value processors covers every `RowsAndColumns`.
+- The agent judged that `compareRows` returns -1 for a null left row, so null keys sort first under `ASC`.
+- The agent judged that the sort multiplies `compareRows` by the direction, so null keys sort last under `DESC`.
+- The agent judged that `compareRows(null, null)` returns 0, so the `NULL` rows form one peer group.
+- The agent judged that `ClusteredGroupPartitioner.computeBoundaries` returns the edges of contiguous runs of equal values.
+- Decision: a new class `RangeFrameResolver` in `org.apache.druid.query.operator.window` will compute the peer groups and the frame start and end of each group.
+- The reason is that `DefaultFramedOnHeapAggregatable` and `WindowValueProcessorBase.computeFirstOrLastValueFramed` both need the peer groups and their frame intervals.
+- Decision: the peer groups come from `computeBoundaries` on the `ORDER BY` column.
+- The planned `RangeFrameResolver` constructor takes `RowsAndColumns rac` and `WindowFrame.Range frame`.
+- The planned `RangeFrameResolver` keeps the peer group edges in `groupBoundaries`.
+- The planned `RangeFrameResolver` keeps one frame start per group in `frameStarts`.
+- The planned `RangeFrameResolver` keeps one frame end per group in `frameEnds`.
+- Decision: both users of `RangeFrameResolver` will iterate the peer groups directly, without merging adjacent groups that have identical frames.
+- The agent judged that such merging is possible but not worth doing.
+- Decision: keys are compared as doubles through `accessor.getDouble(row)`.
+- The reason is that `getDouble` treats `LONG`, `FLOAT` and `DOUBLE` keys the same way.
+- The agent accepted a precision loss for key values beyond 2^53.
+- Under `ASC`, the planned frame start is the first row whose value is at least the lower bound.
+- Under `ASC`, the planned frame end is the first row whose value is greater than the upper bound, exclusive.
+- Under `DESC`, the planned frame start is the first row whose value is at most the lower bound.
+- Under `DESC`, the planned frame end is the first row whose value is less than the upper bound, exclusive.
+- The planned search covers only the non-null rows, because `getDouble` on a null row gives 0.0.
+- Decision: `isEffectivelyUnbounded` treats a `Range` with both offsets null as unbounded.
+- Decision: `moveTo` recomputes the whole interval for `Range` frames.
+- The reason is that both ends of a `Range` interval can move at the same step.
+- `DruidSqlValidator.validateWindow` rejects a `RANGE` frame unless both bounds pass `isUnboundedOrCurrent`.
+- The agent judged earlier that this rejection is raised as a `CalciteContextException`.
+- The agent judged earlier that `updateBoundsIfNeeded` turns the single bound `RANGE 0 FOLLOWING` into `RANGE BETWEEN CURRENT ROW AND 0 FOLLOWING`.
+- The agent read in the parser bytecode that Calcite 1.41 sets the frame type with `createBoolean(true)` for `ROWS`.
+- The agent read in the parser bytecode that Calcite 1.41 sets the frame type with `createBoolean(false)` for `RANGE`.
+- The agent concluded that Calcite 1.41 cannot parse `GROUPS` frames.
+- The agent concluded that a false `isRows()` therefore means `RANGE`.
+- `Window.Group` at the Rel level has only the boolean `isRows`.
+- Quidem `!error` checks that the squashed stack trace contains the squashed expected text.
+- The `qaWin` files expect only `QueryInterruptedException` before `!error`.
+- The agent judged that any Druid validation or planning error therefore still matches the `qaWin` expectations.
+- The `qaWin` `RANGE` cases the agent printed expect a `QueryInterruptedException` line followed by `!error`.
+- The agent found earlier that the `qaWin` `RANGE` cases it printed have several `ORDER BY` keys or none.
+- A grep of the `qaWin` files found `RANGE` windows with no `ORDER BY`, such as `OVER (PARTITION BY client_ip RANGE 0 FOLLOWING)`.
+- It is unconfirmed whether every `qaWin` `RANGE` case has several `ORDER BY` keys or none.
+- Decision: unsupported `RANGE` forms will keep `Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.` as the validator rejection message.
+- The reason is that the multi-key `RANGE` cases in the `qaWin` quidem files then keep failing.
+- Decision: the `qaWin` files are left as recorded.
+- Decision: an offset `RANGE` frame with no `ORDER BY` is rejected.
+- The reason is that `WindowFrame.range` needs an ordering column.
+- Decision: the validator accepts an offset `RANGE` frame only with exactly one `ORDER BY` key.
+- Decision: the validator accepts an offset bound literal only if it is numeric or a day-time `INTERVAL`.
+- Decision: the key type check runs at planning time in `Windowing.getWindowFrame`.
+- The reason is that the row signature `sig` is available there.
+- `isLongType` counts `TIMESTAMP` as a long type, so the row signature reports timestamp keys as `LONG`.
+- `Windowing.java` builds row frames as `WindowFrame.rows(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound))`.
+- `Windowing.java` builds group frames as `WindowFrame.groups(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound), getOrderingColumNames())`.
+- `Windowing.java` has no range branch yet.
+- The agent judged that `RANGE` frames with only `UNBOUNDED` or `CURRENT ROW` bounds on `STRING` keys work today through the `groups(...)` frame.
+- Decision: `Windowing.WindowGroup.getWindowFrame()` will keep the `groups(...)` path when no bound is a `PRECEDING` or `FOLLOWING` offset.
+- Decision: `Windowing.WindowGroup.getWindowFrame()` will emit `WindowFrame.range(...)` only when at least one bound is a `PRECEDING` or `FOLLOWING` offset.
+- The reason is that this keeps all existing behavior and tests.
+- The agent found earlier that `RexWindowBound` exposes `getOffset()`.
+- The agent judged earlier that frame offsets reach `Windowing` as `RexInputRef` entries into `window.constants`.
+- The agent judged earlier that the constant is read as `window.constants.get(refIndex - sig.size()).getValue()`.
+- Decision: the planned `RANGE` branch will read offsets through a new `getBoundAsDouble` reader that takes `doubleValue()` from the offset constant's `Number`, instead of `getBoundAsInteger`.
+- The reason is that `Range` offsets are `Double` values.
+- The agent judged earlier that `getBoundAsInteger` keeps only `intValue()`.
+- The planned `getBoundAsDouble` returns null for an unbounded bound.
+- The planned `getBoundAsDouble` returns 0.0 for a `CURRENT ROW` bound.
+- The planned `getBoundAsDouble` returns the negated value for a `PRECEDING` bound.
+- The planned `getBoundAsDouble` returns the value as it is for a `FOLLOWING` bound.
+- A day-time `INTERVAL` literal holds milliseconds, from `SqlParserUtil.intervalToMillis`.
+- A year-month `INTERVAL` literal holds months, from `intervalToMonths`.
+- Decision: year-month `INTERVAL` bounds are rejected.
+- The agent judged that `RewriteFirstValueLastValueRule` rewrites only `CURRENT ROW` bounds.
+- The agent judged that `RewriteFirstValueLastValueRule` does not interfere with offset `RANGE` frames.
+- `testUnSupportedRangeBounds` runs `ROW_NUMBER() OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING)`.
+- `testUnSupportedRangeBounds` expects the old validator rejection message.
+- The agent noted that `dim1` is a `STRING` column.
+- The agent judged that this query will now pass, because `ROW_NUMBER` never calls `getWindowFrame()`.
+- `WindowFrameTest` checks frame equality with `EqualsVerifier.forClass(...).usingGetClass().verify()`.
+
+## Work State
+### Completed
+- No file in `/app` has been edited.
+- The agent read the quidem `!error` bytecode with `javap`.
+- The agent read the Calcite 1.41 frame parsing bytecode with `javap`.
+- The agent traced how a day-time `INTERVAL` literal becomes a `RexLiteral` value.
+
+### Active
+- Todo 1, the `WindowFrame.Range` class, is still marked in progress from earlier.
+- No code for todo 1 is written yet.
+- The agent was checking every `qaWin` `RANGE` case for a single `ORDER BY` key.
+- Its last grep for `ORDER BY` clauses with `RANGE` printed no match in the visible part of its output, which was cut.
+
+### Blocked
+- No item is blocked.
+
+## Next Move
+1. Finish checking that no `qaWin` `RANGE` case has exactly one `ORDER BY` key.
+2. Add the `WindowFrame.Range` class to `WindowFrame.java`.
+3. Register `Range` as `"range"` in `@JsonSubTypes`.
+4. Add the `range(...)` factory.
+5. Write the `RangeFrameResolver` class.
+6. Make `DefaultFramedOnHeapAggregatable` resolve `Range` frames.
+7. Add `Range` handling in `WindowValueProcessorBase`.
+8. Relax `DruidSqlValidator.validateWindow` for offset `RANGE` frames.
+9. Add a range branch to `Windowing.WindowGroup.getWindowFrame()` that builds `WindowFrame.range(...)`.
+10. Update `testUnSupportedRangeBounds`.
+11. Write native `Range` tests.
+12. Write SQL planner tests for offset `RANGE` frames.
+13. Compile the code.
+14. Run the tests.
+15. Run lint.
+
+## Relevant Files
+- `/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java` holds the frame types.
+- `/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java` is the only main implementation of `FramedOnHeapAggregatable`.
+- `/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/ClusteredGroupPartitioner.java` defines `computeBoundaries`.
+- `/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java` holds `computeFirstOrLastValueFramed`.
+- `/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java` holds `validateWindow`.
+- `/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java` holds `getWindowFrame()`.
+- `/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/Calcites.java` holds `isLongType`.
+- `/app/sql/src/test/java/org/apache/druid/sql/calcite/CalciteQueryTest.java` holds `testUnSupportedRangeBounds`.
+- `/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java` holds the `EqualsVerifier` frame tests.
+- `/app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin/` holds the recorded `RANGE` cases.
+[123] assistant: [reasoning]
+The regex didn't match because ORDER BY spans multiple lines. Let me extract the full OVER clauses properly with a python or awk multi-line approach:
+[tool:bash] {"command": "cd /app/quidem-ut/src/test/quidem/org.apache.druid.quidem.QTest/qaWin && python3 - <<'EOF'\nimport re, glob\npatterns = {}\nfor f in sorted(glob.glob(\"orderby_range_*.iq\")):\n    text = open(f).read()\n    # capture \"OVER (\" ... balanced to matching close paren\n    for m in re.finditer(r\"OVER\\s*\\(\", text):\n        depth = 1; i = m.end()\n        while i < len(text) and depth > 0:\n            if text[i] == '(': depth += 1\n            elif text[i] == ')': depth -= 1\n            i += 1\n        clause = re.sub(r\"\\s+\", \" \", text[m.start():i])\n        patterns.setdefault(clause, []).append(f.split(\".iq\")[0])\nfor p, files in sorted(patterns.items()):\n    print(f\"[{files[0]}..{files[-1]}] ({len(files)} files):\", p)\nEOF"}
+...output truncated...
+
+Full output saved to: /logs/agent/opencode/xdg-data/opencode/tool-output/tool_1f268efbf001S0z110HYFn9FDH
+
+[orderby_range_ub_preceding_first_last.03.all..orderby_range_ub_preceding_sum_count.03.all] (8 files): OVER (PARTITION BY client_ip ORDER BY server_ip, length(server_ip) DESC, timezone, time_floor(__time, 'PT12H') RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED PRECEDING)
+[orderby_range_current_first_last.01.all..orderby_range_current_sum_count.01.all] (8 files): OVER (PARTITION BY client_ip ORDER BY server_ip, length(server_ip) DESC, timezone, time_floor(__time, 'PT12H') RANGE CURRENT ROW)
+[orderby_range_ub_following_first_last.01.all..orderby_range_ub_following_sum_count.01.all] (8 files): OVER (PARTITION BY client_ip ORDER BY server_ip, length(server_ip) DESC, timezone, time_floor(__time, 'PT12H') RANGE UNBOUNDED FOLLOWING)
+[orderby_range_ub_preceding_first_last.01.all..orderby_range_ub_preceding_sum_count.01.all] (8 files): OVER (PARTITION BY client_ip ORDER BY server_ip, length(server_ip) DESC, timezone, time_floor(__time, 'PT12H') RANGE UNBOUNDED PRECEDING)
+[orderby_range_0_following_first_last.01.all..orderby_range_0_following_sum_count.02.all] (8 files): OVER (PARTITION BY client_ip ORDER BY server_ip, time_floor(__time, 'PT12H') ASC, timezone RANGE 0 FOLLOWING)
+[orderby_range_0_preceding_first_last.01.all..orderby_range_0_preceding_sum_count.02.all] (8 files): OVER (PARTITION BY client_ip ORDER BY server_ip, time_floor(__time, 'PT12H') ASC, timezone RANGE 0 PRECEDING)
+[orderby_range_1_following_first_last.01.all..orderby_range_1_following_sum_count.02.all] (8 files): OVER (PARTITION BY client_ip ORDER BY server_ip, time_floor(__time, 'PT12H') ASC, timezone RANGE 1 FOLLOWING)
+[orderby_range_1_preceding_first_last.01.all..orderby_range_1_preceding_sum_count.02.all] (8 files): OVER (PARTITION BY client_ip ORDER BY server_ip, time_floor(__time, 'PT12H') ASC, timezone RANGE 1 PRECEDING)
+[orderby_range_negative_first_last.12.all..order
+[truncated]
+[126] user: Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.
+[127] assistant: [reasoning]
+Confirmed: every qaWin RANGE case has either no ORDER BY or ≥2 ORDER BY keys (server_ip, time_floor(...), timezone — three keys, or server_ip, length(server_ip) DESC, timezone, time_floor(...) — four keys). None have exactly one key. So the plan holds: validator requires exactly one ORDER BY key for offset RANGE frames; all qaWin RANGE queries keep failing with the old message (multi-key or no ORDER BY → rejection).
+
+Wait — no-ORDER-BY cases: `OVER (PARTITION BY client_ip RANGE 0 FOLLOWING)` — no ORDER BY. Standard SQL requires ORDER BY for offset RANGE frames; Calcite validator itself may reject? Actually Calcite allows RANGE with no ORDER BY? Hmm, in standard SQL, RANGE without ORDER BY is only allowed with UNBOUNDED/CURRENT ROW. Calcite's validator may or may not enforce. Currently Druid's validator rejects all offset RANGE. With our change, we reject when orderList is null or size != 1 → no-ORDER-BY cases keep failing. Good.
+
+Multi-key cases: 3-4 keys → rejected. Good.
+
+All qaWin files keep their recorded QueryInterruptedException. No .iq edits needed.
+
+Now, proceed to write code. The plan:
+
+1. WindowFrame.Range class + register "range" + range() factory + equals/hashCode/toString.
+2. RangeFrameResolver? Wait — the summary says decision: new class RangeFrameResolver in org.apache.druid.query.operator.window. Hmm, but actually let me reconsider — maybe simpler to implement resolution directly in DefaultFramedOnHeapAggregatable and WindowValueProcessorBase. The prior decision was a shared helper class. Let me look at the actual code to decide implementation details.
+
+Let me start by re-reading the key files since this is a fresh context:
+- WindowFrame.java
+- FramedOnHeapAggregatable.java
+- DefaultFramedOnHeapAggregatable.java
+- WindowValueProcessorBase.java
+- WindowFramedAggregateProcessor.java
+- DruidSqlValidator.validateWindow
+- Windowing.java
+
+Let me read them now.
+All qaWin RANGE cases are confirmed to have either no ORDER BY or ≥2 keys, so the "exactly one ORDER BY key" validator rule keeps every recorded quidem error intact. Proceeding with implementation.
+[tool:todowrite] {"todos": [{"content": "Add WindowFrame.Range class + \"range\" subtype + range() factory", "priority": "high", "status": "in_progress"}, {"content": "Write shared Range frame resolver in org.apache.druid.query.operator.window", "priority": "high", "status": "pending"}, {"content": "Wire DefaultFramedOnHeapAggregatable (buildIteratorFor/aggregateAll/isEffectivelyUnbounded)", "priority": "high", "status": "pending"}, {"content": "Add Range handling in WindowValueProcessorBase.computeFirstOrLastValueFramed", "priority": "high", "status": "pending"}, {"content": "Relax DruidSqlValidator.validateWindow for single-key offset RANGE", "priority": "high", "status": "pending"}, {"content": "Add range branch to Windowing.getWindowFrame + getBoundAsDouble", "priority": "high", "status": "pending"}, {"content": "Update testUnSupportedRangeBounds; add native + SQL tests", "priority": "high", "status": "pending"}, {"content": "Compile, run tests, lint", "priority": "high", "status": "pending"}]}
+[
+  {
+    "content": "Add WindowFrame.Range class + \"range\" subtype + range() factory",
+    "status": "in_progress",
+    "priority": "high"
+  },
+  {
+    "content": "Write shared Range frame resolver in org.apache.druid.query.operator.window",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Wire DefaultFramedOnHeapAggregatable (buildIteratorFor/aggregateAll/isEffectivelyUnbounded)",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Add Range handling in WindowValueProcessorBase.computeFirstOrLastValueFramed",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Relax DruidSqlValidator.validateWindow for single-key offset RANGE",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Add range branch to Windowing.getWindowFrame + getBoundAsDouble",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Update testUnSupportedRangeBounds; add native + SQL tests",
+    "status": "pending",
+    "priority": "high"
+  },
+  {
+    "content": "Compile, run tests, lint",
+    "status": "pending",
+    "priority": "high"
+  }
+]
+[128] assistant: [tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFrame.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonProperty;
+24: import com.fasterxml.jackson.annotation.JsonSubTypes;
+25: import com.fasterxml.jackson.annotation.JsonTypeInfo;
+26: import com.google.common.collect.ImmutableList;
+27: import com.google.common.collect.Lists;
+28: import org.apache.druid.annotations.SubclassesMustOverrideEqualsAndHashCode;
+29: 
+30: import javax.annotation.Nullable;
+31: 
+32: import java.util.List;
+33: import java.util.Objects;
+34: 
+35: @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
+36: @JsonSubTypes(value = {
+37:     @JsonSubTypes.Type(name = "rows", value = WindowFrame.Rows.class),
+38:     @JsonSubTypes.Type(name = "groups", value = WindowFrame.Groups.class),
+39: })
+40: @SubclassesMustOverrideEqualsAndHashCode
+41: public interface WindowFrame
+42: {
+43:   static WindowFrame unbounded()
+44:   {
+45:     return rows(null, null);
+46:   
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowValueProcessorBase.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window.value;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonProperty;
+23: import org.apache.druid.error.DruidException;
+24: import org.apache.druid.java.util.common.ISE;
+25: import org.apache.druid.query.operator.window.Processor;
+26: import org.apache.druid.query.operator.window.WindowFrame;
+27: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+28: import org.apache.druid.query.rowsandcols.column.Column;
+29: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+30: import org.apache.druid.query.rowsandcols.semantic.AppendableRowsAndColumns;
+31: import org.apache.druid.query.rowsandcols.semantic.ClusteredGroupPartitioner;
+32: 
+33: import java.util.Collections;
+34: import java.util.List;
+35: import java.util.function.Function;
+36: 
+37: public abstract class WindowValueProcessorBase implements Processor
+38: {
+39:   private final String inputColumn;
+40:   private final String outputColumn;
+41: 
+42:
+[truncated]
+[129] assistant: [tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultFramedOnHeapAggregatable.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import com.google.common.annotations.VisibleForTesting;
+23: import com.google.common.base.Preconditions;
+24: import org.apache.druid.error.DruidException;
+25: import org.apache.druid.java.util.common.StringUtils;
+26: import org.apache.druid.java.util.common.UOE;
+27: import org.apache.druid.query.aggregation.Aggregator;
+28: import org.apache.druid.query.aggregation.AggregatorFactory;
+29: import org.apache.druid.query.dimension.DimensionSpec;
+30: import org.apache.druid.query.monomorphicprocessing.RuntimeShapeInspector;
+31: import org.apache.druid.query.operator.window.WindowFrame;
+32: import org.apache.druid.query.operator.window.WindowFrame.Groups;
+33: import org.apache.druid.query.operator.window.WindowFrame.OffsetFrame;
+34: import org.apache.druid.query.operator.window.WindowFrame.Rows;
+35: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+36: import org.apache.druid.query.rowsandcol
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/FramedOnHeapAggregatable.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/FramedOnHeapAggregatable.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import org.apache.druid.query.aggregation.AggregatorFactory;
+23: import org.apache.druid.query.operator.window.WindowFrame;
+24: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+25: 
+26: import javax.annotation.Nonnull;
+27: 
+28: /**
+29:  * A semantic interface used to aggregate a list of AggregatorFactories across a given set of data
+30:  * <p>
+31:  * The aggregation specifically happens on-heap and should be used in places where it is known that the data
+32:  * set can be worked with entirely on-heap.  There is support for frame definitions, frames aggregate certain
+33:  * subsets of rows in a rolling fashion like a windowed average.  Frames are defined in terms of boundaries
+34:  * where a boundary could be based on rows or it could be based on "PEER" groupings.
+35:  * <p>
+36:  * A peer grouping is defined as a set of rows that are the same based on the ORDER BY columns specified.  As such
+
+[truncated]
+[130] assistant: [reasoning]
+Now let me look at ColumnWithDirection, ClusteredGroupPartitioner, ColumnAccessor, and the existing test files to understand conventions. Also WindowFramedAggregateProcessor.
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/ColumnWithDirection.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/ColumnWithDirection.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonProperty;
+24: 
+25: import java.util.Objects;
+26: 
+27: public class ColumnWithDirection
+28: {
+29:   public static ColumnWithDirection ascending(String column)
+30:   {
+31:     return new ColumnWithDirection(column, Direction.ASC);
+32:   }
+33: 
+34:   public static ColumnWithDirection descending(String column)
+35:   {
+36:     return new ColumnWithDirection(column, Direction.DESC);
+37:   }
+38: 
+39:   public enum Direction
+40:   {
+41:     ASC(1),
+42:     DESC(-1);
+43: 
+44:     private final int directionInt;
+45: 
+46:     Direction(int directionInt)
+47:     {
+48:       this.directionInt = directionInt;
+49:     }
+50: 
+51:     public int getDirectionInt()
+52:     {
+53:       return directionInt;
+54:     }
+55:   }
+56: 
+57:   private final String columnName;
+58:   private final Direction direction;
+59: 
+60:   @JsonCreator
+61:   public Colum
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/ClusteredGroupPartitioner.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/ClusteredGroupPartitioner.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+23: 
+24: import java.util.ArrayList;
+25: import java.util.List;
+26: 
+27: /**
+28:  * A semantic interface used to partition a data set based on a given set of columns.
+29:  * <p>
+30:  * This specifically assumes that it is working with pre-clustered data and, as such, the groups returned
+31:  * should be contiguous and unique (that is, all rows for a given combination of values exist in only one grouping)
+32:  */
+33: public interface ClusteredGroupPartitioner
+34: {
+35:   static ClusteredGroupPartitioner fromRAC(RowsAndColumns rac)
+36:   {
+37:     ClusteredGroupPartitioner retVal = rac.as(ClusteredGroupPartitioner.class);
+38:     if (retVal == null) {
+39:       retVal = new DefaultClusteredGroupPartitioner(rac);
+40:     }
+41:     return retVal;
+42:   }
+43: 
+44:   /**
+45:    * Computes and returns a list of contiguous boundaries for independent 
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ColumnAccessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/column/ColumnAccessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.column;
+21: 
+22: import org.apache.druid.segment.column.ColumnType;
+23: 
+24: import javax.annotation.Nullable;
+25: 
+26: /**
+27:  * Allows for accessing a column, provides methods to enable row-by-row access of a specific column.
+28:  */
+29: public interface ColumnAccessor
+30: {
+31:   /**
+32:    * Get the type of the Column
+33:    *
+34:    * @return the type of the Column
+35:    */
+36:   ColumnType getType();
+37: 
+38:   /**
+39:    * Get the number of rows
+40:    *
+41:    * @return the number of rows
+42:    */
+43:   int numRows();
+44: 
+45:   /**
+46:    * Get whether the value of a row is null
+47:    *
+48:    * @param rowNum the row id, 0-indexed
+49:    * @return true if the value is null
+50:    */
+51:   boolean isNull(int rowNum);
+52: 
+53:   /**
+54:    * Get the {@link Object} representation of the row.
+55:    *
+56:    * @param rowNum the row id, 0-indexed
+57:    * @return the {@link Object} representation of the row.  Returns {@cod
+[truncated]
+[131] assistant: [reasoning]
+Now let me look at the tests: WindowFrameTest, WindowFramedAggregateProcessorTest, and the SQL layer files. Let me read them.
+[tool:read] {"filePath": "/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java"}
+<path>/app/processing/src/test/java/org/apache/druid/query/operator/window/WindowFrameTest.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window;
+21: 
+22: import nl.jqno.equalsverifier.EqualsVerifier;
+23: import org.apache.druid.query.operator.window.WindowFrame.OffsetFrame;
+24: import org.junit.jupiter.api.Test;
+25: 
+26: import static org.junit.jupiter.api.Assertions.assertEquals;
+27: 
+28: public class WindowFrameTest
+29: {
+30:   @Test
+31:   public void testEqualsRows()
+32:   {
+33:     EqualsVerifier.forClass(WindowFrame.Rows.class)
+34:         .usingGetClass()
+35:         .verify();
+36:   }
+37: 
+38:   @Test
+39:   public void testEqualsGroups()
+40:   {
+41:     EqualsVerifier.forClass(WindowFrame.Groups.class)
+42:         .usingGetClass()
+43:         .verify();
+44:   }
+45: 
+46:   @Test
+47:   public void testOffsetFrameUnbounded()
+48:   {
+49:     OffsetFrame of = new WindowFrame.Rows(null, null);
+50:     assertEquals(-100, of.getLowerOffsetClamped(100));
+51:     assertEquals(100, of.getUpperOffsetClamped(100));
+52:   }
+53: 
+54:   @Test
+55:   public void testOffsetFrameNor
+[truncated]
+[tool:read] {"filePath": "/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java"}
+<path>/app/sql/src/main/java/org/apache/druid/sql/calcite/rel/Windowing.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.sql.calcite.rel;
+21: 
+22: import com.google.common.annotations.VisibleForTesting;
+23: import com.google.common.base.Preconditions;
+24: import com.google.common.collect.ImmutableMap;
+25: import com.google.common.collect.Iterables;
+26: import org.apache.calcite.rel.RelCollation;
+27: import org.apache.calcite.rel.RelCollationTraitDef;
+28: import org.apache.calcite.rel.RelFieldCollation;
+29: import org.apache.calcite.rel.core.AggregateCall;
+30: import org.apache.calcite.rel.core.Project;
+31: import org.apache.calcite.rel.core.Window;
+32: import org.apache.calcite.rex.RexBuilder;
+33: import org.apache.calcite.rex.RexInputRef;
+34: import org.apache.calcite.rex.RexLiteral;
+35: import org.apache.calcite.rex.RexNode;
+36: import org.apache.calcite.rex.RexWindowBound;
+37: import org.apache.calcite.util.mapping.Mappings;
+38: import org.apache.druid.java.util.common.ISE;
+39: import org.apache.druid.java.util.common.StringUtils;
+40: import org.apache.druid.query.QueryException;
+41: 
+[truncated]
+[132] assistant: [tool:read] {"filePath": "/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java", "limit": 200}
+<path>/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.sql.calcite.planner;
+21: 
+22: import com.fasterxml.jackson.core.JsonProcessingException;
+23: import org.apache.calcite.adapter.java.JavaTypeFactory;
+24: import org.apache.calcite.prepare.BaseDruidSqlValidator;
+25: import org.apache.calcite.prepare.CalciteCatalogReader;
+26: import org.apache.calcite.rel.type.RelDataType;
+27: import org.apache.calcite.rel.type.RelDataTypeField;
+28: import org.apache.calcite.rel.type.RelRecordType;
+29: import org.apache.calcite.runtime.CalciteContextException;
+30: import org.apache.calcite.runtime.CalciteException;
+31: import org.apache.calcite.sql.SqlAggFunction;
+32: import org.apache.calcite.sql.SqlCall;
+33: import org.apache.calcite.sql.SqlIdentifier;
+34: import org.apache.calcite.sql.SqlInsert;
+35: import org.apache.calcite.sql.SqlKind;
+36: import org.apache.calcite.sql.SqlNode;
+37: import org.apache.calcite.sql.SqlNodeList;
+38: import org.apache.calcite.sql.SqlOperatorTable;
+39: import org.apache.calcite.sql.SqlSelect;
+40
+[truncated]
+[133] assistant: [tool:read] {"filePath": "/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java", "limit": 130, "offset": 660}
+<path>/app/sql/src/main/java/org/apache/druid/sql/calcite/planner/DruidSqlValidator.java</path>
+<type>file</type>
+<content>
+660:   {
+661:     if (query instanceof SqlInsert) {
+662:       SqlInsert insert = (SqlInsert) query;
+663:       if (insert.getTargetColumnList() != null) {
+664:         return insert.getTargetColumnList().get(ordinal);
+665:       } else {
+666:         return getNthExpr(
+667:             insert.getSource(),
+668:             ordinal,
+669:             sourceCount);
+670:       }
+671:     } else if (query instanceof SqlUpdate) {
+672:       SqlUpdate update = (SqlUpdate) query;
+673:       if (update.getSourceExpressionList() != null) {
+674:         return update.getSourceExpressionList().get(ordinal);
+675:       } else {
+676:         return getNthExpr(
+677:             SqlNonNullableAccessors.getSourceSelect(update),
+678:             ordinal, sourceCount);
+679:       }
+680:     } else if (query instanceof SqlSelect) {
+681:       SqlSelect select = (SqlSelect) query;
+682:       SqlNodeList selectList = SqlNonNullableAccessors.getSelectList(select);
+683:       if (selectList.size() == sourceCount) {
+684:         return selectList.get(ordinal);
+685:       } else {
+686:         return query; // give up
+687:       }
+688:     } else {
+689:       return query; // give up
+690:     }
+691:   }
+692: 
+693:   private boolean isPrecedingOrFollowing(@Nullable SqlNode bound)
+694:   {
+695:     if (bound == null) {
+696:       return false;
+697:     }
+698:     SqlKind kind = bound.getKind();
+699:     return kind == SqlKind.PRECEDING || kind == SqlKind.FOLLOWING;
+700:   }
+701: 
+702:   /**
+703:    * Checks if the given endpoint is acceptable.
+704:    */
+705:   private boolean isValidEndpoint(@Nullable SqlNode bound)
+706:   {
+707:     if (isUnboundedOrCurrent(bound)) {
+708:       return true;
+709:     }
+710:     if (bound.getKind() == SqlKind.FOLLOWING || bound.getKind() == SqlKind.PRECEDING) {
+711:       final SqlNode boundVal = ((SqlCall) bound).operand(0);
+712:       i
+[truncated]
+[134] assistant: [reasoning]
+Now I have the validator picture. Let me now write the WindowFrame.Range class. Key design:
+
+```java
+class Range extends OffsetFrame  // wait — no, Range must NOT extend OffsetFrame since offsets are Double
+```
+
+Per the requirements: "Range must not extend OffsetFrame" — actually let me re-read: "The required static factory is WindowFrame.range(...)"; "`Range` must not extend `OffsetFrame`." Hmm, wait, actually the summary says Range must not extend OffsetFrame? Let me re-read the summary: "- `Range` must not extend `OffsetFrame`." Yes — because OffsetFrame has Integer offsets. Range has Double offsets. So Range implements WindowFrame directly.
+
+```java
+class Range implements WindowFrame
+{
+  @JsonProperty
+  private final Double lowerOffset;
+  @JsonProperty
+  private final Double upperOffset;
+  @JsonProperty
+  private final ColumnWithDirection orderBy;
+
+  @JsonCreator
+  public Range(
+      @JsonProperty("lowerOffset") Double lowerOffset,
+      @JsonProperty("upperOffset") Double upperOffset,
+      @JsonProperty("orderBy") ColumnWithDirection orderBy)
+  {
+    this.lowerOffset = lowerOffset;
+    this.upperOffset = upperOffset;
+    this.orderBy = Preconditions.checkNotNull(orderBy); // or Objects.requireNonNull
+  }
+
+  public Double getLowerOffset() { return lowerOffset; }
+  public Double getUpperOffset() { return upperOffset; }
+  public ColumnWithDirection getOrderBy() { return orderBy; }
+
+  @Override
+  public int hashCode() { return Objects.hash(lowerOffset, upperOffset, orderBy); }
+
+  @Override
+  public boolean equals(Object obj)
+  {
+    if (this == obj) return true;
+    if (obj == null || getClass() != obj.getClass()) return false;
+    Range other = (Range) obj;
+    return Objects.equals(lowerOffset, other.lowerOffset)
+        && Objects.equals(upperOffset, other.upperOffset)
+        && Objects.equals(orderBy, other.orderBy);
+  }
+
+  @Override
+  public String toString() {...}
+}
+```
+
+Wait — EqualsVerifier requires... For EqualsVerifier.forClass(Range.class).usingGetClass().verify() — it needs a non-final class or prefab values? Actually EqualsVerifier works on classes with final fields fine. Rows/Groups work. Range with a ColumnWithDirection field: EqualsVerifier will need to create instances of ColumnWithDirection — it can since it has a constructor. But ColumnWithDirection has an enum Direction field. EqualsVerifier handles enums fine. But there's a subtlety: EqualsVerifier may complain about the constructor requiring non-null (if we Preconditions.checkNotNull). Rows and Groups don't have null checks. EqualsVerifier handles null fields fine unless the constructor throws NPE... Actually EqualsVerifier creates objects via reflection and may pass null values to constructor fields? No — EqualsVerifier uses values that are non-null by default ("red" values). It can handle null fields for equals checks by using DefaultEqualsVerifier... hmm. Actually EqualsVerifier does test with null field values in some cases (for "null fields" and "significant fields" checks). If the constructor throws NPE when passed null, EqualsVerifier reports an error "Precondition: null". 
+
+Common pattern: EqualsVerifier handles this if we make fields nullable (no null check in constructor). Since ColumnWithDirection is @JsonProperty field, Jackson can pass null. Rows/Groups don't null-check their constructor args. To be consistent and EqualsVerifier-friendly, don't null-check in constructor. Or... we could null-check and skip EqualsVerifier for Range. But the safest: mirror Groups' style exactly (no null checks) and add an EqualsVerifier test.
+
+Hmm, but semantically orderBy should be non-null. The requirement says "non-null ColumnWithDirection orderBy". Let me keep it simple: follow the codebase style (Groups has no null checks), so Range won't either. But then a defensive check would be nice... The existing code style for Groups doesn't check. For EqualsVerifier with a `ColumnWithDirection` field: EqualsVerifier will instantiate Range with a "real" ColumnWithDirection and also with a null one? Let me think: EqualsVerifier's "constructor test" is optional. The default checks include: prefab values, null checks for fields ("AbstractDelegation"?), "Significant fields" — it checks that fields of unequal objects produce inequality. For a field of type ColumnWithDirection (a class), it creates instances via reflection. If Range constructor throws on null, EqualsVerifier might fail when it tries to create a Range with null orderBy... I believe EqualsVerifier does NOT pass null to constructor parameters unless it's testing "null fields" — and for that it uses `forClass(...).verify()` — hmm.
+
+Let me check how other Druid classes handle EqualsVerifier with non-null fields... e.g., ColumnWithDirection itself has no EqualsVerifier test. Let me check what tests exist for classes with EqualsVerifier and non-null fields.
+
+Actually, simpler: I'll write the Range test mirroring Rows/Groups, run it, and adjust if EqualsVerifier complains.
+
+Now the resolver. Let me design `RangeFrameResolver`... wait, but where should resolution live? The decision from summary: new class in `org.apache.druid.query.operator.window` package. It needs:
+- input: AppendableRowsAndColumns rac (for aggregation path) — but WindowValueProcessorBase uses `ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(...)`, which takes plain RowsAndColumns. DefaultFramedOnHeapAggregatable.buildIteratorFor takes AppendableRowsAndColumns but only uses rac.numRows() and ClusteredGroupPartitioner.fromRAC(rac). So the resolver should take RowsAndColumns.
+- frame: WindowFrame.Range
+
+API:
+- `int[] getGroupBoundaries()` — peer group boundaries
+- per group g (0..numGroups-1): `int getFrameStart(g)`, `int getFrameEnd(g)` (exclusive). Or an `Iterable<AggInterval>`-like structure.
+
+But AggInterval/Interval are package-private static classes inside DefaultFramedOnHeapAggregatable (in org.apache.druid.query.rowsandcols.semantic). The resolver in org.apache.druid.query.operator.window can't reference them. So the resolver should expose primitives: boundaries + frameStart/frameEnd per group. Then:
+
+- DefaultFramedOnHeapAggregatable builds its Iterable<AggInterval> from those.
+- WindowValueProcessorBase.computeFirstOrLastValueFramed uses boundaries + frameStart/frameEnd to pick first/last value.
+
+Design of RangeFrameResolver:
+
+```java
+public class RangeFrameResolver
+{
+  private final int[] groupBoundaries;    // numGroups+1 entries
+  private final int[] frameStarts;       // numGroups entries
+  private final int[] frameEnds;         // numGroups entries
+
+  public RangeFrameResolver(RowsAndColumns rac, WindowFrame.Range frame) { ... }
+
+  public int getNumGroups() { return groupBoundaries.length - 1; }
+  public int getGroupStart(int g) { return groupBoundaries[g]; }
+  public int getGroupEnd(int g) { return groupBoundaries[g + 1]; } // exclusive
+  public int getFrameStart(int g) { return frameStarts[g]; }
+  public int getFrameEnd(int g) { return frameEnds[g]; } // exclusive
+}
+```
+
+Resolution algorithm:
+
+Given frame: lowerOffset Double (nullable = unbounded), upperOffset Double (nullable = unbounded), orderBy ColumnWithDirection(column, direction).
+
+Data is sorted by the ordering column within the partition (window operator sorts by ordering). Nulls sort first (ASC) or last (DESC) per LongColumnAccessorBase compareRows semantics: null lhs returns -1 → nulls first in ASC; direction multiplies → nulls last in DESC.
+
+Wait — actually, let me double check DefaultNaiveSortMaker to make sure the sort semantics matches accessor.compareRows * direction. From summary: "DefaultNaiveSortMaker uses accessor.compareRows * direction". So data within a partition is sorted such that compareRows(a,b)*directionInt gives ascending order. With nulls: compareRows(null, x) = -1 (null lhs → -1). So in ASC (directionInt=1): null row sorts before x. In DESC (directionInt=-1): -1*-1=+1 → null sorts after x → nulls last. Good.
+
+Also compareRows(null, null) = 0.
+
+Now, the ordering column values are numeric (LONG/FLOAT/DOUBLE — planner enforces). At native level, resolver should defensively check type via accessor.getType().getValueType() is one of LONG/FLOAT/DOUBLE... but wait — if both offsets are null (unbounded), Range ≡ unbounded and no value comparison is needed. The aggregation path calls isEffectivelyUnbounded first, so resolver would only be created for non-unbounded frames. But actually the resolver can handle both-null trivially. For type check: if either offset non-null, require numeric type, else throw DruidException. Since planner already ensures numeric keys, this is defensive.
+
+Type check: ColumnType of the column. What about STRING keys with unbounded Range? getWindowFrame in Windowing: if not isRows and bounds are unbounded/current → groups path... wait no. Let me re-examine: my plan for Windowing.getWindowFrame:
+
+```java
+public WindowFrame getWindowFrame()
+{
+  if (group.lowerBound.isUnbounded() && group.upperBound.isUnbounded()) {
+    return WindowFrame.unbounded();
+  }
+  if (group.isRows) {
+    return WindowFrame.rows(...);
+  }
+  if (isOffsetBound(group.lowerBound) || isOffsetBound(group.upperBound)) {
+    // RANGE frame with at least one PRECEDING/FOLLOWING offset: value-based range
+    // check exactly one ordering key and numeric type
+    final List<RelFieldCollation> fields = group.orderKeys.getFieldCollations();
+    if (fields.size() != 1) { throw ... }
+    final RelFieldCollation field = fields.get(0);
+    ... direction check ...
+    final String column = sig.getColumnName(field.getFieldIndex());
+    final ColumnType columnType = sig.getColumnType(field.getFieldIndex());
+    if (!(columnType.isNumeric() or is long-timestamp)) { throw QueryException SQL_QUERY_UNSUPPORTED }
+    return WindowFrame.range(getBoundAsDouble(group.lowerBound), getBoundAsDouble(group.upperBound), new ColumnWithDirection(column, direction));
+  }
+  return WindowFrame.groups(...);
+}
+```
+
+Wait — what error should multi-key or non-numeric key throw at planning time? The validator already rejects multi-key offset RANGE (orderList.size() != 1). So planning-time only needs to handle... hmm, actually if the validator rejects, the planner won't see multi-key cases. But defensive checks are still good. Actually wait — will the validator check happen before or... The validator runs during validation, planner runs after. So planner sees only validator-passed queries. Multi-key offset RANGE → validator rejects → never reaches planning. But hold on: which validation does Calcite's own SqlValidator do on RANGE offset frames? Standard SQL says RANGE requires ORDER BY with exactly one sort key... Calcite's own validator: does it enforce this? Let me check Calcite's SqlValidatorImpl/SqlWindow validation. Actually there's `SqlValidatorImpl.validateWindow` → `SqlWindow.checkMembershipAndOrder`? Hmm. There's also the "value-based" RANGE check in Calcite? Calcite historically doesn't fully validate RANGE frames at validation time (it's lenient). Druid's validator adds its own checks.
+
+So for a single-key numeric case: validator passes (my new relaxed check), planner builds WindowFrame.range. For single-key STRING case with offset RANGE: my validator check must reject it — since the planner's type check uses RowSignature (planning time), but validation-time we don't have row types easily... Actually at validation time, the ORDER BY key's type IS available: `scope.resolve`... hmm, it's more complex. Simplest per summary decision: "Decision: the key type check runs at planning time in Windowing.getWindowFrame" and "Decision: the validator accepts an offset RANGE frame only with exactly one ORDER BY key" and "Decision: the validator accepts an offset bound literal only if it is numeric or a day-time INTERVAL".
+
+So single-key STRING + numeric offset RANGE → passes validator → hits planning-time type check → error. What error class? CannotBuildQueryException? or QueryException with SQL_QUERY_UNSUPPORTED_ERROR_CODE. In Windowing, existing errors: `throw new QueryException(QueryException.SQL_QUERY_UNSUPPORTED_ERROR_CODE, StringUtils.format("Cannot handle ordering with direction[%s]", field.direction), null, null)`. I'll follow that pattern.
+
+Hmm wait, but actually — should the key type check be at validation time? The summary says planning time. OK, planning time it is.
+
+But wait — what about testUnSupportedRangeBounds which uses `ROW_NUMBER() OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING)` with dim1 STRING, single key. Validator (relaxed): single key OK, bounds are numeric literals OK → passes validation. ROW_NUMBER → KNOWN_WINDOW_FNS "ROW_NUMBER" → WindowRowNumberProcessor, no getWindowFrame call → query succeeds! Result would be row numbers 1..n. The test expects invalidSqlIs("Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead. (line [1], column [31])").
+
+So this test MUST be updated. Options per summary: change SQL to multi-key (e.g. `ORDER BY dim1, dim2 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING`) keeping the old message. Position of the error would change (column of the window clause start?). invalidSqlIs includes "(line [1], column [31])" — the column points at... the window spec position? For `SELECT dim1,ROW_NUMBER() OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo`, column 31 is where `OVER` or `(` starts? Let me count: "SELECT dim1,ROW_NUMBER() OVER (..." — positions: S=1... `ROW_NUMBER()`: starts at 13. `(` at 24. ` OVER `: O at 26... `(` at 31. Yes, column 31 is the `(` of OVER? Or the window node's pos. Actually the error is thrown with windowOrId as node — its position is the `(` after OVER? SqlWindow's pos... the OVER call's pos is at "OVER"? Hmm, whatever — if I change the SQL, I need to update the expected column. That's fragile. Alternative: keep SQL similar but with two keys and recompute expected column.
+
+Better approach: keep this test but change the query to a multi-key ORDER BY, and also update expected position. Let me think about what makes a good test update:
+
+```sql
+SELECT dim1, ROW_NUMBER() OVER (ORDER BY dim1, dim2 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) FROM druid.foo
+```
+
+Position of windowOrId — need to compute. The existing test at line 15619-15628:
+
+```java
+  @Test
+  public void testUnSupportedRangeBounds()
+  {
+    expectQueryIllegalArgumentException... 
+```
+
+Let me read the actual test first. Also there might be more tests that break — e.g., other tests using RANGE offsets. Let me grep CalciteQueryTest for "RANGE " to find all uses. Also test files like WindowingTest, WindowOperatorQueryTest etc.
+
+Actually, wait. Should I even relax the validator for ROW_NUMBER etc.? The validator check is per-window-spec, not per-function. The relaxation applies to any window function with a RANGE offset frame. ROW_NUMBER ignores frames, so `ROW_NUMBER() OVER (ORDER BY dim1 RANGE 3 PRECEDING)` would now succeed (single key, string). That's semantically fine — ROW_NUMBER output doesn't depend on frame. Actually in standard SQL, that's valid: ROW_NUMBER with RANGE frame is legal (frame is just ignored). PostgreSQL: `SELECT row_number() OVER (ORDER BY x RANGE 3 PRECEDING)` — PG might reject RANGE with non-sorted... no, PG accepts ROW_NUMBER with RANGE frames? PG docs: "For the purpose of row_number, the frame is not considered"... Actually PG: row_number doesn't accept a frame clause? "The built-in window functions... row_number... cannot use a frame clause"? Hmm — PostgreSQL does allow `row_number() OVER (ORDER BY x RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)`? Let me think... PG source: row_number has prorowestimator... Not sure. In PG, `row_number() OVER (ORDER BY x RANGE UNBOUNDED PRECEDING)` works? The manual says: "row_number... does not accept a frame clause"? No wait, that's not enforced... Actually PostgreSQL DOES throw "window function row_number requires an ORDER BY clause"... hmm, no.
+
+Doesn't matter much — Druid's ROW_NUMBER just ignores frames. If the frame spec passes validation for single numeric keys, ROW_NUMBER with a RANGE offset frame would work. For string keys it'd still hit... wait no — ROW_NUMBER path never calls getWindowFrame(), so no type check happens. So `ROW_NUMBER() OVER (ORDER BY dim1 RANGE 3 PRECEDING)` (string key) would succeed silently. Hmm. That's a bit inconsistent: SUM over dim1 RANGE 3 PRECEDING errors (type check), ROW_NUMBER doesn't. 
+
+Options:
+(a) Do the key type check at validation time — then ROW_NUMBER with string key + offset RANGE also rejected. More consistent.
+(b) Planning time check only for frame-consuming functions.
+
+The summary decided planning-time. But let me reconsider doing it at validation time — is the ORDER BY key type available at validation? In validateWindow, we have `scope` and `call`. The ORDER BY items are SqlNode expressions. Getting the type: `scope.getValidator().getValidatedNodeType(...)` or via `deriveType(scope, node)`. Actually SqlValidatorImpl has deriveType(SqlNode) public via `getValidator().deriveType(scope, node)`? Hmm, `SqlValidator.deriveType(SqlValidatorScope scope, SqlNode operand)` exists (deprecated in newer Calcite?). This is validation-time and would give the RelDataType of the ORDER BY expression. We could check type name is numeric or TIMESTAMP.
+
+But validation of the ORDER BY nodes may not have happened yet (validateWindow is called before ORDER BY validation?). super.validateWindow is called after — the ORDER BY items might not be validated yet when our check runs. Risky. Also the type could be dynamic (e.g. expressions like time_floor(__time,...)). deriveType should work since it derives from scope.
+
+Hmm, but actually the simpler question: what does standard SQL do? In standard SQL, `RANGE 3 PRECEDING` with ORDER BY string_col is illegal ("if RANGE and <offset> then ORDER BY must be a single sort key of a numeric/datetime type"). Calcite's own validator... does it check this? Let me check Calcite 1.41 SqlValidatorImpl.validateWindow / SqlWindow validation. I recall Calcite does check "RANGE with PRECEDING/FOLLOWING requires ORDER BY" maybe? There's `SqlWindow.checkWindowSyntax`? Not sure it validates RANGE type compatibility.
+
+Since Druid already runs its own checks in validateWindow BEFORE super.validateWindow, adding a type check there would need the ORDER BY expression types — derivable via `getDerivedType`? There's a method `getValidatedNodeType`... only works if already validated.
+
+I'll stick with the summary decision: planning-time type check. For ROW_NUMBER inconsistency — the practical consequence: tests. testUnSupportedRangeBounds uses ROW_NUMBER + string key → would now succeed → must update the test. Options for the test:
+- Change to `SELECT dim1, COUNT(dim2) OVER (ORDER BY dim1 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) FROM druid.foo` — single string key + numeric literal bounds → passes validator → planning-time type check → error. What message? It'd be the QueryException thrown in getWindowFrame: e.g. "Cannot handle RANGE frames with ordering type[STRING]" or similar. The invalidSqlIs helper expects specific text.
+
+Hmm, what does invalidSqlIs do — asserts planner error message. QueryException with SQL_QUERY_UNSUPPORTED_ERROR_CODE at planning time → CannotBuildQueryException? Actually `new QueryException(...)` thrown during Windowing.fromCalciteStuff → propagates as QueryException → SqlQueryTestHelper expects... Let me check how other planning errors are asserted in tests, e.g. "Cannot handle ordering with direction" — grep tests.
+
+Alternatively simpler: keep ROW_NUMBER in the test but change ORDER BY to multi-key `ORDER BY dim1, dim2 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING` → validator still rejects with the SAME message "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead." → only the expected column position changes (SQL text is longer). This keeps the test's spirit (multi-key RANGE unsupported) without depending on planning errors. And position: the message includes "(line [1], column [31])" appended by invalidSqlIs infra based on SqlParserPos of the windowOrId node. The window node position: for `SELECT dim1,ROW_NUMBER() OVER (ORDER BY dim1, dim2 RANGE BETWEEN 3 PRECEDING AND 2 FOLLOWING) from druid.foo`, the window spec `(` pos: "SELECT dim1,ROW_NUMBER() OVER (" — same prefix! Because I only add ", dim2" AFTER "dim1", the position of the OVER/window start doesn't change! The windowOrId node pos is at the `OVER`... whatever pos it currently reports (column 31) stays column 31 since prefix unchanged. 
+
+Wait — is the error position the window spec or...? buildCalciteContextException(windowOrId) uses windowOrId.getParserPosition(). For `OVER (...)`, windowOrId is the SqlWindow node. Its pos — SqlWindow is created by the parser at the position of... the whole OVER expression? Column 31 = the `(` after OVER? Let me verify: "SELECT dim1,ROW_NUMBER() OVER (ORDER BY dim1 RANGE..." — chars: S(1)E(2)L(3)E(4)C(5)T(6) (7)d(8)i(9)m(10)1(11),(12)R(13)O(14)W(15)_(16)N(17)U(18)M(19)B(20)E(21)R(22)((23))(24) (25)O(26)V(27)E(28)R(29) (30)((31). Yes! Column 31 = the `(`. So SqlWindow.getParserPosition() is at the `(`? Or SqlParserPos spans... whatever, as long as prefix `SELECT dim1,ROW_NUMBER() OVER (` is unchanged, the reported column stays 31.
+
+So: change test SQL from `ORDER BY dim1 RANGE` to `ORDER BY dim1, dim2 RANGE` → same message, same column 31. Minimal test churn. 
+
+But ALSO: I should add new positive tests for offset RANGE behavior in CalciteQueryTest (testRangeOffsetFrames...) and in native WindowFramedAggregateProcessorTest / WindowFirstProcessorTest etc. And negative tests: string key + offset RANGE → planning error; no ORDER BY + offset RANGE → validator error; day-time interval offset → works (millis); year-month interval → validator error? Wait — year-month intervals: SqlParserUtil.intervalToMonths. The validator check: bound literal is INTERVAL type with year-month → reject. Message? Maybe reuse the same RANGE message? Or a new message. Hmm.
+
+Let me think about what bound literal kinds to accept at validation:
+- SqlKind of bound operand: numeric literal (SqlLiteral of exact/approx numeric type) → OK
+- day-time interval literal → OK (millis)
+- year-month interval → reject
+- other (string literal, etc.) → reject
+
+In isValidEndpoint, boundVal = ((SqlCall) bound).operand(0), SqlUtil.isLiteral(boundVal) — SqlIntervalLiteral qualifies as literal? SqlIntervalLiteral is a SqlLiteral subclass — yes isLiteral true.
+
+New check in validator for RANGE offset bounds: 
+```java
+private boolean isValidRangeEndpoint(@Nullable SqlNode bound)
+{
+  if (isUnboundedOrCurrent(bound)) return true;
+  final SqlNode boundVal = ((SqlCall) bound).operand(0);
+  final RelDataType type = ... deriveType? 
+}
+```
+Hmm — to distinguish year-month vs day-time interval, we can look at the SqlLiteral's value: if boundVal is SqlIntervalLiteral, its value is SqlIntervalLiteral.IntervalValue with intervalName/intervalQualifier → `intervalQualifier.isYearMonth()` exists? SqlIntervalQualifier has `isYearMonth()` method (public). Yes: `SqlIntervalQualifier.isYearMonth()`. And for numeric literals, `SqlLiteral.getTypeName()` in SqlTypeName.DECIMAL/INTEGER/etc or just `SqlTypeUtil.isNumeric(type)`. Since it's a literal, `boundVal instanceof SqlLiteral` → `literal.getTypeName()` — for numeric literals, typeName is DECIMAL usually (parser produces DECIMAL). SqlTypeName.APPROX_NUMERIC (DOUBLE) for '1.5E0'... So check: `SqlTypeName.EXACT_TYPES.contains(...)` hmm. Simpler: 
+```java
+final SqlTypeName typeName = ((SqlLiteral) boundVal).getTypeName();
+if (SqlTypeUtil.isNumeric(SqlTypeUtil...)... 
+```
+Hmm, SqlLiteral.getTypeName returns SqlTypeName; numeric check: `typeName == SqlTypeName.DECIMAL || typeName == SqlTypeName.INTEGER || ...`. There's `SqlTypeName.MULTISETS`... Let me use: `SqlTypeUtil.isNumeric(RelDataType)` needs a type. Alternatively `boundVal instanceof SqlNumericLiteral` → covers numeric literals (SqlNumericLiteral covers INT/DECIMAL/DOUBLE literals). And `boundVal instanceof SqlIntervalLiteral` with `!((SqlIntervalLiteral.IntervalValue) literal.getValue()).getIntervalQualifier().isYearMonth()` for day-time.
+
+Hmm wait, is there also validation needed that the value is a positive/valid offset? Calcite itself validates RANGE offsets must be literal (it does its own checks in super.validateWindow — "RANGE ... PRECEDING" requires literal or interval in standard; Calcite may throw its own errors for non-literal... e.g. "RANGE frame with PRECEDING/FOLLOWING requires ORDER BY"? Actually Calcite's SqlValidator does some checks like "RANGE cannot be used with..." Let me check what Calcite's validateWindow would allow through. E.g., Calcite check: in SqlValidatorImpl.validateWindow → calls window.validate()... SqlWindow has checkValid... I remember Calcite 1.21+ added `RANGE ... INTERVAL` checks? Not sure.
+
+Negative offsets: `RANGE BETWEEN -1 PRECEDING AND 1 FOLLOWING` — the qaWin files have negative numeric offsets, meaning "offset value can be negative" — e.g. `-1 PRECEDING` = value v-(-1)=v+1 — semantically weird but the frame is well-defined as interval [v+(-1), v+1]... wait `-1 PRECEDING` means lowerBound = v - offset where offset = -1 → v+1. Yes well-defined. Standard SQL allows negative offsets? The SQL spec says <offset> must be... whatever, qaWin has them recorded as errors currently; with our change single-key numeric would succeed but multi-key stays error. Fine.
+
+Now, the null-key semantics: what does standard SQL say about RANGE frames with NULL order keys? In standard SQL, when ORDER BY key is NULL, RANGE frame is empty... e.g. Postgres: "if the sort key is null, the frame is empty" (for RANGE with offsets). Actually PG: nulls are included in default frame; for RANGE offset frames with NULL key, PG treats frame as empty for that row? Let me think about PG behavior: `SELECT sum(x) OVER (ORDER BY x RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)` with x null → PG returns null sum? In PG, when the current row's key is null and RANGE offsets are used, the frame is empty → sum is null. Hmm, but our design decision from the summary: "When the current row's key is NULL, finite bounds must resolve to the edges of the contiguous NULL run that holds the row."
+
+Hmm wait — that decision says null-key row's frame = the NULL run [start, end). That treats null as equal-valued peers. With boundValue(null) being undefined, resolving finite bounds to null-run edges means the frame = exactly the null run. That's the "nulls are peers, frame = null run" semantics.
+
+What does Postgres do? Postgres: for RANGE frames, when the row's sort key is null, the frame is... Let me recall window.c: for RANGE mode with offset, if current row's key is null, the frame boundaries are set so the frame contains only rows with null keys (the null peers)? Actually in PG, "winframe" computation: for RANGE offset frames, comparisons involving null: `-frame` — PG treats NULL as comparing equal to NULL; offset bounds with null: frame is empty except null peers? I believe PG: `RANGE 1 PRECEDING` with null key → frame = just the null peers? Hmm.
+
+Actually PG docs state: "the frame ... when the current row's sort key is null and RANGE mode is used with an offset, the frame contains all rows with null sort keys"? I don't remember precisely. Different DBs differ. The quidem recorded outputs (which are Calcite+Druid... no wait, qaWin recorded outputs came from running against some engine — the "all" suffix suggests cross-DB recorded... they're error cases anyway since multi-key).
+
+Hmm — but what matters for Druid is choosing defined semantics. The summary decision: null-key row with finite bounds → frame = null run edges. I.e., frame = [nullRunStart, nullRunEnd) — the whole null peer group. This means null rows aggregate all null rows in partition. It's a reasonable choice: peers get identical output, and null's frame = the null peer run.
+
+Hmm wait, but should the null run also include... let me think again about what's most defensible: With ASC, nulls first. Null run at start. For a non-null row v with lower bound unbounded: frame start = partition start (includes nulls). For upper bound v+o: nulls < v ≤ v+o so nulls included via upper bound too... wait nulls sort before v in ASC, so nulls are within [lower, upper] whenever lower ≤ null... no: frame = rows x with lower ≤ x ≤ upper. Nulls sort first (ASC). If lower = v-1 (non-null row's bound), nulls compare "less than" lower → not included. Correct: only rows with value in [v-1, v+1]. Nulls excluded unless unbounded side reaches them.
+
+For the null row itself (current row key null): standard semantics (e.g. what Calcite/Druid should do)... Let's look at what "Microsoft SQL Server" does: "If ORDER BY key is NULL, RANGE frame is the entire partition"? No...
+
+Let me just go with the decided semantics from the summary: null-key rows with any finite bounds → frame = the contiguous null run. Both bounds unbounded → whole partition (nulls included). One side finite, one unbounded: e.g. lower unbounded, upper = v+o where v is null → what's "null + o"? If we say upper bound resolves to nullRunEnd (nulls < everything in ASC → upper bound effectively "greater than null" → all non-null rows ≤ upper? no...).
+
+Hmm, hold on. Let me think about this more carefully, because the semantics need to be coherent:
+
+ASC sort order: nulls, then ascending non-null values.
+Row with null key. Frame lower bound: UNBOUNDED PRECEDING → partition start. Frame upper bound: offset o FOLLOWING → upperBound = key + o = null + o → undefined → treat as nullRunEnd? Then frame = [partitionStart, nullRunEnd) = nulls only. That gives null row frame = null run.
+
+But standard SQL (DuckDB/PG): Let me think about PG's actual behavior since it's the reference most people check: PG window.c for RANGE offsets: when computing frame, it compares current row's key with boundary rows' keys using `OPERATOR` ... `are_peers`, `isnull` handling: In `update_frameoffset` for RANGE mode, PG does: if current row's key is null, then... I recall PG: rows with NULL keys: RANGE frame with offsets — "if ORDER BY key IS NULL, the frame is empty"? Hmm, actually I remember: PG computes frame using binary search with comparisons where null keys never match offset comparisons, so the frame for a null row in RANGE offset mode contains just... 
+
+Let me look at DuckDB docs: "RANGE frames with NULL values: if the ordering value is NULL, the frame contains all rows with NULL ordering value" — DuckDB treats NULLs as a group. I believe DuckDB: `RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING` with nulls → null row's frame = all null rows (peers). That matches our decided semantics! And I recall DuckDB blog post "SQL window functions improve" — "range frames ... NULL values are handled by treating all NULL values as equal" → frame of null row = null peers. 
+
+OK so decided semantics = DuckDB semantics: null row frame = null run (when any bound finite). Peers identical output. 
+
+Now what about one side unbounded with null current row: lower UNBOUNDED → partition start; upper v+o → null+o undefined. If upper resolves to nullRunEnd, frame = null run only. But hmm — for a non-null row v, lower UNBOUNDED means frame includes nulls. For consistency: "v + o" for v null — should the frame extend past nulls into non-nulls? If we define null "value" as -infinity (ASC), then null + o = -infinity + o = still -infinity-ish → less than all non-nulls → nullRunEnd. And null - o likewise → less than everything → but lower bound... if lower = null-o = -inf, frame start = nullRunStart? Hmm: lower bound null-o → "first row x >= null-o" — nulls are >= -inf? nulls compare as -inf; -inf >= -inf true → frame start = nullRunStart (=partition start in ASC since nulls first anyway). Upper bound null+o → "first row x > null+o = -inf+o" → hmm if -inf+o = -inf, then "x > -inf" → all nulls qualify (nulls = -inf, -inf > -inf false) → frameEnd = nullRunStart?? That would give EMPTY frame for FOLLOWING bounds and full null run for PRECEDING... 
+
+This is getting overcomplicated. Simplest coherent semantics (DuckDB-like): when current row key is null:
+- bound unbounded → partition edge (0 or numRows)
+- bound finite (offset or CURRENT ROW) → null run edge: lower → nullRunStart, upper → nullRunEnd.
+
+So null row's frame with any mix of finite/unbounded bounds: [nullRunStart-or-0, nullRunEnd-or-numRows):
+- both finite: [nullRunStart, nullRunEnd) = null run ✓ (matches "finite bounds resolve to null run edges")
+- lower unbounded, upper finite: [0, nullRunEnd) = nulls + ... wait that includes nulls only if nulls at start (ASC). Hmm [0, nullRunEnd) — in ASC nulls are first so 0..nullRunEnd = exactly the null run. ✓
+- lower finite, upper unbounded: [nullRunStart, numRows) = null run + all non-nulls. Hmm, is that sensible? "RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING" for a null row: frame = nulls and everything after. In ASC, nulls are first → everything after = all non-nulls → whole partition actually (nulls at start). For DESC: nulls last; nullRunStart..numRows = null run + ... no wait DESC nulls at END: nullRunStart..numRows = null run only. And lower finite, upper finite → [nullRunStart, nullRunEnd) = null run ✓.
+
+Hmm wait, but for DESC with lower=finite bound: null-o should be +infinity-ish. "first row x <= null-o" — nulls at end: nullRunStart. So frame start = nullRunStart ✓ (same rule: finite → null run edge).
+
+But hold on — is "finite lower + unbounded upper = nulls plus everything" the right semantics for DESC? DESC values descending, nulls last. Null row, frame BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING: "following" in DESC = rows after current in sort order = nulls themselves (nulls at end). nullRunStart..numRows = null run ✓ correct.
+
+OK so universal rule for null-key current row:
+- bound unbounded → 0 (lower) / numRows (upper)
+- bound finite → nullRunStart (lower) / nullRunEnd (upper)
+
+Simple and coherent. 
+
+Now for non-null current row v:
+- ASC: lower bound L = (unbounded ? -inf : v + lo) → frameStart = first row with value >= L (skipping nulls; nulls < L unless L = -inf). Actually nulls sort before all non-nulls in ASC; null < L for any finite L... no wait: frameStart = first non-null row x >= L. Nulls excluded when L finite (null < any non-null value ≤ ... nulls are "less than" L → they don't satisfy x >= L; but if L = -inf i.e. unbounded → frameStart = 0 includes nulls).
+  - frameEnd = first row with value > U (exclusive), U = v + up (finite) → nulls < v ≤ ... nulls satisfy x <= U? Frame end: first row > U exclusive → nulls never > U → nulls included up to... wait frame = [frameStart, frameEnd). Nulls are at start. If frameStart skips them (L finite, nulls < L), they're excluded. If frameStart = 0 (L unbounded), nulls included. frameEnd never splits nulls weirdly since nulls are at the start and frameEnd ≥ frameStart ≥ first non-null ≥ L ≥ ... hmm, when L finite: frameStart = first x ≥ L ≥ ... nulls before frameStart. When L unbounded: frameStart = 0. frameEnd = first x > U where U finite ≥ v ≥ ... U ≥ v > nulls → nulls all ≤ U → frameEnd after nulls at least. OK consistent.
+  
+  Wait, one more case: L finite where v + lo lands... L could be less than all values → frameStart = first non-null row... no: frameStart = first row (INCLUDING nulls? nulls < L) hmm: "first row x >= L" — nulls compare as -inf < L → don't satisfy → frameStart = first NON-null row ≥ L. But what if there are no rows ≥ L (L > max value)? frameStart = nullRunEnd (first index past...). Let me define search over non-null region [nullRunEnd, numRows) in ASC: frameStart = first idx in [nullRunEnd, numRows) with val ≥ L, else numRows. frameEnd = first idx in [nullRunEnd, numRows) with val > U, else numRows... 
+
+  Hmm wait — careful: frameEnd could be < frameStart?? E.g. L > U (lower offset > upper offset, like RANGE BETWEEN 5 PRECEDING AND 3 PRECEDING → empty frame for isolated v). Then frameStart(first ≥ L) > frameEnd(first > U) → empty. Existing AggIntervalCursor.moveTo handles empty interval (a ≥ b → newAggregators, loop doesn't execute → zero-row default). And ResultPopulator writes fill(outputRows.a, outputRows.b...) — outputRows = [groupStart, groupEnd) non-empty. inputRows empty → aggCursor over empty → zero-row default. ✓ existing machinery handles.
+
+- DESC: values descending; nulls last. lower bound L = v - lo (desc: boundValue = v - o... wait let me recompute. In DESC, "PRECEDING" means earlier in sort order = HIGHER values. Row v with lower offset lo (signed: preceding negative): the frame's lower edge in sort order corresponds to value v - lo where lo ≤ 0 → v - lo = v + |lo| → higher value. Hmm wait let me redo: lo signed offset, PRECEDING → lo < 0. boundValue(v, lo) = asc ? v + lo : v - lo. ASC PRECEDING: v + lo = v - |lo| lower ✓. DESC PRECEDING: v - lo = v + |lo| = higher value ✓ (preceding in DESC = higher). DESC FOLLOWING: lo > 0 → v - lo = lower value ✓.
+  
+  Frame in DESC = rows x with U ≤ x ≤ L (sort-wise: frame between lower edge L (higher value, comes first in sort order) and upper edge U (lower value)). frameStart = first row with x ≤ L, frameEnd = first row with x < U.
+  
+  Nulls in DESC are last (sort as +inf... they compare after all values). For non-null v: L = v - lo could be... if L ≥ everything... nulls satisfy x ≤ L? Nulls at end, null ≤ L false (nulls > all). frameStart = first idx in [0, nullRunStart) with val ≤ L. frameEnd = first idx in [0, nullRunStart) with val < U... wait frameEnd is "first row < U" — but frameEnd could extend into nulls? No: U is a bound around v < nulls; nulls > U → not < U → frameEnd ≤ nullRunStart automatically? Hmm: frameEnd = first row with val < U, searching from... the frame is [frameStart, frameEnd) — in DESC, frame rows are contiguous: rows with val in [U, L]. frameStart = first row (in sort order) with val ≤ L = beginning of the window; frameEnd = first row with val < U = one past last row with val ≥ U. But careful with nulls: rows with val < U includes... nothing null (nulls > U). But frameEnd as "first row with val < U" — if U > max value... U = v - up, up could be very negative (e.g. -100 FOLLOWING) → U = v + 100 > everything → frameEnd = 0 → empty frame ✓. If U < min value → frameEnd = ... all rows have val ≥ U → frameEnd = first val < U = nullRunStart? NO — nulls are AFTER non-nulls in DESC sort. val < U: nulls don't satisfy (nulls > all). All non-nulls ≥ U? If U < min → no row < U among non-nulls → frameEnd = nullRunStart (nulls excluded since null > U)... wait "first row with val < U" scanning from frameStart... I need to think of frameEnd as computed over the whole column: frameEnd = min index such that all rows in [frameStart, frameEnd) have val ≥ U... 
+
+Simpler formulation: in DESC, frame = { x : U ≤ x ≤ L } (value comparisons). Since data is sorted descending, the set {x: x ≥ U} is a prefix [0, e) where e = first index with val < U (among non-nulls; nulls never ≥ U). And {x: x ≤ L} is a suffix [s, nullRunStart) ∪ nulls?? wait nulls: null ≤ L? No, nulls > all values... are nulls ≤ L? Nulls sort AFTER all non-nulls in DESC, so nulls > L for any finite L (L is around v). Hmm — but actually should nulls be INCLUDED in a DESC frame with finite bounds? {x: U ≤ x ≤ L} with null excluded → frame = [max(s, ?), e) ∩ non-null = [s, e) where s = first non-null idx... hmm but wait: {x ≤ L} = [firstIdxWithVal≤L, nullRunStart) PLUS nulls if null ≤ L (never). So frame = [s, e) with s = first idx with val ≤ L, e = first idx with val < U, both searched in non-null region [0, nullRunStart) for DESC.
+
+Hmm wait, that's not right either. s = first index (ascending scan) with val ≤ L: since sorted desc, values start high. First val ≤ L = start of frame. e = first index with val < U: end of frame (exclusive). Both within [0, nullRunStart) — and if L unbounded → s = 0; if U unbounded → e = nullRunStart (include all non-nulls; nulls excluded since bounds finite... wait if U unbounded (UNBOUNDED FOLLOWING) then "x ≤ L" is the only constraint and nulls... x ≤ L includes nulls? Nulls > L → no! Hmm — but UNBOUNDED FOLLOWING in DESC means frame extends to the END of the partition IN SORT ORDER — which for DESC is... the last rows in sort order = lowest values... and nulls are AFTER all non-nulls in sort order! So "UNBOUNDED FOLLOWING" in DESC with nulls-last → frame should include nulls too (they're at the end of sort order)!
+
+WAIT. Hold on. Unbounded bounds are POSITIONAL: "UNBOUNDED FOLLOWING" = extend to the last row of the partition (in sort order), regardless of values. So for DESC, unbounded upper → e = numRows (INCLUDES nulls at the end). Unbounded lower → s = 0. Right — matches existing Groups/Rows semantics (positional partition edges).
+
+OK so let me now carefully define, with nulls-last (DESC), non-null current row v:
+- frame region for finite bounds: subset of non-null region [0, nullRunStart).
+- L finite: s = first idx in [0, nullRunStart) with val ≤ L (binary search desc). If none (all vals > L?? impossible since v ≤ L... wait v ≤ L? L = v - lo with lo ≤ 0 → L = v + |lo| ≥ v → v ≤ L ✓ so at least v itself qualifies → s exists ≤ index of v). OK.
+- U finite: e = first idx in [0, nullRunStart) with val < U. Since v ≥ U (U = v - up, up ≥ 0 → U ≤ v ✓)... wait up ≥ 0 for FOLLOWING/current-row(0). U = v - up ≤ v ✓. So rows before e include v... e > index of v ≥... fine, e exists (worst case nullRunStart).
+- L unbounded: s = 0 (includes nulls? in DESC nulls are LAST — s=0 is the top; nulls at end included only if e = numRows i.e. U unbounded). 
+- U unbounded: e = numRows (include nulls).
+
+Null current row (DESC, nulls last): rule from before: finite lower → nullRunStart?? wait DESC null run is at END: [nullRunStart, numRows). Finite lower → frame start = nullRunStart; finite upper → frame end = nullRunEnd = numRows. Hmm wait: null-run edges: start = nullRunStart, end = numRows. So finite bound → null run edge: lower → nullRunStart, upper → numRows. Unbounded → 0 / numRows. Same as before but nullRunStart instead of nullRunEnd since nulls at end. Universal rule: finite bound → null run edge (start of null run for lower, end of null run for upper); unbounded → partition edge.
+
+Let me re-derive ASC null current row with this universal rule: nulls first: null run [0, nullRunEnd). Finite lower → 0? "null run start" = 0; finite upper → nullRunEnd. Both finite → [0, nullRunEnd) = null run ✓. Matches earlier analysis ✓.
+
+And non-null v in ASC: L finite → frameStart = first idx in [nullRunEnd, numRows) with val ≥ L (nulls at [0, nullRunEnd) excluded since null < L... but WAIT: is that right? {x: L ≤ x ≤ U} — nulls: null ≥ L? Nulls sort first = less than everything → null < L → excluded ✓). U finite → frameEnd = first idx with val > U. Hmm — careful: frameEnd = first idx in [nullRunEnd, numRows) with val > U, but what if that's < frameStart... fine, empty. But ALSO: what if val > U never happens (U ≥ max) → frameEnd = numRows ✓. L unbounded → frameStart = 0 (includes nulls ✓). U unbounded → frameEnd = numRows ✓.
+
+But hmm, ASC U finite: "first idx with val > U" — nulls are BEFORE non-nulls; nulls val = -inf < U → nulls never > U → frameEnd in non-null region or nullRunEnd... wait if U < min value: no non-null > U... wait no: "first x > U" — if U < minVal, then ALL non-nulls > U → frameEnd = nullRunEnd?? NO WAIT. frameEnd = first index where val > U. Scan from... the frame = {x: L ≤ x ≤ U}. Sorted ASC. frameStart = first x ≥ L. frameEnd = one past last x ≤ U = first x > U. If U < minVal → no x ≤ U... frameEnd = first x > U = nullRunEnd?? Hmm no: if U < minVal, then ALL non-null x > U → first x > U = nullRunEnd (first non-null index) → frame = [frameStart, nullRunEnd) EMPTY if frameStart ≥ nullRunEnd ✓ correct (no x in [L, U]). But what if frameStart = 0 (L unbounded, U < minVal): frame = [0, nullRunEnd) = NULL RUN ONLY. Hmm! L unbounded + U finite with U < minVal: {x: x ≤ U} where x includes nulls? nulls = -inf ≤ U ✓ NULLS INCLUDED! So frame = nulls ∪ {} = null run ✓✓ — matches: frame = [0, nullRunEnd) = null run. CORRECT per value semantics {x: -inf ≤ x ≤ U} = nulls (since null "value" = -inf ≤ U) ∪ non-null x ≤ U (none). 
+
+Hmm interesting — so in ASC, nulls are included in a non-null row's frame when U ≥ -inf always?? {x ≤ U}: nulls -inf ≤ U always true! So U finite → nulls ALWAYS ≤ U → nulls always in {x ≤ U}. And {x ≥ L}: nulls ≥ L only if L = -inf (unbounded). So ASC non-null v frame = (L unbounded ? nulls : ∅) ∪ {non-null x: L ≤ x ≤ U}. With L finite → frameStart skips nulls ✓ (frameStart = nullRunEnd-based search... wait frameStart = first x ≥ L → nulls don't qualify → frameStart ≥ nullRunEnd ✓). frameEnd = first x > U: nulls ≤ U always → nulls never > U → frameEnd ≥ nullRunEnd ✓ consistent: frame ⊆ [frameStart, frameEnd) never includes nulls when L finite. When L unbounded: frameStart = 0, frameEnd = first x > U ≥ ... nulls ≤ U → nulls in frame ✓.
+
+Hmm wait, there's an edge: ASC, L unbounded, U finite, U ≥ minVal: frame = [0, frameEnd) where frameEnd = first non-null x > U. Nulls included ✓ (they're ≤ U... they're -inf ≤ U). Correct? {x: x ≤ U} includes nulls ✓. Yes frame = nulls + non-nulls ≤ U. ✓ consistent.
+
+And DESC non-null v: nulls = +inf. {x ≤ L}: nulls ≤ L? +inf ≤ L never → nulls excluded when L finite. {x ≥ U}: nulls ≥ U always ✓ → nulls in frame whenever U... wait frame = {x: U ≤ x ≤ L}. Nulls: U ≤ +inf ✓ but +inf ≤ L ✗ → excluded when L finite. When L unbounded → {x ≥ U} → nulls included ✓. So DESC: frameEnd... let me redo: s = first x ≤ L (excludes nulls if L finite → s in [0, nullRunStart)); e = one past last x ≥ U = first x < U. Nulls ≥ U always → nulls satisfy x ≥ U → e extends INTO nulls when... {x ≥ U} sorted desc = prefix [0, k) where k = first x < U. Nulls are ≥ U (all) → if any nulls exist, are nulls in the prefix? The prefix [0,k) = all x ≥ U in sort order: non-null x ≥ U come first, then nulls (at end) — nulls ≥ U → k = nullRunStart + nullCount?? wait nulls ARE ≥ U → nulls in {x ≥ U} → k = numRows if... hmm: {x ≥ U} = non-nulls ≥ U ∪ ALL nulls. Sorted DESC: non-nulls desc, then nulls. So [0, k) with k = (count of non-null x ≥ U) + nullCount. e = k. But e is frame END (exclusive)... 
+
+Hmm wait I conflated. Frame = {x: U ≤ x ≤ L}. Sorted DESC, this set is contiguous. Let me define: s = first idx of {x ≤ L}, e = first idx NOT in {x: U ≤ x}. Since frame = {x ≤ L} ∩ {x ≥ U}:
+- s = first idx with val ≤ L (nulls: +inf ≤ L? no → nulls not in {x ≤ L}... wait nulls ≤ L means null ≤ L — nulls sort AFTER L means null > L → nulls NOT in {x ≤ L} ✓ (L finite)).
+- e = first idx with val < U (nulls: +inf < U? no → nulls not in {x < U} → nulls in [s, e) iff nulls ≥ U which is always → e should INCLUDE nulls → e = first idx NOT ≥ U... 
+
+ARGH. Let me just think set-wise. Frame = A ∩ B where A = {x ≤ L}, B = {x ≥ U}. The frame as a contiguous range [s, e): 
+- s = min index in A∩B = first idx with (val ≤ L AND val ≥ U). Since sorted desc and U ≤ L (offsets valid → U ≤ v ≤ L ✓ wait U ≤ v: U = v - up, up ≥ 0 → U ≤ v ✓; L = v - lo, lo ≤ 0 → L ≥ v ✓; so U ≤ v ≤ L). Contiguous: first idx with val ≤ L and val ≥ U... since U ≤ L, first idx with val ≤ L — is it ≥ U automatically? Values descending: first x ≤ L: values above it are > L ≥ U... x itself ≤ L. Is x ≥ U? x could be < U if x < U ≤ L. Then A∩B starts later: s = first idx with U ≤ val ≤ L.
+- e = first idx after the last one in A∩B: last idx in A∩B = last idx with val ≥ U (and ≤ L, but val ≥ U and sorted desc... hmm last x ≥ U: could be > L? no wait, if x ≥ U and x > L then... x > L ≥ U → x in B not in A. Last idx in A∩B = max idx with U ≤ val ≤ L = first idx from the end... 
+
+OK this is why the summary defined it simply:
+- DESC: frameStart = first row x with x ≤ lowerBound (i.e., first idx with val ≤ L, searching non-null region) — wait the summary said: "Under DESC, the planned frame start is the first row whose value is at most the lower bound" — first row x with x ≤ L → but as computed, that row might be < U → empty-ish... but that's fine: frameStart = first x ≤ L; frameEnd = first x < U. If frameStart ≥ frameEnd → empty. Since sorted desc, all rows in [frameStart, frameEnd) have val ≤ L (desc: rows after frameStart are ≤ val(frameStart) ≤ L... wait no! Desc: rows after frameStart have val ≤ L ✓ since sorted desc and frameStart = first ≤ L). And rows in [frameStart, frameEnd): are they all ≥ U? frameEnd = first x < U: rows before frameEnd (in desc) have val ≥ U ✓ (sorted desc, anything before the first <U is ≥ U). So frame = [frameStart, frameEnd) = {x ≤ L} ∩ {x ≥ U} ✓✓ CORRECT. Nulls: excluded from both searches (null ≤ L false, null < U false) → nulls only in frame when frameEnd... hmm when U unbounded → frameEnd = numRows → nulls included ✓ (B = everything). When L unbounded → frameStart = 0. ✓.
+
+Wait but one problem: frameEnd = first x < U — what if U > all values → frameEnd = nullRunStart?? no wait: first x < U: scanning idx 0..: if U > max val, then val 0 < U → frameEnd = 0 → empty frame ✓. If U < min val: no non-null x < U → frameEnd = nullRunStart?? NO — nulls: null < U false. So first x < U = none → frameEnd = nullRunStart?? Hmm — frameEnd should = numRows? NO wait: U < min val → B = {x ≥ U} = ALL rows including nulls → frameEnd = ... [frameStart, frameEnd) with frame = {x ≤ L} ∩ everything = {x ≤ L} = [0 or frameStart, nullRunStart) — WAIT nulls: x ≤ L: nulls NO. So frame = non-nulls ≤ L = [0, nullRunStart) if L unbounded... frameEnd = nullRunStart?? But I said "U unbounded → frameEnd = numRows". U FINITE here with U < min: frame = {x ≤ L} ∩ {x ≥ U}: {x ≥ U} = all non-nulls + nulls; {x ≤ L} = non-nulls ≤ L (nulls excluded). Intersection = non-nulls ≤ L → frame = [s, nullRunStart). frameEnd = nullRunStart. But my rule "frameEnd = first x < U" gives... first x with val < U: U < min → no non-null < U; nulls not < U → NONE → frameEnd = ??? 
+
+I need frameEnd = "one past last frame row" = first index NOT in {x ≥ U} = first x < U **including nulls** — but nulls never < U. Hmm so "first x < U" over ALL rows: if no non-null x < U and nulls not < U → frameEnd = numRows?? But frame = [s, e) must NOT include nulls... CONTRADICTION.
+
+RESOLUTION: the frame [s, e) with e = numRows would include nulls — but set-wise frame excludes nulls ({x ≤ L} excludes them). So the simple "frameEnd = first x < U" rule is WRONG for the case U < min non-null value (with nulls present in DESC).
+
+Correct frameEnd for DESC: e = first idx with val < U **but nulls also count as < U? NO...** Let me re-think: e = one past last idx in frame. Last idx in frame = last idx with (U ≤ val ≤ L) = last idx with val ≥ U among... since U ≤ L and sorted: {x: U ≤ x ≤ L} = [s', e') where s' = first x ≤ L (assuming that x ≥ U... not guaranteed) hmm.
+
+Cleanest: e = min( firstIdxWith(val < U, treating null as +inf → never < U), ... ) but bounded also by... ugh.
+
+Alternative clean formulation for DESC:
+- e1 = first idx with val < U (non-null region search; nulls never < U) → if none in [0, nullRunStart) → e1 = nullRunStart. WAIT no. Hmm, if U ≤ min val... if U < min val: no non-null < U → e1 = nullRunStart?? But if U = min val: first non-null < U: values desc [10, 9, 8...]: U = 8 → first x < 8 = idx 2 → e1 = 2 ✓ (frame includes 10, 9 ≥ 8 ✓... wait frame {U ≤ x ≤ L} with U = 8: 10, 9, 8 ≥ 8 → e = 3 = one past 8?? Hmm first x < 8: idx 3 if vals [10,9,8,7]: e1 = 3 ✓ frame [s, 3) = 10,9,8 ✓.
+- If U < minVal (vals [10,9,8], U = 5): first x < 5 = none → e1 = nullRunStart = 3 → frame [s, 3) = 10, 9, 8 ✓ ({x ≥ 5} = all non-nulls ✓). Nulls excluded ✓ since {x ≤ L} excludes nulls (L finite). e = nullRunStart ✓ — so e1 = nullRunStart when no non-null < U. ✓ CORRECT — my panic was wrong: frameEnd = nullRunStart EXCLUDES nulls correctly!
+
+Wait but earlier I claimed "B = {x ≥ U} includes nulls → frameEnd should include them". NO — frame = A ∩ B; e = one past last frame row = last idx in A∩B + 1. A excludes nulls → frame excludes nulls → e ≤ nullRunStart ✓. e1 = first x < U: nulls not < U → e1 ≤ nullRunStart ✓✓. CONSISTENT. I confused myself. 
+
+So DESC rules (nulls last, null run = [nullRunStart, numRows)):
+- s: L unbounded → 0; L finite → first idx in [0, nullRunStart) with val ≤ L, else nullRunStart (L < min → s = nullRunStart → but wait v ≥ ... v ≤ L always since L ≥ v... v non-null: L = v - lo ≥ v ✓ → some x ≤ L exists (v itself) → s ≤ idx(v) < nullRunStart ✓).
+- e: U unbounded → numRows; U finite → first idx in [0, nullRunStart) with val < U, else nullRunStart (U ≤ min → e = nullRunStart; but U ≤ v... v ≥ U ✓ → x = v satisfies v ≥ U... e = first x < U — U < min case: e = nullRunStart ✓ frame [s, nullRunStart) fine; U > max: e = 0 → empty ✓).
+
+Hmm wait, one more check on e when U finite: e = first x < U. Nulls excluded ✓. e could be < s → empty ✓ handled downstream.
+
+ASC rules (nulls first, null run = [0, nullRunEnd)):
+- s: L unbounded → 0; L finite → first idx in [nullRunEnd, numRows) with val ≥ L, else numRows (L > max → s = numRows → empty ✓; L ≤ v → exists ✓).
+- e: U unbounded → numRows; U finite → first idx in [nullRunEnd, numRows) with val > U, else numRows (U ≥ max → e = numRows... wait U ≥ max: no x > U → e = numRows ✓; but hmm — v ≤ U always (U = v + up ≥ v ✓)).
+
+Null current row rules:
+- ASC: lower finite → 0 (null run start), lower unbounded → 0. Same! upper finite → nullRunEnd, upper unbounded → numRows. So null row frame = [0, nullRunEnd or numRows). Both same for lower. Fine: lower bound value = null → "null run start" = 0 = partition start in ASC. Consistent.
+- DESC: lower finite → nullRunStart, lower unbounded → 0. upper finite → numRows (null run end = numRows!), upper unbounded → numRows. Same for upper. Null row frame = [nullRunStart or 0, numRows).
+
+Interesting: in ASC null-run = prefix; lower bound finite vs unbounded identical (0); in DESC upper bound identical (numRows). Makes sense: null run touches the partition edge on the side where nulls sit.
+
+Universal rule (from summary): finite bound → null run edge: lower → nullRunStart (ASC: 0... wait ASC null run start = 0 — but "null run start" for ASC is 0 ✓; DESC nullRunStart ✓); upper → nullRunEnd (ASC: nullRunEnd = end of null run ✓; DESC: null run end = numRows ✓). So: lower finite → nullRunStart; upper finite → nullRunEnd. Clean!
+
+Wait ASC: nullRunStart = 0 (nulls first) ✓. DESC: nullRunEnd = numRows (nulls last) ✓. So universal: lower finite → nullRunStart; upper finite → nullRunEnd. Clean!
+
+Now — hmm, one question: CURRENT ROW bound for null row: CURRENT ROW = finite (offset 0) → null run edge → null row frame = null run [nullRunStart, nullRunEnd) ✓ peers identical ✓. 
+
+And non-null row with CURRENT ROW lower bound: L = v → s = first x ≥ v = group start (peer group start!) ✓ — matches: RANGE BETWEEN CURRENT ROW AND CURRENT ROW = current peer group (like GROUPS BETWEEN CURRENT ROW AND CURRENT ROW). ✓ nice.
+
+Now, ANOTHER subtlety: what about the ordering column TYPE check at native level? The resolver uses getDouble. If type is STRING... planner prevents. Defensive check in resolver: frame.getOrderBy() column type from accessor.getType() — if not LONG/FLOAT/DOUBLE/STRING?? Hmm — STRING would compareRows fine but getDouble on string gives 0.0 garbage. The planner type-check handles it. Native defensive: DruidException.defensive if not numeric. But wait — timestamps: LONG ✓. What about the native WindowOperatorQuery API — users can construct WindowFrame.range directly via native query JSON (WindowFramedAggregateProcessor is serialized in WindowOperatorQuery). Native users could pass range frames with string order columns → resolver defensive check → good. Requirement: "An ordering type that cannot do value arithmetic with a finite offset must throw an unchecked DruidException." ✓ defensive check in resolver.
+
+Now WHERE does the null-run detection come from? accessor.isNull(row) — ColumnAccessor has isNull ✓. The sorted data: nulls contiguous (sorted by the order column). nullRunStart/nullRunEnd = boundaries of the null run. Actually — the peer group boundaries from ClusteredGroupPartitioner.computeBoundaries(ImmutableList.of(orderBy column)) give peer groups INCLUDING the null group as one contiguous group. So nullRunStart/nullRunEnd = the null peer group's boundaries! And for the null current row, frame = null peer group [nullRunStart, nullRunEnd) — exactly the peer group. 
+
+So resolver algorithm:
+1. accessor = rac.findColumn(orderBy.getColumn()).toAccessor() — hmm, need null checks: column might not exist → defensive DruidException. Let me check how DefaultClusteredGroupPartitioner accesses columns... Let me look at it to mirror conventions. Also `findColumn` — RowsAndColumns.findColumn returns Column or null.
+2. groupBoundaries = ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(ImmutableList.of(orderBy.getColumn())).
+3. numGroups = boundaries.length - 1; groups in sort order (group 0 = first in sort order).
+4. For each group g: current row key = value at groupBoundaries[g] (any row in group; peers equal). If isNull → null-key group (there can be at most ONE null group — nulls contiguous ✓).
+   - null group: frameStart = (lowerOffset == null ? 0 : nullRunStart)... wait lowerOffset null = unbounded → 0; else nullRunStart. Hmm — but per universal rule lower finite → nullRunStart; ASC nullRunStart = 0 anyway. OK: frameStart = lower unbounded ? 0 : nullRunStart; frameEnd = upper unbounded ? numRows : nullRunEnd.
+   - non-null group with key v:
+     - ASC: L = lower == null ? null : v + lower; s = L == null ? 0 : firstIdxGE(nullRunEnd, numRows, L)... WAIT: nulls first in ASC: null run [0, nullRunEnd). s search region [nullRunEnd, numRows). But s = L==null ? 0 : binary search. e: U = upper == null ? null : v + upper; e = U == null ? numRows : firstIdxGT(nullRunEnd, numRows, U).
+     - DESC: null run [nullRunStart, numRows). s = L == null ? 0 : firstIdxLE(0, nullRunStart, L); e = U == null ? numRows : firstIdxLT(0, nullRunStart, U).
+   
+   Hmm wait — ASC firstIdxGE(nullRunEnd, ...) — what if L ≤ null... L finite: nulls excluded (null < L per sort semantics? null = -inf < L ✓ excluded) ✓ search starts at nullRunEnd ✓. But CAREFUL: if L finite and nullRunEnd region search finds nothing → s = numRows ✓ empty.
+   
+   Hmm, actually wait — one more ASC edge: L finite but L could be ≤ some null?? No: nulls = -inf < L always (L finite real number) ✓.
+
+5. Binary searches on getDouble values (non-null region is sorted asc (ASC) / desc (DESC)).
+
+But WAIT — precision: getDouble on LONG loses precision beyond 2^53. Accepted per summary ("accepts precision fuzz beyond 2^53"). Also FLOAT columns: getDouble of float — fine.
+
+Hmm, one more consideration: should binary search use compareRows instead of getDouble to avoid precision issues? compareRows compares raw values (e.g. longs exactly). For bound comparison though, bound is v+o in double space — comparing raw long vs (v+o) double... e.g. v = 2^60, o = 1: bound = v+o rounds to 2^60 → first x ≥ bound = x ≥ 2^60 → includes v and everything ≥ v — semantically wrong-ish but precision-accepted. Using getDouble consistently for both data values and bounds keeps it self-consistent. OK go with getDouble.
+
+Now the resolver class placement: `org.apache.druid.query.operator.window` package — new file `RangeFrameResolver.java`?? Hmm wait, but DefaultFramedOnHeapAggregatable is in org.apache.druid.query.rowsandcols.semantic and needs AggInterval/Interval (its own package-private classes) — fine: DefaultFramedOnHeapAggregatable calls resolver for primitives and constructs AggInterval itself.
+
+WindowValueProcessorBase (in org.apache.druid.query.operator.window.value) uses resolver + accessor.getObject for values ✓.
+
+Let me now check: does WindowValueProcessorBase have access to the ORDER BY column? computeFirstOrLastValueFramed(rac, accessor, frame, results, first) — accessor is the INPUT COLUMN accessor (the column whose first/last value we compute), not the ordering column. For Range, we need the ordering column from rac: frame.getOrderBy().getColumn() → rac.findColumn(...). The resolver does that internally ✓.
+
+Now — the aggregation path detail: DefaultFramedOnHeapAggregatable.buildIteratorFor returns Iterable<AggInterval> where AggInterval(outputRows=[groupStart, groupEnd), inputRows=[frameStart, frameEnd)). Then GroupIteratorForWindowFrame-style iterator: for Range I'll create a new iterator class or reuse... GroupIteratorForWindowFrame is specific to OffsetFrame. I'll write a small anonymous Iterable in a new private static method `buildRangeIteratorFor(rac, rangeFrame)`:
+
+```java
+private static Iterable<AggInterval> buildRangeIteratorFor(AppendableRowsAndColumns rac, WindowFrame.Range frame)
+{
+  final RangeFrameResolver resolver = new RangeFrameResolver(rac, frame);
+  final int numGroups = resolver.getNumGroups();
+  return () -> new Iterator<AggInterval>()
+  {
+    int current = 0;
+    ... next(): AggInterval(Interval.of(groupStart, groupEnd), Interval.of(frameStart, frameEnd))
+  };
+}
+```
+
+Hmm wait — but "decision: both users of RangeFrameResolver will iterate the peer groups directly, without merging adjacent groups that have identical frames" ✓ that's this.
+
+And `isEffectivelyUnbounded(frame, numRows)`: currently does `frame.unwrap(OffsetFrame.class)` then calls getLowerOffsetClamped — Range doesn't extend OffsetFrame → NPE if Range passes through! Must add Range branch BEFORE the OffsetFrame unwrap:
+
+```java
+private static boolean isEffectivelyUnbounded(WindowFrame frame, int numRows)
+{
+  if (frame instanceof WindowFrame.Range) {   // or unwrap Range
+    Range range = frame.unwrap(WindowFrame.Range.class);
+    return range.getLowerOffset() == null && range.getUpperOffset() == null;
+  }
+  ...
+}
+```
+
+Wait — can Range have both null offsets? SQL "RANGE UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING" → getWindowFrame checks `lowerBound.isUnbounded() && upperBound.isUnbounded()` first → returns WindowFrame.unbounded() (rows frame) — so Range never both-null from SQL. But native API allows constructing range(null, null, orderBy) → semantics = whole partition ≡ unbounded ✓ requirement: "A Range that covers the whole partition for every row must evaluate the same as WindowFrame.unbounded()". So isEffectivelyUnbounded: range with both offsets null → true → buildUnboundedIteratorFor ✓.
+
+Hmm — wait, also: what about Range with both offsets null vs isEffectivelyUnbounded's clamping? For Range offsets null means unbounded (not positional clamp) ✓ handled.
+
+Now WindowValueProcessorBase.computeFirstOrLastValueFramed: add Range branch:
+
+```java
+final WindowFrame.Range rangeFrame = frame.unwrap(WindowFrame.Range.class);
+if (rangeFrame != null) {
+  final RangeFrameResolver resolver = new RangeFrameResolver(rac, rangeFrame);
+  for (int g = 0; g < resolver.getNumGroups(); g++) {
+    final int frameStart = resolver.getFrameStart(g);
+    final int frameEnd = resolver.getFrameEnd(g);
+    if (frameStart < frameEnd) {
+      final Object value = first ? accessor.getObject(frameStart) : accessor.getObject(frameEnd - 1);
+      for (int i = resolver.getGroupStart(g); i < resolver.getGroupEnd(g); i++) {
+        results[i] = value;
+      }
+    }
+  }
+  return;
+}
+```
+
+Wait — "FIRST_VALUE must return null on an empty frame" — results initialized null? Let me check callers — WindowFirstProcessor/WindowLastProcessor. Let me read them. Also requirement "Entries for rows where the frame is empty are left as null" — the existing Groups/Rows branches skip writing when empty (results[i] stays whatever initial). Let me check how results array is initialized (ArrayColumn backed by Object[]?). Let me read WindowFirstProcessor.
+
+Also — hmm, subtle: for FIRST_VALUE with Range frame: frame start might be < group start? FIRST_VALUE = first value of FRAME = accessor.getObject(frameStart) where accessor = INPUT column accessor ✓ (frame start index into the same row space) ✓.
+
+For LAST_VALUE: accessor.getObject(frameEnd - 1) ✓.
+
+Now Windowing.getWindowFrame:
+
+```java
+public WindowFrame getWindowFrame()
+{
+  if (group.lowerBound.isUnbounded() && group.upperBound.isUnbounded()) {
+    return WindowFrame.unbounded();
+  }
+  if (group.isRows) {
+    return WindowFrame.rows(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound));
+  }
+  if (isOffsetBound(group.lowerBound) || isOffsetBound(group.upperBound)) {
+    return buildRangeFrame();  // new
+  }
+  return WindowFrame.groups(getBoundAsInteger(group.lowerBound), getBoundAsInteger(group.upperBound), getOrderingColumNames());
+}
+
+private boolean isOffsetBound(RexWindowBound bound)
+{
+  return bound.isPreceding() || bound.isFollowing();
+}
+```
+
+Hmm wait — RexWindowBound.isPreceding()/isFollowing() — for a PRECEDING bound node. What about isUnbounded/isCurrentRow ✓. So "offset bound" = preceding or following (with finite offset — unbounded preceding → isPreceding()?? Hmm! RexWindowBound.isPreceding() — for UNBOUNDED PRECEDING, what does isPreceding return? RexWindowBound.create(RexWindowBound...) — the bound kind. For UNBOUNDED PRECEDING: SqlKind.UNBOUNDED_PRECEDING... RexWindowBound has methods: isUnbounded(), isCurrentRow(), isPreceding(), isFollowing(), getOffset(). Is `isPreceding()` true for unbounded preceding? Let me check RexWindowBound source: it has fields... RexWindowBound.create(SqlWindowBound?) — hmm. In Calcite, RexWindowBound.create(RexNode offset, SqlWindowBound bound): bound.isUnboundedPreceding() → RexWindowBound.UNBOUNDED_PRECEDING singleton with isPreceding()?? Let me check: `public boolean isPreceding() { return bound.isPreceding(); }` hmm and SqlWindowBound.isPreceding() → kind == SqlKind.PRECEDING — UNBOUNDED PRECEDING kind is UNBOUNDED_PRECEDING ≠ PRECEDING → false. Hmm wait but `RexWindowBound` for unbounded preceding — SqlWindowBound.isUnboundedPreceding() returns kind == UNBOUNDED_PRECEDING. isPreceding() returns kind == PRECEDING → false for unbounded. Let me verify by javap or source. Actually I recall: SqlWindowBound subclasses: UnboundedPreceding/UnboundedFollowing/CurrentRow/Preceding/Following — SqlWindowBound.BoundedPreceding... hmm no: SqlWindowBound has static create with check... and `isPreceding()`: kind == SqlKind.PRECEDING. Since UNBOUNDED PRECEDING node kind = UNBOUNDED_PRECEDING (separate kind), isPreceding() = false. So bound.isPreceding() ⟺ finite PRECEDING ✓. Same isFollowing ⟺ finite FOLLOWING ✓.
+
+BUT — WAIT: after Calcite validation, do bounds become "CURRENT ROW" if... no. OK but hmm — what about "isUnbounded()" on RexWindowBound — there are singletons RexWindowBound.UNBOUNDED_PRECEDING/FOLLOWING/CURRENT_ROW. isCurrentRow ✓. Good.
+
+Hmm — but ALSO: getBoundAsInteger's existing getOffset(): for CURRENT_ROW bound, getOffset() returns null and isCurrentRow handled before. For PRECEDING/FOLLOWING finite: getOffset() = RexInputRef. ✓.
+
+Now buildRangeFrame: need exactly-one ordering key + numeric type:
+
+```java
+private WindowFrame buildRangeFrame()
+{
+  final List<RelFieldCollation> fields = group.orderKeys.getFieldCollations();
+  if (fields.size() != 1) {
+    throw new QueryException(SQL_QUERY_UNSUPPORTED_ERROR_CODE, "...", null, null);
+  }
+  final RelFieldCollation field = Iterables.getOnlyElement(fields);
+  ... direction switch (ASC/DESC) — reuse pattern from getOrdering() ...
+  final String columnName = sig.getColumnName(field.getFieldIndex());
+  final ColumnType type = sig.getColumnType(field.getFieldIndex());
+  if (!(type.isNumeric() ... )) throw ...
+  return WindowFrame.range(getBoundAsDouble(group.lowerBound), getBoundAsDouble(group.upperBound), new ColumnWithDirection(columnName, direction));
+}
+```
+
+Wait — but hold on: the VALIDATOR already enforces exactly-one key. So planning-time multi-key check is unreachable via SQL but native... getWindowFrame is SQL-side only. Keep defensive check anyway (cheap).
+
+Type check: what types are OK? LONG, FLOAT, DOUBLE, plus TIMESTAMP-as-LONG (sig.getColumnType maps TIMESTAMP → LONG ✓ per summary — "isLongType includes TIMESTAMP"). What about `type.isNumeric()`? ColumnType.isNumeric() = value type LONG/FLOAT/DOUBLE ✓. Hmm — what about LONG-typed timestamps → ColumnType.LONG → isNumeric true ✓. What about DATE/TIME? Calcites maps DATE/TIME to... in Druid, DATE is often timestamp → LONG too? Calcites.getColumnTypeForRelDataType: TIMESTAMP → LONG. DATE → ? Possibly STRING or LONG? Let me check Calcites. From summary: "isLongType includes TIMESTAMP". DATE → ? Let me grep Calcites for isLongType. If DATE maps to something non-numeric, then RANGE with DATE key → rejected. Fine (documented behavior: numeric + timestamp).
+
+Now what does sig.getColumnType return for the ORDER BY field — note ORDER BY could be on an EXPRESSION (e.g. `ORDER BY time_floor(__time, 'PT12H')`) — but wait, in the window rel, orderKeys refer to fields of the window input (post-project? no — Window's input rowType = source row signature fields; orderKeys field indexes into input rowType). Can ORDER BY in window be an expression? In SQL: `OVER (ORDER BY time_floor(__time, 'PT12H'))` — the window ORDER BY gets validated/expanded... The Window relational node's orderKeys are RelFieldCollations pointing at input fields — expressions would have been pushed into the input via... hmm, actually for windowed queries the ORDER BY expressions must be input columns; Calcite's SqlToRel converts ORDER BY expressions in OVER... I think window order keys are always simple input refs? No wait — qaWin files DO have `ORDER BY server_ip, length(server_ip) DESC, timezone, time_floor(__time, 'PT12H')` — those ARE expressions! So Window.Group.orderKeys can reference... how? The window's input includes the expressions? In Calcite, windowed aggregation ORDER BY expressions are resolved to input columns IF they appear in SELECT; otherwise...? Actually Calcite handles OVER(ORDER BY expr) by... hmm. In Druid's Windowing.fromCalciteStuff: `sig.getColumnName(field.getFieldIndex())` — so orderKeys ARE field indexes into sourceRowSignature — meaning expressions must be part of the source row signature. How does `length(server_ip)` become a field? DruidRules/partitioned query planning: the window operator's input is the result of a Project that computes expressions... hmm wait no — sourceRowSignature is the signature of the input to the Window node. If ORDER BY has expressions, Calcite creates... I recall Calcite's LogicalWindow with expressions in ORDER BY → those get validated as ... they must be in the input rowType — Calcite planner handles it how? For `SELECT x FROM t WINDOW w AS (ORDER BY x+1)`... Calcite creates a Project below? No... Actually I believe Calcite's SqlValidator validates window ORDER BY against the input scope, and SqlToRelTranslator... for windowed aggregates, the ORDER BY exprs get added as hidden fields?? Hmm.
+
+WAIT — irrelevant! Because with my validator change: multi-key → rejected; single key: `OVER (ORDER BY time_floor(__time, 'PT12H') RANGE 1 PRECEDING)` — orderKeys getFieldCollations() size 1 → fieldName = sig.getColumnName(fieldIndex) → the expression was computed in a project below the window?? If Calcite handles it, sig has the computed column name (e.g. "EXPR$..." or the window's input rowType includes it) and sig.getColumnType(fieldIndex) gives its type ✓. It'll just work or it won't be planned — but validation/planning behavior: whatever Calcite does for groups frames with expressions applies equally here. The type check uses sig.getColumnType which handles expressions fine (whatever type). And time_floor → TIMESTAMP → LONG → numeric ✓ so `ORDER BY time_floor(...) RANGE ...` WORKS. 
+
+Hmm — BUT WAIT: there's a wrinkle: does `group.orderKeys` for `ORDER BY x ASC NULLS LAST`... null handling: the sort operator sorts nulls FIRST (ASC) always (DefaultNaiveSortMaker semantics) — SQL NULLS FIRST/LAST for ASC would break null-run assumption... The validator rejects "ASCENDING ordering with NULLS LAST" (line 775) ✓ and "DESCENDING with NULLS FIRST" (line 769) — so allowed: ASC NULLS FIRST (nulls first ✓ matches native), DESC NULLS LAST (nulls last ✓ matches native). 
+
+So allowed combos give nulls-first-ASC / nulls-last-DESC in native sort ✓ consistent with resolver assumption. 
+
+Also RelFieldCollation.getNullDirection — ignored, fine.
+
+Now the validator change. Current block:
+
+```java
+if (!targetWindow.isRows() &&
+    (!isUnboundedOrCurrent(lowerBound) || !isUnboundedOrCurrent(upperBound))) {
+  throw buildCalciteContextException("Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.", windowOrId);
+}
+```
+
+New logic:
+
+```java
+if (!targetWindow.isRows() &&
+    (!isUnboundedOrCurrent(lowerBound) || !isUnboundedOrCurrent(upperBound))) {
+  // RANGE clause with offset-based bounds
+  if (!hasSingleOrderByKey(targetWindow) || !isValidRangeBounds(lowerBound, upperBound)) {
+    throw buildCalciteContextException(
+        "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.",
+        windowOrId);
+  }
+}
+```
+
+Hmm wait — but "Decision: unsupported RANGE forms will keep [old message] as the validator rejection message". But what about year-month interval / non-numeric literal — same message? "The validator accepts an offset bound literal only if it is numeric or a day-time INTERVAL" — reject otherwise with... same message? A string literal bound like `RANGE 'a' PRECEDING` → Calcite's own validator might reject first (RANGE bounds must be numeric/interval — standard). Actually does Calcite check that? Calcite's SqlValidatorImpl.validateWindow → validateFrame → checks... In Calcite: `RANGE BETWEEN 'a' PRECEDING` — I believe Calcite allows literal there (it's lenient). Our isValidEndpoint requires SqlUtil.isLiteral → passes. Then our new range-bound-literal check: literal must be numeric or day-time interval → else reject with the SAME message (it's still "RANGE clause not supported" in spirit). Or a clearer message like "Window frame with RANGE clause requires numeric or day-time interval offsets"? Hmm.
+
+The summary says: "Decision: the validator accepts an offset bound literal only if it is numeric or a day-time INTERVAL" and "Decision: year-month INTERVAL bounds are rejected" but doesn't specify a distinct message. To be safe for quidem: the qaWin multi-key cases hit the ORDER BY count check → old message ✓. For year-month/string-literal bounds — new distinct message is fine since nothing recorded depends on it... Actually WAIT — recorded quidem! Any qaWin .iq with RANGE offset + single key + weird bound literal would expect QueryInterruptedException (class name match only) → any validation error still matches ✓ (squash(stackTrace).contains(squash("QueryInterruptedException"))). So ANY message passes quidem as long as it's a validation/planning failure. Even "success" changes would break — but all qaWin RANGE are multi-key/no-key → keep failing ✓.
+
+For CalciteQueryTest testUnSupportedRangeBounds — updating to multi-key → old message ✓ stays.
+
+So design the validator:
+
+```java
+if (!targetWindow.isRows() &&
+    (!isUnboundedOrCurrent(lowerBound) || !isUnboundedOrCurrent(upperBound))) {
+  if (targetWindow.getOrderList() == null
+      || targetWindow.getOrderList().size() != 1
+      || !isValidRangeBound(lowerBound)
+      || !isValidRangeBound(upperBound)) {
+    throw buildCalciteContextException(
+        "Order By with RANGE clause currently supports only UNBOUNDED or CURRENT ROW. Use ROWS clause instead.",
+        windowOrId
+    );
+  }
+}
+```
+
+Hmm wait — "no ORDER BY → orderList is null or empty?" SqlWindow.getOrderList() — could be null (no ORDER BY) or empty SqlNodeList? Defensive: `orderList == null || orderList.size() != 1`.
+
+Hmm, but actually — WAIT: does Calcite's own validation REQUIRE ORDER BY for RANGE offset frames? Standard SQL requires ORDER BY for any RANGE offset. If Calcite enforces it, the no-ORDER-BY qaWin cases fail Calcite's check with Calcite's own message BEFORE Druid's... but they're currently failing with Druid's message?? The current code rejects ALL RANGE-offset (even with ORDER BY single key) — the qaWin no-ORDER-BY cases: `OVER (PARTITION BY client_ip RANGE 0 FOLLOWING)` — current behavior: !isRows && !isUnboundedOrCurrent(0 FOLLOWING) → throw Druid message. So Calcite doesn't reject no-ORDER-BY RANGE offset BEFORE Druid's check (Druid's check runs FIRST — validateWindow override runs its checks then calls super). So Druid's check is first ✓ no-ORDER-BY → our count check (null/0 != 1) → same message ✓.
+
+Hmm — but hold on, `targetWindow.getOrderList()` — for `OVER (PARTITION BY x RANGE 0 FOLLOWING)` — is the orderList an empty SqlNodeList or null? SqlWindow created by parser with orderList = empty list or null? SqlWindow.newScope... The parser: `SqlWindow` constructor takes orderList param — for no ORDER BY, it's an empty SqlNodeList (I think SqlParser creates empty list). Either way defensive null check.
+
+And isValidRangeBound:
+
+```java
+/**
+ * Checks if the given endpoint is valid as a value-based RANGE offset: numeric or day-time interval literal.
+ */
+private boolean isValidRangeBound(@Nullable SqlNode bound)
+{
+  if (isUnboundedOrCurrent(bound)) {
+    return true;
+  }
+  if (bound.getKind() != SqlKind.PRECEDING && bound.getKind() != SqlKind.FOLLOWING) {
+    return false;
+  }
+  final SqlNode boundVal = ((SqlCall) bound).operand(0);
+  if (boundVal instanceof SqlNumericLiteral) {
+    return true;
+  }
+  if (boundVal instanceof SqlIntervalLiteral) {
+    final SqlIntervalLiteral.IntervalValue intervalValue =
+        (SqlIntervalLiteral.IntervalValue) ((SqlIntervalLiteral) boundVal).getValue();
+    return !intervalValue.getIntervalQualifier().isYearMonth();
+  }
+  return false;
+}
+```
+
+Check: SqlIntervalLiteral.IntervalValue has getIntervalQualifier() ✓ (public method). isYearMonth() on SqlIntervalQualifier ✓ exists. SqlNumericLiteral covers INTEGER/DECIMAL/DOUBLE literals ✓ (negative literals: `-1 PRECEDING` → SqlNumericLiteral with negative value ✓).
+
+Hmm — what about `RANGE INTERVAL '1' DAY PRECEDING`? boundVal = SqlIntervalLiteral ✓ day-time → valid. Then planning: RexWindowBound offset RexLiteral value: for interval literal → BigDecimal of millis (from summary: SqlLiteral.getValueAs(BigDecimal) → intervalToMillis). getBoundAsDouble:
+
+```java
+private Double getBoundAsDouble(RexWindowBound bound)
+{
+  if (bound.isUnbounded()) {
+    return null;
+  }
+  if (bound.isCurrentRow()) {
+    return 0.0d;
+  }
+  final RexLiteral constant = window.constants.get(((RexInputRef) bound.getOffset()).getIndex() - sig.size());
+  final double value = ((Number) constant.getValue()).doubleValue();
+  return bound.isPreceding() ? -value : value;
+}
+```
+
+Wait — constant.getValue() for interval literal returns BigDecimal (millis) ✓ Number ✓. For numeric literal returns BigDecimal ✓.
+
+Hmm — but wait: is the offset ALWAYS a RexInputRef into constants? From summary: "offsets are RexInputRef into window.constants; constant.getValue() returns BigDecimal/Number". But what if the offset expression is complex (e.g., non-literal)? Validator's isValidEndpoint requires literal → only literals reach here ✓. getConstant pattern exists ✓.
+
+Hmm, actually — RexWindowBound.getOffset(): returns RexNode — for finite bounds it's the offset expression which SqlNodeToRexConverter converts literals to... RexInputRef into constants list! ✓ (existing getConstant(refIndex - sig.size()) pattern).
+
+Wait, actually let me double check RexWindowBound semantics: `bound.isPreceding()` for PRECEDING with offset ✓; `bound.isFollowing()`; CURRENT_ROW bound: isCurrentRow() ✓ getOffset() null ✓ handled first.
+
+Also `RexWindowBound` for UNBOUNDED: isUnbounded() ✓.
+
+Now — WindowFrame.Range needs ColumnWithDirection — fine.
+
+Now the native range frame serde: WindowFramedAggregateProcessor is a Processor serialized in window operator queries — with a Range frame → JSON {"type":"range","lowerOffset":...,"upperOffset":...,"orderBy":{"column":"t","direction":"ASC"}}. ColumnWithDirection has @JsonCreator + @JsonProperty ✓ serde works.
+
+Now WindowFirstProcessor/WindowLastProcessor: let me read them to see how they call computeFirstOrLastValueFramed (results init).
+
+Also WindowFramedAggregateProcessor: it holds WindowFrame field, serializes it, and calls FramedOnHeapAggregatable.fromRAC(rac).aggregateAll(frame, aggs) — accepts any WindowFrame ✓ no change needed? Let me verify it doesn't switch on frame type. Let me read it.
+
+Let me also check RowsAndColumnsHelper (test helper) and existing native window tests (WindowFramedAggregateProcessorTest) to write new tests consistently.
+
+Also — the `NaiveSortOperator` sorts partitions by order column... within partition: sorted by ALL sortColumns (partition + ordering). For RANGE resolution: within a partition, rows sorted by ordering key asc/desc with nulls first/last ✓ assumption holds.
+
+Edge case: partition empty? numGroups ≥ 1 always (boundaries = [0]... hmm computeBoundaries returns [0, numRows] at minimum? For numRows = 0: boundaries = [0]? or [0,0]? numGroups = boundaries.length - 1 = 0 → no iterations ✓.
+
+Now — also `WindowCumeDistProcessor`, `WindowRankProcessor` etc. use ClusteredGroupPartitioner directly — unaffected (they get RANGE semantics for ranking via peer groups — RANK/CUME_DIST defined on RANGE "groups" of peers ✓ unchanged).
+
+Now — Windowing line 98-100: FIRST_VALUE/LAST_VALUE makers call agg.getGroup().getWindowFrame() → now can return Range ✓ flows into WindowFirstProcessor(frame) → computeFirstOrLastValueFramed ✓.
+
+Let me now also double check `RewriteFirstValueLastValueRule` — rewrites FIRST_VALUE(LAST_VALUE) with CURRENT ROW bounds into MIN/MAX — "only rewrites CURRENT ROW bounds" — if window frame has RANGE offsets → no rewrite → WindowFirstProcessor with Range frame ✓. Let me re-verify by reading that rule quickly.
+
+Now let me also think about `WindowFrame.Range` and Jackson `@JsonSubTypes.Type(name = "range", value = WindowFrame.Range.class)` ✓.
+
+EqualsVerifier for Range: fields Double lowerOffset, Double upperOffset, ColumnWithDirection orderBy. EqualsVerifier needs prefab values for... ColumnWithDirection is a normal class — EqualsVerifier can instantiate it (has String + enum fields — enums handled ✓). Null fields: EqualsVerifier "null fields" check — since Range constructor doesn't null-check, fine. But CAREFUL: EqualsVerifier with final fields and constructor — it uses reflection. Should work like Groups (which has ImmutableList field!). Groups' ImmutableList orderByColumns — EqualsVerifier handles via... it works today (test passes), so Range with plain fields should be fine. But ColumnWithDirection.equals uses `o instanceof ColumnWithDirection` (not getClass) — fine for EqualsVerifier.
+
+Hmm wait — one issue: EqualsVerifier `usingGetClass()` — Range.equals uses getClass() != obj.getClass() ✓ mirror Groups.
+
+Now the resolver — let me write it:
+
+```java
+package org.apache.druid.query.operator.window;
+
+public class RangeFrameResolver
+{
+  private final int numGroups... 
+}
+```
+
+Wait — naming: summary says "RangeFrameResolver" tentative. Fine, keep RangeFrameResolver. Hmm, or maybe `WindowRangeFrameResolver`? Keep RangeFrameResolver.
+
+Implementation:
+
+```java
+public class RangeFrameResolver
+{
+  private final int[] groupStarts... 
+```
+
+Let me structure with arrays: groupBoundaries (numGroups+1), frameStarts (numGroups), frameEnds (numGroups).
+
+Constructor logic:
+
+```java
+public RangeFrameResolver(final RowsAndColumns rac, final WindowFrame.Range frame)
+{
+  final String orderColumn = frame.getOrderBy().getColumn();
+  final Column column = rac.findColumn(orderColumn);
+  if (column == null) {
+    throw DruidException.defensive("Column[%s] does not exist", orderColumn);
+  }
+  final ColumnAccessor accessor = column.toAccessor();
+  final int numRows = accessor.numRows();
+  if (frame.getLowerOffset() != null || frame.getUpperOffset() != null) {
+    final ColumnType type = accessor.getType();
+    if (!type.isNumeric()) {
+      throw DruidException.defensive(...);
+    }
+  }
+  groupBoundaries = ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(ImmutableList.of(orderColumn));
+  ...
+}
+```
+
+Wait — `accessor.getType()` returns ColumnType. ColumnType.isNumeric() — checks value type in (LONG, FLOAT, DOUBLE)? Let me check ColumnType.isNumeric. Hmm — ColumnType has isNumeric()? ValueTypes... `ColumnType.isNumeric()` exists I believe (org.apache.druid.segment.column.ColumnType#isNumeric). Let me verify with grep.
+
+Hmm wait — one BIG issue: `ClusteredGroupPartitioner.fromRAC(rac).computeBoundaries(...)` uses compareRows semantics for grouping (equality). DefaultClusteredGroupPartitioner — uses `accessor.compareRows(a, b) == 0`? For nulls: compareRows(null-row, null-row) == 0 ✓ (summary confirmed). Fine — null group is one peer group.
+
+Now direction: `frame.getOrderBy().getDirection().getDirectionInt()` — 1 ASC, -1 DESC.
+
+Null run detection: isNull(rowNum). But WHERE is the null run? Scan: the first group whose first row isNull → null run [groupBoundaries[g], groupBoundaries[g+1]). But — is compareRows(null, null) == 0 guaranteed for ALL accessors? LongColumnAccessorBase ✓; StringColumnAccessorBase? Float/Double? Probably (null==null → 0 pattern). But safer: don't rely on peer grouping for null detection — compute null run by scanning isNull over sorted data: nulls contiguous ✓ (sorted). Find nullRunStart = first idx with isNull, nullRunEnd = first idx after start with !isNull. O(n) scan — fine (computeBoundaries is O(n) anyway). Actually simpler: during group iteration, for each group check isNull(groupBoundaries[g]) — the group's first row. If null → null group. But IF compareRows(null, x) != 0 for some accessor... compareRows(null, non-null) = -1 ≠ 0 → null group only contains nulls ✓ and compareRows(null,null)=0 keeps them together. For DOUBLE accessors: DoubleColumnAccessorBase... hmm — Double compareRows(null, null): if implemented as Double.compare(null?) — can't compare null Doubles with Double.compare (NPE) — they must handle nulls. Summary verified LongColumnAccessorBase only. Let me check the other accessor bases (Double/Float/String) for compareRows null semantics quickly.
+
+Actually — safer approach that doesn't depend on compareRows null semantics for grouping: I use computeBoundaries for GROUPS (needed for outputRows anyway — and the same nulls-in-one-group assumption is ALREADY relied upon by the existing Groups frame path for RANGE/CURRENT ROW semantics with null keys... wait — existing groups frames: `ORDER BY x RANGE CURRENT ROW` — GROUPS frame path — window functions like FIRST_VALUE with string keys + nulls → computeBoundaries groups nulls together → GROUPS logic treats null peer group ✓ existing behavior). So computeBoundaries null-grouping is ALREADY the codebase's peer semantics ✓ reuse it.
+
+BUT the value comparisons (binary search) use getDouble — nulls return 0.0 — MUST exclude nulls from binary search region! Null run location: ASC → [0, nullRunEnd) nulls FIRST; DESC → [nullRunStart, numRows) nulls LAST.
+
+Hmm wait — is that ACTUALLY guaranteed? DefaultNaiveSortMaker: sort comparator = compareRows(a,b) * directionInt. compareRows(null, x) = -1 (null lhs). ASC: null vs x → -1 → null first ✓. DESC: -1 * -1 = +1 → null AFTER x → nulls last ✓. Null vs null: 0 ✓ stable.
+
+So null run: ASC → prefix; DESC → suffix. Detect: scan for first null. If ASC: nullRunStart = 0 (if any nulls, nullRunEnd = count of nulls... wait nulls all contiguous at start ✓ nullRunEnd = idx of first non-null). If DESC: nulls at end: nullRunStart = numRows - nullCount.
+
+Hmm — but scan direction: just find first index f with isNull(f): ASC → nullRun = [0, e) where e = first non-null after f... contiguous ✓. DESC → nullRun = [numRows - k, numRows)... first null at f = numRows - k ✓ nullRun = [f, numRows).
+
+Actually — even simpler: find FIRST null index f (if exists). For ASC: nullRun = [f, e) with e = first idx ≥ f non-null — but if nulls are contiguous prefix, f = 0 (guaranteed? nulls sort before everything in ASC → yes f = 0 if any nulls... UNLESS mixed... sorted → all nulls first → f=0 ✓). For DESC: nulls last → nullRun = [f, numRows) ✓ (f = first null = start of suffix).
+
+But defensive: DON'T assume; verify: check isNull(f..): all nulls contiguous? Just trust the sort ✓ (same trust as computeBoundaries).
+
+Null group vs null run: the null peer group SHOULD equal the null run. I'll use the null run from isNull scan for null-bound resolution (independent of compareRows null semantics), and groupBoundaries for output grouping. For the null row's frame with finite bounds → [nullRunStart, nullRunEnd) = null run — matches null peer group if compareRows(null,null)=0 ✓ consistent.
+
+Now binary searches. Values in non-null region: ASC sorted ascending. Need:
+
+```java
+// ASC: first idx in [lo, hi) with getDouble(idx) >= target; hi if none
+private static int lowerBoundAsc(ColumnAccessor acc, int lo, int hi, double target)
+{
+  // binary search
+  while (lo < hi) {
+    int mid = (lo + hi) >>> 1;
+    if (acc.getDouble(mid) < target) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+// ASC: first idx with getDouble(idx) > target
+private static int upperBoundAsc(...) { ... if (acc.getDouble(mid) <= target) lo = mid+1; else hi = mid; ... }
+// DESC region [lo, hi) sorted descending: first idx with val <= target
+private static int lowerBoundDesc(...) { ... if (acc.getDouble(mid) > target) lo = mid + 1; else hi = mid; }
+// DESC: first idx with val < target
+private static int upperBoundDesc(...) { ... if (acc.getDouble(mid) >= target) lo = mid + 1; else hi = mid; }
+```
+
+Wait let me verify lowerBoundDesc: region desc-sorted. Want first idx with val <= L. Values: [10, 9, 8, 7], L = 8.5: first val ≤ 8.5 → 8 at idx 2 ✓. Binary: mid val > target → move right (lo = mid+1) since desc prefix has larger values; val ≤ target → hi = mid. ✓.
+
+upperBoundDesc: first idx with val < U: [10,9,8,7], U = 8: first < 8 → 7 idx 3 ✓. mid val ≥ U → lo = mid+1; val < U → hi = mid ✓.
+
+Hmm wait — but these DESC searches are restricted to [0, nullRunStart)... For null current-row handling I use null-run rules, and for non-null groups the searches stay in non-null region ✓.
+
+Now per-group resolution:
+
+```java
+final boolean asc = frame.getOrderBy().getDirection() == ColumnWithDirection.Direction.ASC; // or directionInt == 1
+final Double lowerOffset = frame.getLowerOffset();
+final Double upperOffset = frame.getUpperOffset();
+
+for (int g = 0; g < numGroups; g++) {
+  final int groupStart = groupBoundaries[g], groupEnd = groupBoundaries[g+1];
+  final int row = groupStart; // first row of group (representative)
+  if (accessor.isNull(row)) {
+    frameStarts[g] = lowerOffset == null ? 0 : nullRunStart;
+    frameEnds[g] = upperOffset == null ? numRows : nullRunEnd;
+  } else {
+    final double v = accessor.getDouble(row);
+    if (asc) {
+      frameStarts[g] = lowerOffset == null ? 0 : lowerBoundAsc(accessor, nullRunEnd, numRows, v + lowerOffset);
+      frameEnds[g] = upperOffset == null ? numRows : upperBoundAsc(accessor, nullRunEnd, numRows, v + upperOffset);
+    } else {
+      frameStarts[g] = lowerOffset == null ? 0 : lowerBoundDesc(accessor, 0, nullRunStart, v - lowerOffset);
+      frameEnds[g] = upperOffset == null ? numRows : upperBoundDesc(accessor, 0, nullRunStart, v - upperOffset);
+    }
+  }
+}
+```
+
+Wait — nullRunStart for ASC = 0, nullRunEnd = e. lowerBoundAsc search region [nullRunEnd... but nullRunEnd = e = first non-null. If no nulls: e = 0 → region [0, numRows) ✓. If all nulls... numGroups... if all rows null: nullRun = [0, numRows), non-null region empty; groups: 1 group (nulls); null row → null rules ✓ never searches.
+
+Hmm wait — subtle: what if no nulls in ASC? nullRunEnd = 0 → search [0, numRows) ✓. If nulls exist ASC: nullRunEnd = e ✓ search [e, numRows) — but WAIT: should the search region be [nullRunEnd, numRows) or [frameStart-independent]? Yes [nullRunEnd, numRows) ✓ nulls excluded.
+
+BUT — what about ASC lowerBound when L ≤ ... hmm what if L < some null... nulls = -inf conceptually: {x ≥ L}: nulls ≥ L? -inf ≥ L false (L finite) → excluded ✓ search from nullRunEnd ✓. What if L is very negative, e.g. L = -1e300? -inf ≥ L still false → nulls excluded ✓. Consistent: value semantics treats null as -inf, never ≥ any finite L, always ≤ any finite U... 
+
+WAIT — ASC frameEnd: {x ≤ U} includes nulls (-inf ≤ U ✓ ALWAYS)! Frame = {L ≤ x ≤ U}: nulls in iff L = -inf (unbounded). frameStart rule: L finite → search [nullRunEnd, numRows) → excludes nulls ✓; L unbounded → frameStart = 0 → includes nulls ✓. frameEnd: U finite → upperBoundAsc([nullRunEnd, numRows)) — hmm — {x ≤ U} non-null part ends at upperBoundAsc; nulls are BEFORE nullRunEnd ≤ frameEnd?? nulls in frame only if frameStart = 0 → frame [0, frameEnd): frameEnd = upperBoundAsc ≥ nullRunEnd? Is frameEnd ≥ nullRunEnd guaranteed when U finite? upperBoundAsc finds first NON-NULL x > U. If U < min non-null: all non-nulls > U → frameEnd = nullRunEnd → frame = [0, nullRunEnd) = nulls only ✓✓ CORRECT ({x ≤ U} = nulls, since all non-null > U... wait {x: -inf ≤ x ≤ U} with U < minVal: nulls (-inf ≤ U ✓) ✓ + non-nulls ≤ U (none) ✓ = nulls only ✓ PERFECT).
+
+If U ≥ min non-null: frameEnd = first x > U ≥ index of min ≥ nullRunEnd ✓ frame includes nulls when frameStart = 0 ✓ and excludes when frameStart > 0 (frameStart ≥ nullRunEnd > nulls' indices) ✓✓ ALL CONSISTENT.
+
+DESC nulls = +inf: {x: U ≤ x ≤ L}: nulls in iff U = +inf (unbounded upper). frameEnd: U unbounded → numRows → includes nulls ✓; U finite → upperBoundDesc region [0, nullRunStart) → frame ≤ nullRunStart → excludes nulls ✓. frameStart: L unbounded → 0 ✓; L finite → lowerBoundDesc [0, nullRunStart) ✓. What about L finite > max: lowerBoundDesc finds first x ≤ L — nulls: +inf ≤ L false → not in region ✓. E.g. L = +1e300: first non-null x ≤ L → idx 0 → frame [0, frameEnd) ✓.
+
+And null-row frame DESC: lower finite → nullRunStart; upper finite → nullRunEnd = numRows ✓ (nulls at end). lower unbounded → 0; upper unbounded → numRows. E.g. lower finite + upper finite → [nullRunStart, numRows) = null run ✓.
+
+Great — algorithm consistent. One more: non-null v, ASC, L = v + lowerOffset where lowerOffset could be POSITIVE (e.g. RANGE BETWEEN 5 FOLLOWING AND 10 FOLLOWING → lower = +5): L = v + 5 > v → frameStart ≥ group end-ish ✓ fine. Negative upperOffset (RANGE BETWEEN 5 PRECEDING AND 3 PRECEDING): U = v - 3 < v → frameEnd could be < frameStart → empty ✓ handled.
+
+NOW — empty inputRows interval [a, b) with a > b?? Can frameStart > frameEnd? lowerBoundAsc result vs upperBoundAsc result: e.g. L > U: first x ≥ L > first x > U → frameStart > frameEnd → interval (frameStart, frameEnd) with a > b → AggIntervalCursor.moveTo: currentRows.a == newRows.a? no; currentRows.a > newRows.a && currentRows.b == newRows.b?... else branch: newAggregators + `for (int i : newRows)` — Interval iterator: current = a; hasNext: current < b → a ≥ b → no iterations → zero-row default ✓. And ResultPopulator.write: Arrays.fill(results, outputRows.a, outputRows.b, value) — outputRows = [groupStart, groupEnd) valid ✓. 
+
+BUT — hmm, moveTo incremental branch: `currentRows.a == newRows.a && currentRows.b < newRows.b` → incremental from currentRows.b to newRows.b. For Range frames: intervals move arbitrarily (both ends move) → the else branch recomputes fully ✓ EXCEPT the incremental conditions might accidentally match: currentRows.a == newRows.a (same start) && currentRows.b < newRows.b — could happen (frame start same, end grew) → incremental adds rows currentRows.b..newRows.b ✓ CORRECT (aggregators still hold [a, currentRows.b) sums → adding [currentRows.b, newRows.b) gives [a, newRows.b) ✓). Similarly currentRows.a > newRows.a && currentRows.b == newRows.b: aggregators hold [currentRows.a, b); adding [newRows.a, currentRows.a) → but WAIT — that's WRONG unless aggregators are order-independent! Aggregators ARE order-independent (aggregate() per row; sum/count/min/max/any) ✓ sums additive ✓. BUT hmm — actually is it [currentRows.a, b) + [newRows.a, currentRows.a) = [newRows.a, b) ✓ set union ✓ fine for commutative aggregators. Windowed aggregations use standard AggregatorFactories ✓ commutative.
+
+BUT BUT — one more: for Range frames, intervals can go BACKWARD (later group has smaller frameStart, e.g. DESC direction... wait groups iterate in sort order; frames within... ASC: frameStart non-decreasing? lowerBoundAsc with increasing v → non-decreasing ✓ monotone! frameEnd non-decreasing ✓. DESC: groups iterate in sort order (descending values): v decreases → L = v - lo decreases → lowerBoundDesc(first x ≤ L): L decreases → first x ≤ L: index non-decreasing?? Desc-sorted [10,9,8]: v=10, L=10: first ≤ 10 = 0; v=9, L=9: first ≤ 9 = 1 ✓ non-decreasing ✓. frameEnd: U = v - up decreases → first x < U: non-decreasing ✓. So frames are monotone in both directions — moveTo mostly hits else-branch (both ends move) → recompute → correct ✓. No inversion issues ✓.
+
+Hmm — WAIT, actually is that fully true? frameStart monotone non-decreasing AND frameEnd monotone non-decreasing — but per GROUP the interval [fs, fe) — moveTo(newRows=[fs, fe)): currentRows=[fs', fe') with fs' ≤ fs, fe' ≤ fe. Check branch 1: fs' == fs && fe' < fe → incremental add [fe', fe) ✓. Branch 2: fs' > fs?? can't (monotone) → else: full recompute ✓ correct. ✓✓ fine.
+
+NOW — ResultPopulator/AggInterval machinery — no changes needed except buildIteratorFor range branch ✓.
+
+Next: check WindowFirstProcessor/WindowLastProcessor to see results initialization. Let me read them. Also WindowFramedAggregateProcessor. Also check ColumnType.isNumeric exists. Also check DefaultClusteredGroupPartitioner for conventions. Also RowsAndColumnsHelper for tests. Also existing WindowFramedAggregateProcessorTest for test style.
+
+Also — "final" convention: AGENTS.md says always use final for fields/variables not reassigned ✓.
+
+Also — imports: resolver in org.apache.druid.query.operator.window imports ClusteredGroupPartitioner (org.apache.druid.query.rowsandcols.semantic) ✓ fine (window package already imports rowsandcols stuff).
+
+Let me now read the remaining files.
+All qaWin RANGE cases have either no ORDER BY or 3-4 keys — the single-key validator restriction keeps every recorded error intact. Now implementing.
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowFirstProcessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/value/WindowFirstProcessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window.value;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonInclude;
+24: import com.fasterxml.jackson.annotation.JsonProperty;
+25: import org.apache.druid.error.DruidException;
+26: import org.apache.druid.query.operator.window.Processor;
+27: import org.apache.druid.query.operator.window.WindowFrame;
+28: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+29: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+30: import org.apache.druid.query.rowsandcols.column.ConstantObjectColumn;
+31: import org.apache.druid.query.rowsandcols.column.ObjectArrayColumn;
+32: 
+33: import javax.annotation.Nullable;
+34: import java.util.Objects;
+35: 
+36: public class WindowFirstProcessor extends WindowValueProcessorBase
+37: {
+38:   @Nullable
+39:   private final WindowFrame frame;
+40: 
+41:   @JsonCreator
+42:   public WindowFirstProcessor(
+43:       @JsonProperty("i
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessor.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/operator/window/WindowFramedAggregateProcessor.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.operator.window;
+21: 
+22: import com.fasterxml.jackson.annotation.JsonCreator;
+23: import com.fasterxml.jackson.annotation.JsonProperty;
+24: import org.apache.druid.query.aggregation.AggregatorFactory;
+25: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+26: import org.apache.druid.query.rowsandcols.semantic.DefaultFramedOnHeapAggregatable;
+27: import org.apache.druid.query.rowsandcols.semantic.FramedOnHeapAggregatable;
+28: 
+29: import javax.annotation.Nullable;
+30: import java.util.ArrayList;
+31: import java.util.Arrays;
+32: import java.util.List;
+33: import java.util.Objects;
+34: 
+35: public class WindowFramedAggregateProcessor implements Processor
+36: {
+37:   @Nullable
+38:   private static <T> T[] emptyToNull(T[] arr)
+39:   {
+40:     if (arr == null || arr.length == 0) {
+41:       return null;
+42:     } else {
+43:       return arr;
+44:     }
+45:   }
+46: 
+47:   private final WindowFrame frame;
+48:   private final Aggre
+[truncated]
+[tool:read] {"filePath": "/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultClusteredGroupPartitioner.java"}
+<path>/app/processing/src/main/java/org/apache/druid/query/rowsandcols/semantic/DefaultClusteredGroupPartitioner.java</path>
+<type>file</type>
+<content>
+1: /*
+2:  * Licensed to the Apache Software Foundation (ASF) under one
+3:  * or more contributor license agreements.  See the NOTICE file
+4:  * distributed with this work for additional information
+5:  * regarding copyright ownership.  The ASF licenses this file
+6:  * to you under the Apache License, Version 2.0 (the
+7:  * "License"); you may not use this file except in compliance
+8:  * with the License.  You may obtain a copy of the License at
+9:  *
+10:  *   http://www.apache.org/licenses/LICENSE-2.0
+11:  *
+12:  * Unless required by applicable law or agreed to in writing,
+13:  * software distributed under the License is distributed on an
+14:  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+15:  * KIND, either express or implied.  See the License for the
+16:  * specific language governing permissions and limitations
+17:  * under the License.
+18:  */
+19: 
+20: package org.apache.druid.query.rowsandcols.semantic;
+21: 
+22: import it.unimi.dsi.fastutil.ints.IntArrayList;
+23: import it.unimi.dsi.fastutil.ints.IntList;
+24: import org.apache.druid.query.rowsandcols.LimitedRowsAndColumns;
+25: import org.apache.druid.query.rowsandcols.RowsAndColumns;
+26: import org.apache.druid.query.rowsandcols.column.Column;
+27: import org.apache.druid.query.rowsandcols.column.ColumnAccessor;
+28: 
+29: import java.util.ArrayList;
+30: import java.util.List;
+31: 
+32: public class DefaultClusteredGroupPartitioner implements ClusteredGroupPartitioner
+33: {
+34:   private final RowsAndColumns rac;
+35: 
+36:   public DefaultClusteredGroupPartitioner(
+37:       RowsAndColumns rac
+38:   )
+39:   {
+40:     this.rac = rac;
+41:   }
+42: 
+43:   @Override
+44:   public int[] computeBoundaries(List<String> columns)
+45:   {
+46:     if (rac.numRows() == 0) {
+47:       return new int[]{};
+48:     }
+49: 
+50:     // Initialize to a grouping of everything
+5
+[truncated]

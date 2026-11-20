@@ -1,0 +1,304 @@
+diff --git a/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/BestDisjointEvaluator.java b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/BestDisjointEvaluator.java
+new file mode 100644
+index 00000000..affff31e
+--- /dev/null
++++ b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/BestDisjointEvaluator.java
+@@ -0,0 +1,80 @@
++package fr.inra.maiage.bibliome.alvisnlp.bibliomefactory.library.standard;
++
++import java.util.Collection;
++import java.util.Collections;
++import java.util.List;
++import java.util.function.ToDoubleFunction;
++
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.Annotation;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.DownCastElement;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.Element;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.Layer;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.NameType;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.Section;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.expressions.AbstractListEvaluator;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.expressions.EvaluationContext;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.expressions.EvaluationType;
++import fr.inra.maiage.bibliome.alvisnlp.core.corpus.expressions.Evaluator;
++import fr.inra.maiage.bibliome.alvisnlp.core.module.ModuleException;
++import fr.inra.maiage.bibliome.alvisnlp.core.module.NameUsage;
++
++final class BestDisjointEvaluator extends AbstractListEvaluator {
++	private static final double DEFAULT_WEIGHT = 1.0;
++
++	private final String layerName;
++	private final Evaluator layerNameEvaluator;
++	private final Evaluator weight;
++
++	BestDisjointEvaluator(String layerName, Evaluator weight) {
++		super();
++		this.layerName = layerName;
++		this.layerNameEvaluator = null;
++		this.weight = weight;
++	}
++
++	BestDisjointEvaluator(Evaluator layerName, Evaluator weight) {
++		super();
++		this.layerName = null;
++		this.layerNameEvaluator = layerName;
++		this.weight = weight;
++	}
++
++	private String getLayerName(EvaluationContext ctx, Element elt) {
++		if (layerNameEvaluator == null)
++			return layerName;
++		return layerNameEvaluator.evaluateString(ctx, elt);
++	}
++
++	@Override
++	public List<Element> evaluateList(EvaluationContext ctx, Element elt) {
++		String name = getLayerName(ctx, elt);
++		Section section = DownCastElement.toSection(elt);
++		if (section == null || !section.hasLayer(name))
++			return Collections.emptyList();
++		Layer layer = section.getLayer(name);
++		Layer selected = layer.selectMaxWeight(new ToDoubleFunction<Annotation>() {
++			@Override
++			public double applyAsDouble(Annotation annotation) {
++				if (weight == null)
++					return DEFAULT_WEIGHT;
++				return weight.evaluateDouble(ctx, annotation);
++			}
++		});
++		return selected.asElementList();
++	}
++
++	@Override
++	public Collection<EvaluationType> getTypes() {
++		return Collections.singleton(EvaluationType.ANNOTATIONS);
++	}
++
++	@Override
++	public void collectUsedNames(NameUsage nameUsage, String defaultType) throws ModuleException {
++		if (layerName != null)
++			nameUsage.addNames(NameType.LAYER, layerName);
++		if (layerNameEvaluator != null)
++			layerNameEvaluator.collectUsedNames(nameUsage, defaultType);
++		if (weight != null)
++			weight.collectUsedNames(nameUsage, defaultType);
++	}
++}
+diff --git a/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java
+index e0932341..8a5c45db 100644
+--- a/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java
++++ b/alvisnlp-bibliome/src/main/java/fr/inra/maiage/bibliome/alvisnlp/bibliomefactory/library/standard/NavigationLibrary.java
+@@ -102,6 +102,26 @@ public abstract class NavigationLibrary extends FunctionLibrary {
+ 		return new AnnotationsOverlappingEvaluator(layerName, true);
+ 	}
+ 
++	@Function(firstFtor="best-disjoint", ftors=1, nameTypes={NameType.LAYER})
++	public static final Evaluator bestDisjoint(String layerName) {
++		return new BestDisjointEvaluator(layerName, null);
++	}
++
++	@Function
++	public static final Evaluator bestDisjoint(Evaluator layerName) {
++		return new BestDisjointEvaluator(layerName, null);
++	}
++
++	@Function(firstFtor="best-disjoint", ftors=1, nameTypes={NameType.LAYER})
++	public static final Evaluator bestDisjoint(String layerName, Evaluator weight) {
++		return new BestDisjointEvaluator(layerName, weight);
++	}
++
++	@Function
++	public static final Evaluator bestDisjoint(Evaluator layerName, Evaluator weight) {
++		return new BestDisjointEvaluator(layerName, weight);
++	}
++
+ 	@Function(ftors=1)
+ 	public static final Evaluator span(String layerName) {
+ 		return new AnnotationsSpanEvaluator(layerName, true);
+diff --git a/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java b/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java
+index cb20cfdc..a7a0b816 100644
+--- a/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java
++++ b/alvisnlp-core/src/main/java/fr/inra/maiage/bibliome/alvisnlp/core/corpus/Layer.java
+@@ -29,6 +29,7 @@ import java.util.Comparator;
+ import java.util.Iterator;
+ import java.util.List;
+ import java.util.ListIterator;
++import java.util.function.ToDoubleFunction;
+ 
+ import fr.inra.maiage.bibliome.alvisnlp.core.corpus.creators.AnnotationCreator;
+ import fr.inra.maiage.bibliome.util.Strings;
+@@ -105,6 +106,174 @@ public class Layer extends AbstractCollection<Annotation> implements Serializabl
+     	return new Layer(section, null, annotations);
+     }
+ 
++    /**
++     * Returns an anonymous layer with a maximum-weight subset of non-overlapping
++     * annotations in this layer.
++     * @param weightFunction weight of each annotation
++     * @return an anonymous layer with a maximum-weight subset of non-overlapping annotations
++     */
++    public Layer selectMaxWeight(ToDoubleFunction<Annotation> weightFunction) {
++        int size = annotations.size();
++        if (size == 0)
++            return new Layer(section);
++        double[] weights = new double[size];
++        for (int i = 0; i < size; ++i) {
++            double weight = weightFunction.applyAsDouble(annotations.get(i));
++            weights[i] = Double.isNaN(weight) ? 0.0 : weight;
++        }
++        return selectMaxWeight(weights);
++    }
++
++    private Layer selectMaxWeight(double[] weights) {
++        List<WeightedInterval> intervals = new ArrayList<WeightedInterval>();
++        for (int i = 0; i < annotations.size(); ++i) {
++            Annotation annot = annotations.get(i);
++            if (annot.getStart() != annot.getEnd())
++                intervals.add(new WeightedInterval(i, annot.getStart(), annot.getEnd(), weights[i]));
++        }
++
++        Collections.sort(intervals, new Comparator<WeightedInterval>() {
++            @Override
++            public int compare(WeightedInterval left, WeightedInterval right) {
++                return left.end - right.end;
++            }
++        });
++
++        int intervalCount = intervals.size();
++        int[] ends = new int[intervalCount];
++        for (int i = 0; i < intervalCount; ++i)
++            ends[i] = intervals.get(i).end;
++        SelectionState[] states = new SelectionState[intervalCount + 1];
++        states[0] = SelectionState.EMPTY;
++        for (int i = 0; i < intervalCount; ++i) {
++            WeightedInterval interval = intervals.get(i);
++            int predecessor = countEndingAtMost(ends, interval.start);
++            SelectionState without = states[i];
++            SelectionState with = null;
++            SelectionState base = states[predecessor];
++            double total = base.total + interval.weight;
++            if (!Double.isNaN(total))
++                with = new SelectionState(total, new SelectionIndices(base.indices, interval.index));
++            states[i + 1] = best(with, without);
++        }
++
++        SelectionState state = states[intervalCount];
++        boolean[] selected = new boolean[annotations.size()];
++        int maxSelectedIndex = -1;
++        for (SelectionIndices indices = state.indices; indices != null; indices = indices.previous) {
++            selected[indices.index] = true;
++            if (indices.index > maxSelectedIndex)
++                maxSelectedIndex = indices.index;
++        }
++
++        for (int i = annotations.size() - 1; i >= 0; --i) {
++            Annotation annot = annotations.get(i);
++            if (annot.getStart() == annot.getEnd()) {
++                double total = state.total + weights[i];
++                if (!Double.isNaN(total) && ((total > state.total) || ((total == state.total) && (maxSelectedIndex > i)))) {
++                    selected[i] = true;
++                    state = new SelectionState(total, null);
++                    if (i > maxSelectedIndex)
++                        maxSelectedIndex = i;
++                }
++            }
++        }
++
++        List<Annotation> result = new ArrayList<Annotation>();
++        for (int i = 0; i < selected.length; ++i)
++            if (selected[i])
++                result.add(annotations.get(i));
++        return new Layer(section, null, result);
++    }
++
++    private static int countEndingAtMost(int[] ends, int position) {
++        int low = 0;
++        int high = ends.length;
++        while (low < high) {
++            int middle = (low + high) / 2;
++            if (ends[middle] <= position)
++                low = middle + 1;
++            else
++                high = middle;
++        }
++        return low;
++    }
++
++    private static SelectionState best(SelectionState with, SelectionState without) {
++        if (with == null)
++            return without;
++        if (with.total > without.total)
++            return with;
++        if (with.total < without.total)
++            return without;
++        return compareIndices(with.indices, without.indices) < 0 ? with : without;
++    }
++
++    private static int compareIndices(SelectionIndices left, SelectionIndices right) {
++        if (left == right)
++            return 0;
++        int length = Math.min(left.length, right.length);
++        SelectionIndices leftPrefix = dropIndices(left, length);
++        SelectionIndices rightPrefix = dropIndices(right, length);
++        int comparison = compareEqualLengthIndices(leftPrefix, rightPrefix);
++        if (comparison != 0)
++            return comparison;
++        return Integer.compare(left.length, right.length);
++    }
++
++    private static SelectionIndices dropIndices(SelectionIndices indices, int length) {
++        while (indices.length > length)
++            indices = indices.previous;
++        return indices;
++    }
++
++    private static int compareEqualLengthIndices(SelectionIndices left, SelectionIndices right) {
++        if (left == null)
++            return 0;
++        int comparison = compareEqualLengthIndices(left.previous, right.previous);
++        if (comparison != 0)
++            return comparison;
++        return Integer.compare(left.index, right.index);
++    }
++
++    private static final class WeightedInterval {
++        private final int index;
++        private final int start;
++        private final int end;
++        private final double weight;
++
++        private WeightedInterval(int index, int start, int end, double weight) {
++            this.index = index;
++            this.start = start;
++            this.end = end;
++            this.weight = weight;
++        }
++    }
++
++    private static final class SelectionIndices {
++        private final SelectionIndices previous;
++        private final int index;
++        private final int length;
++
++        private SelectionIndices(SelectionIndices previous, int index) {
++            this.previous = previous;
++            this.index = index;
++            this.length = (previous == null ? 0 : previous.length) + 1;
++        }
++    }
++
++    private static final class SelectionState {
++        private static final SelectionState EMPTY = new SelectionState(0.0, null);
++
++        private final double total;
++        private final SelectionIndices indices;
++
++        private SelectionState(double total, SelectionIndices indices) {
++            this.total = total;
++            this.indices = indices;
++        }
++    }
++
+     @Override
+ 	public int size() {
+         return annotations.size();
