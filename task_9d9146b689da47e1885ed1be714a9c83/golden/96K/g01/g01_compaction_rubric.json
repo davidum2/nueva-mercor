@@ -10,7 +10,7 @@
     },
     {
       "criteria_id": "criteria_1",
-      "description": "States the requirement that when routing leaves a request with no active path to the response, `DAGExecutor.call()` returns promptly with `err_no` set to `CustomExceptionCode.SKIPPED.value`.",
+      "description": "States the requirement that an exception raised inside `on_skipped` must not stall the DAG.",
       "metadata": {
         "category": "Goal fidelity",
         "weight": "major"
@@ -66,7 +66,7 @@
     },
     {
       "criteria_id": "criteria_8",
-      "description": "Records the agent's reasoning that running Python from `/app` with `PYTHONPATH=python` resolves to `/workspace/repo/python` via the `/app` symlink.",
+      "description": "Records the scope rule that replayed requests with `dag.retry` greater than 1 may invoke the routing hooks again.",
       "metadata": {
         "category": "Decision rationale",
         "weight": "minor"
@@ -74,22 +74,6 @@
     },
     {
       "criteria_id": "criteria_9",
-      "description": "Records the required method signature `route(self, output_data, data_id=0, log_id=0)` to be added to `pipeline.operator.Op`.",
-      "metadata": {
-        "category": "Artifact preservation",
-        "weight": "minor"
-      }
-    },
-    {
-      "criteria_id": "criteria_10",
-      "description": "Records that `/workspace/repo/python/pipeline/error_catch.py` has not yet been read.",
-      "metadata": {
-        "category": "Temporal coherence",
-        "weight": "minor"
-      }
-    },
-    {
-      "criteria_id": "criteria_11",
       "description": "Records that no code changes have been made to the repository yet.",
       "metadata": {
         "category": "Temporal coherence",
@@ -97,15 +81,7 @@
       }
     },
     {
-      "criteria_id": "criteria_12",
-      "description": "Specifies inspecting `/workspace/repo/python/pipeline/dag.py` to locate `DAGExecutor.call()` as a pending step.",
-      "metadata": {
-        "category": "Temporal coherence",
-        "weight": "major"
-      }
-    },
-    {
-      "criteria_id": "criteria_13",
+      "criteria_id": "criteria_10",
       "description": "Specifies reading the remaining unread body of `/workspace/repo/python/pipeline/operator.py` using offset reads as a pending step.",
       "metadata": {
         "category": "Temporal coherence",
@@ -113,23 +89,15 @@
       }
     },
     {
-      "criteria_id": "criteria_14",
-      "description": "Specifies inspecting `/workspace/repo/python/pipeline/pipeline_server.py` to locate `PipelineServer.set_response_op()` as a pending step.",
-      "metadata": {
-        "category": "Temporal coherence",
-        "weight": "major"
-      }
-    },
-    {
-      "criteria_id": "criteria_15",
-      "description": "Keeps outstanding tasks grouped together so pending work is directly findable.",
+      "criteria_id": "criteria_11",
+      "description": "Keeps related facts grouped together so information on each topic is directly findable.",
       "metadata": {
         "category": "Structural clarity",
         "weight": "minor"
       }
     },
     {
-      "criteria_id": "criteria_16",
+      "criteria_id": "criteria_12",
       "description": "Contains at most 18400 characters.",
       "metadata": {
         "category": "Compression efficiency",
@@ -137,7 +105,7 @@
       }
     },
     {
-      "criteria_id": "criteria_17",
+      "criteria_id": "criteria_13",
       "description": "States that `get_succ_op_names()` returns all transitive downstream `Op` names rather than only immediate successors.",
       "metadata": {
         "category": "Goal fidelity",
@@ -145,7 +113,7 @@
       }
     },
     {
-      "criteria_id": "criteria_18",
+      "criteria_id": "criteria_14",
       "description": "States that `RequestOp` must be reported in the set returned by `get_pred_op_names()`.",
       "metadata": {
         "category": "Goal fidelity",
@@ -153,7 +121,7 @@
       }
     },
     {
-      "criteria_id": "criteria_19",
+      "criteria_id": "criteria_15",
       "description": "States that `Op`s constructed with `jump_to_ops` must be refactored to support `route`.",
       "metadata": {
         "category": "Decision rationale",

@@ -37,13 +37,23 @@ async def update_and_commit_file(page, task_id: str, rel_path: str, new_text: st
     print(f"  Updated {rel_path}: {updated_uris} (len={len(new_text)})")
     await asyncio.sleep(0.8)
 
-    commit_btn = page.locator('button:has-text("Commit")').first
-    if await commit_btn.count() > 0 and await commit_btn.is_enabled():
-        print(f"  Clicking Commit for {rel_path}...")
-        await commit_btn.click()
-        await asyncio.sleep(2.5)
+    for _ in range(15):
+        txt_now = await page.evaluate("document.body.innerText")
+        if "No unsaved changes" in txt_now:
+            break
+        commit_btn = page.locator('button:has-text("Commit")').first
+        if await commit_btn.count() > 0 and await commit_btn.is_enabled():
+            print(f"  Clicking Commit for {rel_path}...")
+            await commit_btn.click()
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                t2 = await page.evaluate("document.body.innerText")
+                if "No unsaved changes" in t2:
+                    break
+            break
+        await asyncio.sleep(0.5)
     else:
-        print(f"  Commit sin cambios pendientes para {rel_path}")
+        print(f"  WARN: Commit button did not enable for {rel_path}")
 
 
 async def run_commit(task_id: str, window: str, point: str, port: int, only: str = None):
